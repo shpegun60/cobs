@@ -103,7 +103,9 @@ extern "C" {
 #define USE_HAL_SPI_REGISTER_CALLBACKS        0U
 #define USE_HAL_SRAM_REGISTER_CALLBACKS       0U
 #define USE_HAL_TIM_REGISTER_CALLBACKS        0U
+#ifndef USE_HAL_UART_REGISTER_CALLBACKS /* overridable: the port matrix builds a =1U variant */
 #define USE_HAL_UART_REGISTER_CALLBACKS       0U
+#endif
 #define USE_HAL_USART_REGISTER_CALLBACKS      0U
 #define USE_HAL_WWDG_REGISTER_CALLBACKS       0U
 

@@ -37,6 +37,24 @@ echo "=== G4 (STM32G474xx, Cortex-M4, new ISR/RDR, classic DMA) ==="
   "$HERE/test_instantiate.cpp" -o "$OUT/test_g4.o"
 echo "OK"
 
+echo "=== G4 variant: UART_ENGINE_HAS_RXEVENT_TYPE=0 (old-HAL fallback branch) ==="
+"$GCC" $COMMON_FLAGS -mcpu=cortex-m4 -mfloat-abi=soft -DSTM32G474xx \
+  -DUART_ENGINE_HAS_RXEVENT_TYPE=0 \
+  -I"$HERE/g4" \
+  -I"$PROJ/libs/stm32g4xx-hal-driver/Inc" \
+  -I"$PROJ/libs/cmsis-device-g4/Include" \
+  "$HERE/test_instantiate.cpp" -o "$OUT/test_g4_noevt.o"
+echo "OK"
+
+echo "=== G4 variant: USE_HAL_UART_REGISTER_CALLBACKS=1 (registered-callbacks init path) ==="
+"$GCC" $COMMON_FLAGS -mcpu=cortex-m4 -mfloat-abi=soft -DSTM32G474xx \
+  -DUSE_HAL_UART_REGISTER_CALLBACKS=1U \
+  -I"$HERE/g4" \
+  -I"$PROJ/libs/stm32g4xx-hal-driver/Inc" \
+  -I"$PROJ/libs/cmsis-device-g4/Include" \
+  "$HERE/test_instantiate.cpp" -o "$OUT/test_g4_regcb.o"
+echo "OK"
+
 echo "=== H7RS (STM32H7S3xx, Cortex-M7, D-cache, GPDMA) ==="
 "$GCC" $COMMON_FLAGS -mcpu=cortex-m7 -mfloat-abi=soft -DSTM32H7S3xx \
   -I"$HERE/h7rs" \

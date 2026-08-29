@@ -20,6 +20,13 @@
  *
  * (On H7: not in DTCM. If the section is made non-cacheable via MPU, set
  *  UART_ENGINE_DCACHE_MAINTENANCE to 0.)
+ *
+ * Interrupt priorities: keep the UART global IRQ and the RX DMA IRQ at the
+ * SAME preemption priority (the CubeMX default). If one may preempt the
+ * other, a rare benign race exists where the UART error ISR interrupts the
+ * DMA TC ISR between HAL's RxState update and this driver's re-arm and voids
+ * one valid chunk — no corruption, the stream resynchronizes, but the frame
+ * is lost.
  */
 
 #ifndef UART_ENGINE_UART_H_
@@ -389,10 +396,16 @@ public:
 		// "one proceed() period". The bytes already in the drop buffer are lost
 		// either way; COBS resynchronizes on the next 0x00 delimiter.
 		if (m_started && m_active == nullptr && !m_rx.full()) {
+			// The abort runs UNGUARDED — HAL_DMA_Abort polls HAL_GetTick,
+			// which freezes under an IRQ guard (same hazard as everywhere
+			// else). An RX ISR may slip in before the abort takes effect and
+			// re-arm onto a real chunk; the guarded block below then publishes
+			// whatever landed in that chunk (per the frozen DMA counter), so
+			// nothing real is lost, and re-arms.
+			HAL_UART_AbortReceive(m_huart);
 			IRQGuard guard;
-			// Re-check under the guard: an ISR may have re-armed meanwhile.
-			if (m_started && m_active == nullptr) {
-				HAL_UART_AbortReceive(m_huart);
+			if (m_started) { // an error ISR may have deferred a full restart
+				publishActive(dmaReceivedCount());
 				receiveArm();
 			}
 		}
@@ -494,15 +507,40 @@ private:
 
 		__DMB(); // DMA-written data visible before publishing
 
+		// HAL sampled `size` from the DMA counter at IRQ entry, but the DMA
+		// kept running until the stop above — bytes it moved into the chunk in
+		// that window are already consumed from RDR/FIFO and would be lost
+		// silently if the stale value were published. The counter is frozen
+		// now (disable never resets CNDTR/NDTR/BNDT), so re-derive the
+		// authoritative count from it; on TC it reads 0 and the formula yields
+		// exactly ChunkSize. HAL derives its IDLE sizes the same way.
+		(void)size;
+		publishActive(dmaReceivedCount());
+		// note: if m_active == nullptr the bytes went into m_drop — discarded.
+
+		receiveArm();
+	}
+
+	// Bytes the DMA has deposited into the current buffer. Authoritative only
+	// once the reception is stopped (IDLE-abort or TC) — the count registers
+	// persist across channel/stream disable on every DMA IP.
+	[[nodiscard]] uint16_t dmaReceivedCount() const noexcept
+	{
+		return static_cast<uint16_t>(
+			ChunkSize - __HAL_DMA_GET_COUNTER(m_huart->hdmarx));
+	}
+
+	// Hand the active chunk to the consumer: invalidate, commit the byte
+	// count, publish, release ownership. No-op when nothing is claimed
+	// (drop mode) or nothing was received.
+	void publishActive(const uint16_t size) noexcept
+	{
 		if (m_active && size) {
 			uart_detail::dcacheInvalidate(m_active->data(), size);
 			m_active->commit_size(size);
 			m_rx.publish();
 			m_active = nullptr;
 		}
-		// note: if m_active == nullptr the bytes went into m_drop — discarded.
-
-		receiveArm();
 	}
 
 	// Claim the next chunk and re-arm DMA onto it. If the fifo is exhausted
