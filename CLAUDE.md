@@ -1,0 +1,55 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project overview
+
+A Qt Widgets application (qmake, C++20) intended as a desktop host/testbed for a reusable UART + COBS communication stack. The Qt GUI itself is currently a bare scaffold (`main.cpp`, `mainwindow.*`); the substance of the project is the transport-stack design in `doc/UART_COBS_ARCHITECTURE.md` and its STM32 implementation in `uart/Uart.h` (not part of the Qt build — it needs an STM32 HAL).
+
+Local dependencies live in `libs/` (cloned from the author's GitHub, on `INCLUDEPATH`):
+- `libs/spsc` — wait-free SPSC containers; `spsc::cache_aligned_chunk_fifo` is the RX buffer pool of the UART engine (DMA writes straight into claimed chunk slots).
+- `libs/delegate` — `tiny::delegate`, the no-heap `std::function` replacement used for all callbacks.
+
+## Build
+
+Use the `/build` skill (`.claude/skills/build/SKILL.md`) to build from the command line; full instructions including exact toolchain paths are in `doc/BUILD.md`. In short (Git Bash):
+
+```bash
+export PATH="/c/Qt/6.10.1/mingw_64/bin:/c/Qt/Tools/mingw1310_64/bin:$PATH"
+mkdir -p build/cli && cd build/cli
+qmake ../../COBS.pro   # CONFIG+=debug for a debug build
+mingw32-make -j
+```
+
+Output: `build/cli/release/COBS.exe` (release is the default). Qt Creator uses its own directory, `build/Desktop_Qt_6_10_1_MinGW_64_bit_Debug/` — never build into it from the CLI.
+
+New source/header/form files must be added to `SOURCES`/`HEADERS`/`FORMS` in `COBS.pro`, then qmake must be re-run.
+
+### STM32 portability matrix
+
+`uart/Uart.h` is verified by compile-only builds for real STM32 targets (F1 = legacy SR/DR IP, G4 = new ISR/RDR IP + classic DMA, H7RS = Cortex-M7 + D-cache + GPDMA), using the arm-none-eabi-gcc 14.3 shipped with STM32CubeIDE 2.0.0 and HAL drivers in `libs/` / the local Cube repository:
+
+```bash
+sh uart/tests/port/build.sh
+```
+
+Run this after any change to `uart/`. Objects land in `uart/tests/port/out/`; inspect codegen with the same toolchain's `arm-none-eabi-objdump -d -C`. IDE clangd errors like "main.h not found" inside `uart/Uart.h` are expected — that header only compiles against an STM32 HAL via this matrix.
+
+There are no tests or linters configured.
+
+## Architecture
+
+`doc/UART_COBS_ARCHITECTURE.md` is the authoritative design document — read it before implementing or modifying any transport code. Its core rules:
+
+- **Three layers**: byte transport (UART/TCP/…) → COBS (framing, packet lifetime, allocation) → application (`CobsMsg` / `PacketRef`). "UART handles bytes. COBS handles packets."
+- The transport implements only `tx_busy()` and `send(span)` (interface `IByteTx`); it has **no TX queue**, no knowledge of framing, CRC, or packet sizes. TX-busy policy (retry/drop/queue) belongs to layers above.
+- COBS is templated on an allocator (`HeapAllocator` default, fixed-pool for embedded); changing the allocator must not change the application-facing API.
+- **RX and TX ownership are deliberately asymmetric**: RX packets use a custom intrusive shared handle (`PacketRef`, refcount inside `RxPacket`, packets immutable once decoded); TX frames use exclusive ownership (`CobsMsg` owns until `push()` succeeds, then COBS holds the frame until DMA completes).
+- RX callbacks deliver arbitrary byte chunks (a frame may span chunks, or one chunk may hold several frames); the span is valid only during the callback. On errors COBS drops bytes until the next `0x00` delimiter to resynchronize.
+- CRC is a COBS/protocol policy, never a UART feature.
+
+Section 33 of the doc ("Key invariants") lists the invariants any implementation must preserve.
+
+## Reference material
+
+`doc/old/` holds legacy STM32 UART driver code (HAL-based `UartEngine`, RS-485 wrapper, DMA variants) with a README in Ukrainian. It is prior art for the new design, not part of the build — don't extend it; the new architecture intentionally replaces its approach.

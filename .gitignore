@@ -1,0 +1,9 @@
+# Qt build output
+build/
+
+# Qt Creator per-user/per-machine settings
+*.user
+.qtcreator/
+
+# STM32 portability test objects
+uart/tests/port/out/
