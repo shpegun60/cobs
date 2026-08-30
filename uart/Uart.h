@@ -343,25 +343,36 @@ public:
 		if (huart->hdmarx->Parent != huart || huart->hdmatx->Parent != huart) {
 			return false;
 		}
-		// The buffer-switching scheme REQUIRES a one-shot RX DMA: the
-		// reception must END when the buffer fills or the line goes idle, so
-		// that a published chunk is never written behind the consumer's back.
-		// Both continuous modes must be rejected, and they are spelled
-		// differently per DMA IP:
+		// BOTH directions require a one-shot DMA; a continuous mode breaks a
+		// different ownership contract on each side:
+		//
+		//   RX — reception must END when the buffer fills or the line goes
+		//        idle, or a published chunk keeps being written behind the
+		//        consumer's back. (Plain linked-list mode is refused too:
+		//        HAL_DMA_Abort() zeroes CBR1 for it, which would make
+		//        dmaReceivedCount() report a full chunk of stale bytes.)
+		//
+		//   TX — in circular mode UART_DMATransmitCplt() invokes
+		//        HAL_UART_TxCpltCallback at the end of EVERY lap while the
+		//        DMA keeps reading and re-sending the frame. tx_busy() would
+		//        drop to false, the layer above would free or reuse a buffer
+		//        hardware is still transmitting from, and the line would loop
+		//        that memory forever.
+		//
+		// The continuous mode is spelled differently per DMA IP:
 #ifdef DMA_CIRCULAR
 		// Classic channel/stream DMA (F0/F1/F3/F4/F7/G0/G4/L4/H7 DMA1-2 ...).
-		if (huart->hdmarx->Init.Mode == DMA_CIRCULAR) {
+		if (huart->hdmarx->Init.Mode == DMA_CIRCULAR ||
+				huart->hdmatx->Init.Mode == DMA_CIRCULAR) {
 			return false;
 		}
 #endif
 #ifdef DMA_LINKEDLIST
 		// GPDMA/HPDMA (H5, H7RS, U5, WBA ...): DMA_CIRCULAR does not exist
 		// there; the continuous variant is DMA_LINKEDLIST_CIRCULAR, which the
-		// UART HAL itself tests before deciding whether to end reception on
-		// IDLE. Plain linked-list mode is refused as well: HAL_DMA_Abort()
-		// zeroes CBR1 for linked-list transfers, which would make the
-		// received-count read in dmaReceivedCount() report a full chunk.
-		if ((huart->hdmarx->Mode & DMA_LINKEDLIST) != 0u) {
+		// UART HAL itself tests before deciding whether to end a transfer.
+		if ((huart->hdmarx->Mode & DMA_LINKEDLIST) != 0u ||
+				(huart->hdmatx->Mode & DMA_LINKEDLIST) != 0u) {
 			return false;
 		}
 #endif
