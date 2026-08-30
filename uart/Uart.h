@@ -168,8 +168,12 @@ public:
 		// this table; an Entry assignment is not atomic.
 		IRQGuard guard;
 		for (const auto& e : s_entries) {
-			if (e.huart == huart) {
-				return false; // one engine per UART: a duplicate would steal events
+			// Reject both a duplicate handle AND a second handle that drives
+			// the same physical peripheral: two engines on one USARTx would
+			// arm DMA over each other while each believed it owned the line.
+			if (e.huart == huart ||
+					(e.huart != nullptr && e.huart->Instance == huart->Instance)) {
+				return false; // one engine per UART
 			}
 		}
 		for (auto& e : s_entries) {
@@ -298,6 +302,7 @@ public:
 			// instances static lifetime (the documented usage) and this
 			// cannot arise.
 			UartRegistry::detach(this);
+			TeardownScope ts(*this);
 			(void)HAL_UART_Abort(m_huart);
 			m_huart = nullptr;
 		}
@@ -329,6 +334,14 @@ public:
 		if (huart->hdmarx->State == HAL_DMA_STATE_RESET ||
 				huart->hdmatx->State == HAL_DMA_STATE_RESET) {
 			return false; // HAL_DMA_Init() was never run for rx/tx
+		}
+		// __HAL_LINKDMA() sets the back-pointer that every HAL DMA callback
+		// casts and dereferences (UART_DMAReceiveCplt, UART_DMAError, ...).
+		// A handle wired up by hand, or linked to a different UART, would
+		// fault or deliver this peripheral's events to another driver at the
+		// first transfer — from inside an ISR, where it is hardest to debug.
+		if (huart->hdmarx->Parent != huart || huart->hdmatx->Parent != huart) {
+			return false;
 		}
 		// The buffer-switching scheme REQUIRES a one-shot RX DMA: the
 		// reception must END when the buffer fills or the line goes idle, so
@@ -467,6 +480,7 @@ public:
 			// else) — and its result is honoured: on HAL_TIMEOUT the transfer
 			// is still live, so neither the DMA counter nor any chunk may be
 			// touched. Defer to the full restart path instead.
+			TeardownScope ts(*this);
 			if (HAL_UART_AbortReceive(m_huart) != HAL_OK) {
 				++m_stats.rx_errors;
 				m_started = false; // tail of proceed() -> receiveRestart()
@@ -541,6 +555,18 @@ public:
 	[[nodiscard]] UART_HandleTypeDef* instance() const noexcept { return m_huart; }
 
 private:
+	// RAII: raises the teardown gate for the duration of a HAL abort. Thread
+	// context only — the counter is only ever mutated here.
+	class TeardownScope final {
+	public:
+		explicit TeardownScope(Uart& u) noexcept : m_u(u) { ++m_u.m_teardown; }
+		~TeardownScope() { --m_u.m_teardown; }
+		TeardownScope(const TeardownScope&) = delete;
+		TeardownScope& operator=(const TeardownScope&) = delete;
+	private:
+		Uart& m_u;
+	};
+
 	/* ---------------------------- ISR: RX ------------------------------- */
 
 	// HAL_UARTEx_RxEventCallback path. `size` is the write position inside the
@@ -549,8 +575,9 @@ private:
 	void isrRxEvent(const uint16_t size) noexcept
 	{
 		// A stray event delivered while a recovery is pending (m_started
-		// cleared, hardware not stopped yet) must not publish anything.
-		if (!m_started) {
+		// cleared, hardware not stopped yet), or one raised by a HAL abort
+		// in progress, must not publish anything or re-arm.
+		if (!m_started || m_teardown) {
 			return;
 		}
 
@@ -670,10 +697,13 @@ private:
 		// out instead, leaving the chunk claimed and unpublished — the next
 		// proceed() retries this recovery. Invariant: only ever touch
 		// m_active once the DMA is confirmed stopped.
-		if (HAL_UART_AbortReceive(m_huart) != HAL_OK) {
-			++m_stats.rx_errors;
-			m_started = false;
-			return;
+		{
+			TeardownScope ts(*this);
+			if (HAL_UART_AbortReceive(m_huart) != HAL_OK) {
+				++m_stats.rx_errors;
+				m_started = false;
+				return;
+			}
 		}
 
 		IRQGuard guard;
@@ -702,6 +732,14 @@ private:
 
 	void isrTxCplt() noexcept
 	{
+		// Ignore a completion we are not expecting: either nothing is in
+		// flight, or this callback was raised by a HAL abort we are running
+		// (see m_teardown) — reporting success there would tell the layer
+		// above that a frame it never sent has been delivered.
+		if (!m_txBusy || m_teardown) {
+			return;
+		}
+
 		// Report the real outcome, not blind success (portable: gState and the
 		// TX DMA error code exist on every series with DMA support).
 		bool ok = true;
@@ -742,6 +780,10 @@ private:
 	// actual re-arm to proceed() (m_started = false), where HAL timeouts work.
 	void isrError() noexcept
 	{
+		if (m_teardown) {
+			return; // raised by our own abort; the teardown path owns recovery
+		}
+
 		const uint32_t errorCode = HAL_UART_GetError(m_huart);
 
 #if UART_ENGINE_NEW_USART_IP
@@ -832,6 +874,7 @@ private:
 			// memory, so tx_busy() must STAY true — clearing it would invite
 			// the layer above to free or reuse a buffer hardware still owns.
 			// The periodic audit below then escalates to a full recovery.
+			TeardownScope ts(*this);
 			if (HAL_UART_AbortTransmit(m_huart) != HAL_OK) {
 				++m_stats.tx_errors;
 			} else {
@@ -896,16 +939,26 @@ private:
 			// release nothing until the transfers are confirmed stopped, or
 			// voidActiveChunk() would publish a slot DMA still writes and
 			// tx_busy() would free a span DMA still reads.
-			(void)HAL_UART_DMAStop(m_huart);
-			if (HAL_UART_Abort(m_huart) != HAL_OK) {
-				++m_stats.rx_errors;
-				m_started = false; // retry from proceed() on every iteration
-				return;
-			}
+			const bool tx_was_active = m_txBusy;
 			{
+				TeardownScope ts(*this);
+				(void)HAL_UART_DMAStop(m_huart);
+				if (HAL_UART_Abort(m_huart) != HAL_OK) {
+					++m_stats.rx_errors;
+					m_started = false; // retry from proceed() every iteration
+					return;
+				}
 				IRQGuard guard;
-				voidActiveChunk();
+				voidActiveChunk(); // transfers confirmed stopped
 				m_txBusy = false;
+			}
+			// The in-flight frame died with the peripheral: tell the owner,
+			// outside the gate, so it can release or retry it.
+			if (tx_was_active) {
+				++m_stats.tx_errors;
+				if (m_txHandler) {
+					m_txHandler(false);
+				}
 			}
 			receiveRestart();
 		}
@@ -917,7 +970,13 @@ private:
 	 * in DMA-accessible RAM by the user (see file header).
 	 */
 	RxFifo m_rx{};
-	RxChunk* m_active = nullptr; // chunk currently owned by DMA (claimed, not published)
+	// The POINTER is volatile (the pointee is not): an ISR re-arms onto a new
+	// chunk while thread code is inside the unguarded HAL abort of the
+	// drop-reclaim path, and that code must then observe the new value. A
+	// plain member would let the compiler keep the stale nullptr it just
+	// tested — an ISR write is not a visible side effect in the C++ memory
+	// model, so nothing but volatile (or an atomic) obliges it to reload.
+	RxChunk* volatile m_active = nullptr; // chunk owned by DMA (claimed, unpublished)
 
 	// Fallback DMA target when all chunks are in flight; contents are discarded.
 	alignas(32) std::array<uint8_t, ChunkSize> m_drop{};
@@ -929,6 +988,16 @@ private:
 	RxHandler    m_rxHandler{};
 	TxHandler    m_txHandler{};
 	ErrorHandler m_errHandler{};
+
+	// Non-zero while thread code is inside a HAL teardown. ST documents that
+	// HAL_DMA_Abort() — reached through every HAL_UART_Abort*/DMAStop call —
+	// raises the TX/RX (half-)complete interrupt for a transfer it interrupts
+	// mid-stream, so the corresponding callback runs. Without this gate such a
+	// callback is indistinguishable from a real completion: TX would report
+	// success for a frame that was never sent, and RX would publish a partial
+	// chunk and re-arm DMA in the middle of the teardown. A depth counter,
+	// not a flag: recovery nests (healthCheck -> receiveRestart).
+	volatile uint8_t m_teardown = 0;
 
 	// Watchdog state (thread context only).
 	uint32_t m_lastCheckTime = 0;
