@@ -59,5 +59,12 @@ extern "C" int uart_port_test()
 	(void)s_uart.tx_busy();
 	(void)s_uart.stats();
 	(void)s_uart.instance();
+
+#if UART_ENGINE_PROBE
+	// Probe-on builds: force codegen of the DWT backend, not just parsing.
+	uart_probe::init();
+	const uart_probe::Stats probe_stats = uart_probe::snapshot();
+	(void)probe_stats;
+#endif
 	return (ok && duplicate_refused && rebind_refused) ? 0 : 1;
 }

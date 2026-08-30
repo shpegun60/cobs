@@ -42,6 +42,7 @@
 #if defined(HAL_UART_MODULE_ENABLED)
 
 #include "uart_regs.h"       // SR/DR vs ISR/RDR abstraction (all STM32 series)
+#include "uart_probe.h"      // benchmark instrumentation; compiles to nothing by default
 #include "irq/IRQGuard.h"
 
 #include "spsc/chunk_fifo.hpp"   // https://github.com/shpegun60/spsc
@@ -602,6 +603,7 @@ public:
 private:
 	UART_ENGINE_NOINLINE void proceedSlow(const uint32_t now_ms, const bool audit_due) noexcept
 	{
+		UART_ENGINE_PROBE_SCOPE(Slow);
 		if (m_rxWorkPending) {
 			IRQGuard guard;
 			m_rxWorkPending = false;
@@ -693,6 +695,7 @@ public:
 	// that runs proceed()); it is not re-entrant against itself.
 	bool send(std::span<const uint8_t> bytes) noexcept
 	{
+		UART_ENGINE_PROBE_SCOPE(TxStart);
 		if (m_txBusy || bytes.empty() || !m_huart) {
 			return false;
 		}
@@ -778,6 +781,7 @@ private:
 	// exactly the number of valid bytes in that chunk.
 	void isrRxEvent(const uint16_t size) noexcept
 	{
+		UART_ENGINE_PROBE_SCOPE(Rx);
 		// A stray event delivered while a recovery is pending (m_started
 		// cleared, hardware not stopped yet), or one raised by a HAL abort
 		// in progress, must not publish anything or re-arm.
