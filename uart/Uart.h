@@ -93,11 +93,14 @@
 #	define UART_ENGINE_FAIL_THRESHOLD 3
 #endif
 
-// Extra margin added to the computed TX deadline (deadline is derived from
-// the actual baud rate and frame length, so it adapts to any speed).
-#ifndef UART_ENGINE_TX_TIMEOUT_MARGIN_MS
-#	define UART_ENGINE_TX_TIMEOUT_MARGIN_MS 50
-#endif
+// NOTE on TX liveness: there is no per-frame deadline. A transfer is judged
+// by whether the hardware DEMONSTRATES PROGRESS, checked in the same periodic
+// audit as everything else — see healthCheck(). That is frame-length
+// independent (a 64 KB frame is treated exactly like an 8-byte one), needs no
+// baud-rate arithmetic in send(), and asks the honest question: is the
+// hardware moving, or is it dead? It is still a timeout in the end, just
+// expressed as "must make progress within N audit periods" rather than "must
+// finish within X milliseconds".
 
 // The IDLE/HT/TC events themselves are HARDWARE features present on every
 // STM32 (IDLE flag on all USART IPs, HT/TC on all DMA/BDMA/GPDMA types).
@@ -503,6 +506,14 @@ public:
 			m_huart = huart;
 		}
 
+		// Under CTS flow control the peer may legitimately keep the DMA from
+		// advancing, so a frozen counter proves nothing and STALL detection
+		// is disabled. Detection of a LOST COMPLETION stays on even then —
+		// see healthCheck(). Decided once, here: the configuration cannot
+		// change while this object stays bound.
+		m_txProgressWatchEnabled = (huart->Init.HwFlowCtl != UART_HWCONTROL_CTS) &&
+		                           (huart->Init.HwFlowCtl != UART_HWCONTROL_RTS_CTS);
+
 #if (USE_HAL_UART_REGISTER_CALLBACKS == 1)
 		bool reg_ok = (HAL_UART_RegisterRxEventCallback(huart,
 			[](UART_HandleTypeDef* h, uint16_t n) { UartRegistry::onRxEvent(h, n); }) == HAL_OK);
@@ -583,7 +594,13 @@ public:
 		}
 		announceGap();
 
-		healthCheck(now_ms);
+		// The audit is deliberately slow-running: everything in it is periodic,
+		// so the call itself is gated here and the hot loop pays only one
+		// subtract-and-compare per iteration instead of a call and prologue.
+		if ((now_ms - m_lastCheckTime) >= UART_ENGINE_CHECK_PERIOD_MS) {
+			m_lastCheckTime = now_ms;
+			healthCheck();
+		}
 
 		// Overflow recovery: if DMA is currently draining into the drop buffer
 		// (all chunks were in flight when it was armed), switch back to a real
@@ -658,36 +675,39 @@ public:
 
 		uart_detail::dcacheClean(bytes.data(), bytes.size());
 
-		// TX deadline from the ACTUAL frame format, not an assumed 8N1: at
-		// 9600 baud the difference between 10 and 12 bit-times per byte is
-		// far more than the fixed margin, and under-estimating it makes the
-		// watchdog shoot a perfectly healthy transfer.
-		{
-			const uint32_t baud = m_huart->Init.BaudRate;
-			// With CTS flow control the peer may hold the line for an
-			// unbounded time, so no deadline can be honest — disable it.
-			m_txDeadlineActive = (m_huart->Init.HwFlowCtl != UART_HWCONTROL_CTS) &&
-			                     (m_huart->Init.HwFlowCtl != UART_HWCONTROL_RTS_CTS);
-			const uint32_t transfer_ms = (baud != 0u)
-				? (((static_cast<uint32_t>(bytes.size()) * txFrameBits()) * 1000u) / baud) + 1u
-				: 0u;
-			m_txDeadline = HAL_GetTick() + transfer_ms + UART_ENGINE_TX_TIMEOUT_MARGIN_MS;
-		}
+		// No deadline arithmetic here at all: the periodic audit judges this
+		// transfer by progress. Just forget what the previous frame looked
+		// like so the first observation of this one establishes a baseline.
+		m_txProgressValid = false;
+		m_txStallChecks = 0u;
 
-		// Guarded so neither the completion nor the error ISR can observe the
-		// half-configured window between starting the DMA and raising the busy
-		// flag (an RX-side error ISR in that window would see "busy while
-		// gState READY" and falsely fail the transfer). HAL_UART_Transmit_DMA
-		// only programs registers — it never blocks — so holding the short
-		// guard across it is safe.
-		IRQGuard guard;
-		if (HAL_UART_Transmit_DMA(m_huart, bytes.data(),
-		                          static_cast<uint16_t>(bytes.size())) != HAL_OK) {
-			++m_stats.tx_errors;
-			return false;
+		// The guard MUST span the HAL call: the busy flag and the hardware
+		// state have to become visible to the ISRs at the same instant.
+		// Neither unguarded ordering works —
+		//   - flag AFTER the call: for a moment the DMA is already reading the
+		//     caller's buffer while m_txBusy still says idle, so a completion
+		//     or error arriving there is discarded by the ISRs' !m_txBusy test
+		//     and the frame hangs until the TX deadline;
+		//   - flag BEFORE the call is worse: an error ISR would see a busy
+		//     flag while gState is still READY, conclude the transfer had
+		//     ended, release the frame and report failure — just as the DMA
+		//     starts reading that very buffer.
+		// HAL_UART_Transmit_DMA only programs registers (it never blocks), so
+		// the masked window is bounded. The explicit block keeps that window
+		// visible at a glance, and leaves the statistics update outside it.
+		bool started;
+		{
+			IRQGuard guard;
+			started = (HAL_UART_Transmit_DMA(m_huart, bytes.data(),
+			                                 static_cast<uint16_t>(bytes.size())) == HAL_OK);
+			if (started) {
+				m_txBusy = true;
+			}
 		}
-		m_txBusy = true;
-		return true;
+		if (!started) {
+			++m_stats.tx_errors;
+		}
+		return started;
 	}
 
 	[[nodiscard]] const Stats& stats() const noexcept { return m_stats; }
@@ -798,29 +818,6 @@ private:
 		}
 		m_rxGapPending = false;
 		reportGap();
-	}
-
-	// Bit-times per transmitted byte for the configured frame format. The
-	// WordLength field counts data bits INCLUDING the parity bit, exactly as
-	// the reference manuals define it.
-	[[nodiscard]] uint32_t txFrameBits() const noexcept
-	{
-		uint32_t bits = 1u; // start bit
-		switch (m_huart->Init.WordLength) {
-#ifdef UART_WORDLENGTH_7B
-		case UART_WORDLENGTH_7B: bits += 7u; break;
-#endif
-		case UART_WORDLENGTH_9B: bits += 9u; break;
-		default:                 bits += 8u; break;
-		}
-		switch (m_huart->Init.StopBits) {
-		case UART_STOPBITS_2:    bits += 2u; break;
-#ifdef UART_STOPBITS_1_5
-		case UART_STOPBITS_1_5:  bits += 2u; break; // round up
-#endif
-		default:                 bits += 1u; break;
-		}
-		return bits;
 	}
 
 	// Bytes the DMA has deposited into the current buffer. Authoritative only
@@ -1081,53 +1078,12 @@ private:
 	/* ----------------------- watchdog (main loop) ----------------------- */
 
 	// Periodic self-care: detects silently dead receivers, locked DMA streams
-	// and stuck TX transfers on any STM32 series, and recovers without user
-	// involvement. Runs in thread context from proceed().
-	void healthCheck(const uint32_t now_ms) noexcept
+	// and stalled or lost TX transfers on any STM32 series, and recovers
+	// without user involvement. Called from proceed() once per
+	// UART_ENGINE_CHECK_PERIOD_MS — never on the hot path, so it may take its
+	// time. Thread context only.
+	void healthCheck() noexcept
 	{
-		// --- TX deadline: DMA completion interrupt never arrived ---------
-		if (m_txBusy && m_txDeadlineActive &&
-				static_cast<int32_t>(now_ms - m_txDeadline) > 0) {
-			// Abort outside the IRQ guard (HAL_DMA_Abort polls HAL_GetTick,
-			// which is frozen under a guard). Aborting a transfer that just
-			// completed is harmless; the guarded re-check below keeps the
-			// bookkeeping consistent if the completion ISR won the race.
-			//
-			// The result is honoured for the TX mirror of the RX invariant:
-			// the caller's span is only released once the DMA is confirmed
-			// stopped. On HAL_TIMEOUT the transfer is still reading that
-			// memory, so tx_busy() must STAY true — clearing it would invite
-			// the layer above to free or reuse a buffer hardware still owns.
-			// The periodic audit below then escalates to a full recovery.
-			bool notify = false;
-			{
-				TxTeardown ts(*this);
-				if (HAL_UART_AbortTransmit(m_huart) != HAL_OK) {
-					++m_stats.tx_errors;
-				} else {
-					IRQGuard guard;
-					if (m_txBusy) {
-						m_txBusy = false;
-						++m_stats.tx_errors;
-						notify = true;
-					}
-				}
-			}
-			// Reported only after BOTH the guard and the gate are gone: the
-			// handler may legitimately call send() straight away, and that
-			// new transfer must neither run with interrupts masked nor have
-			// its completion swallowed by the gate that killed the old one.
-			if (notify && m_txHandler) {
-				m_txHandler(false);
-			}
-		}
-
-		// --- periodic peripheral state audit ------------------------------
-		if ((now_ms - m_lastCheckTime) < UART_ENGINE_CHECK_PERIOD_MS) {
-			return;
-		}
-		m_lastCheckTime = now_ms;
-
 		// Direct field read, not HAL_UART_GetState() — see isrTxCplt().
 		const uint32_t gState = m_huart->gState;
 		const uint32_t errorCode = HAL_UART_GetError(m_huart);
@@ -1154,6 +1110,43 @@ private:
 		if (!bad && m_txBusy && m_huart->hdmatx &&
 				HAL_DMA_GetError(m_huart->hdmatx) != HAL_DMA_ERROR_NONE) {
 			bad = true;
+		}
+
+		// --- TX liveness, frame-length independent ------------------------
+		// A transfer that neither errors nor completes would otherwise leave
+		// tx_busy() true forever, and nothing else in this audit would ever
+		// notice: no error is reported, gState stays BUSY_TX and the RX-side
+		// checks are about the receiver.
+		if (m_txBusy && m_huart->hdmatx) {
+			const uint32_t remaining = __HAL_DMA_GET_COUNTER(m_huart->hdmatx);
+
+			// A completion that got lost. Note that TX ends in TWO stages:
+			// the DMA drains into the peripheral first, and the UART is still
+			// shifting bits afterwards — the HAL only clears DMAT and enables
+			// TCIE at that point, and calls TxCpltCallback later, from the TC
+			// interrupt. So an empty counter alone proves nothing; the frame
+			// is physically finished only once TC is also set. This stays
+			// armed under CTS: the line went idle, the software event simply
+			// never arrived.
+			if (remaining == 0u &&
+					__HAL_UART_GET_FLAG(m_huart, UART_FLAG_TC) != 0u) {
+				bad = true;
+			}
+
+			// A transfer that stopped moving. Disabled under CTS, where the
+			// peer may legitimately hold the DMA still for as long as it
+			// likes. Its own counter, deliberately not m_failCounter: mixing
+			// unrelated suspicions into one tally would convict the driver on
+			// three different charges at once.
+			if (m_txProgressWatchEnabled) {
+				if (!m_txProgressValid || remaining != m_txLastRemaining) {
+					m_txLastRemaining = remaining;
+					m_txProgressValid = true;
+					m_txStallChecks = 0u;
+				} else if (++m_txStallChecks >= UART_ENGINE_FAIL_THRESHOLD) {
+					bad = true;
+				}
+			}
 		}
 
 		if (!bad) {
@@ -1234,8 +1227,12 @@ private:
 
 	// Set by the ISR when the pool ran dry, cleared by the drain loop.
 	volatile bool m_rxGapPending = false;
-	// False while CTS flow control may legitimately stall the transmitter.
-	bool m_txDeadlineActive = false;
+	// TX liveness observation (thread context only). Stall detection is off
+	// while CTS flow control may legitimately hold the transmitter still.
+	bool     m_txProgressWatchEnabled = false;
+	bool     m_txProgressValid = false;
+	uint32_t m_txLastRemaining = 0;
+	uint8_t  m_txStallChecks = 0;
 
 	// Non-zero while thread code is inside a HAL teardown. ST documents that
 	// HAL_DMA_Abort() — reached through every HAL_UART_Abort*/DMAStop call —
@@ -1253,7 +1250,6 @@ private:
 
 	// Watchdog state (thread context only).
 	uint32_t m_lastCheckTime = 0;
-	uint32_t m_txDeadline    = 0;
 	uint8_t  m_failCounter   = 0;
 
 	Stats m_stats{};

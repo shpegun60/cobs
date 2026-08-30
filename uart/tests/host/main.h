@@ -37,6 +37,9 @@ typedef struct {
 #define UART_CLEAR_OREF     (1UL << 3)
 #define UART_CLEAR_IDLEF    (1UL << 4)
 
+#define USART_ISR_TC        (1UL << 6)
+#define UART_FLAG_TC        USART_ISR_TC
+
 #define READ_BIT(REG, BIT)  ((REG) & (BIT))
 
 /* ------------------------------- HAL enums ------------------------------ */
@@ -157,5 +160,6 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef*);
 #define __HAL_DMA_GET_COUNTER(h)        ((h)->CountRemaining)
 #define __HAL_DMA_DISABLE_IT(h, it)     ((void)(h), (void)(it))
 #define __HAL_UART_CLEAR_FLAG(h, f)     ((h)->Instance->ICR = (f))
+#define __HAL_UART_GET_FLAG(h, f)       (((h)->Instance->ISR & (f)) == (f))
 
 #endif /* FAKE_MAIN_H_ */

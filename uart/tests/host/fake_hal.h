@@ -61,8 +61,11 @@ void rx_bytes(const void* data, std::size_t n) noexcept; // DMA writes into the 
 void rx_idle() noexcept;                                 // partial transfer + IDLE
 void rx_tc() noexcept;                                   // buffer filled
 void rx_error(uint32_t code) noexcept;                   // blocking RX error (DMA mode)
-void tx_done() noexcept;
+void tx_dma_done() noexcept; // DMA drained into the peripheral; UART still shifting
+void tx_uart_tc() noexcept;  // shift register empty: TC set, HAL raises TxCplt
+void tx_done() noexcept;     // both stages at once (the common case)
 void tx_error() noexcept;
+void tx_progress(uint16_t moved) noexcept; // DMA advanced by `moved` bytes
 void advance_tick(uint32_t ms) noexcept;
 
 /* Marks used by the fixture's RxHandler to police ownership. */

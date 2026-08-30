@@ -315,23 +315,87 @@ void testFailedArmDoesNotLeakSlot()
 	          std::to_string(distinct) + ")");
 }
 
-void testTxTimeoutReportsFailureOnce()
+/* ========================== TX liveness watchdog ======================== */
+
+// Runs `n` audit periods.
+static void audits(Fixture& f, int n)
+{
+	for (int i = 0; i < n; ++i) {
+		fake::advance_tick(UART_ENGINE_CHECK_PERIOD_MS + 1);
+		f.loop();
+	}
+}
+
+// A long but healthy transfer: the counter keeps moving, so it must never trip
+// however long it takes. This is the property a frame-length deadline could
+// not express.
+void testProgressingTransferNeverTrips()
 {
 	fake::reset();
 	Fixture f;
 	f.start();
 
-	const uint8_t frame[8] = {1, 2, 3, 4, 5, 6, 7, 0};
-	f.uart.send(std::span<const uint8_t>{frame, 8});
-	fake::advance_tick(UART_ENGINE_TX_TIMEOUT_MARGIN_MS + 1000);
-	f.loop();
-
-	check(fake::model().tx_results.size() == 1 && !fake::model().tx_results[0],
-	      "a stuck transfer yields exactly one terminal event, reporting failure");
-	check(!f.uart.tx_busy(), "ownership of the frame is returned to the caller");
+	static std::vector<uint8_t> big(4096, 0x5A);
+	f.uart.send(std::span<const uint8_t>{big.data(), big.size()});
+	for (int i = 0; i < 20; ++i) {
+		fake::tx_progress(64);
+		audits(f, 1);
+	}
+	check(f.uart.tx_busy(), "a slowly progressing transfer is left alone");
+	check(fake::model().tx_results.empty(), "no terminal event was invented");
 }
 
-void testCtsDisablesTxDeadline()
+void testFrozenCounterTrips()
+{
+	fake::reset();
+	Fixture f;
+	f.start();
+
+	static std::vector<uint8_t> big(4096, 0x5A);
+	f.uart.send(std::span<const uint8_t>{big.data(), big.size()});
+	fake::tx_progress(100); // moves once, then wedges
+	audits(f, 2 * UART_ENGINE_FAIL_THRESHOLD + 2);
+
+	check(!f.uart.tx_busy(), "a stalled transfer is eventually reclaimed");
+	check(fake::model().tx_results.size() == 1 && !fake::model().tx_results[0],
+	      "exactly one terminal event, reporting failure");
+}
+
+// The DMA drained but the UART is still shifting: NOT a completion yet.
+void testDmaDrainedWithoutTcIsNotCompletion()
+{
+	fake::reset();
+	Fixture f;
+	f.start();
+
+	const uint8_t frame[4] = {1, 2, 3, 0};
+	f.uart.send(std::span<const uint8_t>{frame, 4});
+	fake::tx_dma_done(); // counter hits 0, TC still clear
+	audits(f, 2);
+
+	check(f.uart.tx_busy(), "an empty counter alone is not treated as completion");
+	check(fake::model().tx_results.empty(), "no terminal event while the line still shifts");
+}
+
+void testLostCompletionIsDetected()
+{
+	fake::reset();
+	Fixture f;
+	f.start();
+
+	const uint8_t frame[4] = {1, 2, 3, 0};
+	f.uart.send(std::span<const uint8_t>{frame, 4});
+	fake::tx_dma_done();
+	f.huart.Instance->ISR |= USART_ISR_TC; // the line finished...
+	// ...but the completion interrupt never arrives.
+	audits(f, UART_ENGINE_FAIL_THRESHOLD + 1);
+
+	check(!f.uart.tx_busy(), "a lost completion is detected and ownership returned");
+	check(fake::model().tx_results.size() == 1 && !fake::model().tx_results[0],
+	      "the caller is told the frame failed");
+}
+
+void testCtsFrozenCounterNeverTrips()
 {
 	fake::reset();
 	Fixture f;
@@ -340,15 +404,32 @@ void testCtsDisablesTxDeadline()
 	check(f.uart.init(&f.huart), "CTS flow control is a valid configuration");
 	f.uart.setTxHandler([](bool ok) { fake::model().tx_results.push_back(ok); });
 
-	const uint8_t frame[2] = {9, 0};
-	f.uart.send(std::span<const uint8_t>{frame, 2});
-	fake::advance_tick(60000); // a peer may legitimately stall for a minute
-	f.loop();
-	f.loop();
+	const uint8_t frame[4] = {1, 2, 3, 0};
+	f.uart.send(std::span<const uint8_t>{frame, 4});
+	audits(f, 4 * UART_ENGINE_FAIL_THRESHOLD); // the peer holds the line
 
-	check(fake::model().tx_results.empty(),
-	      "no deadline fires while CTS may legitimately hold the line");
-	check(f.uart.tx_busy(), "the frame is still owned by the hardware");
+	check(f.uart.tx_busy(), "a peer holding CTS never looks like a stall");
+	check(fake::model().tx_results.empty(), "no terminal event was invented under CTS");
+}
+
+// Stall detection is off under CTS, but a physically finished frame whose
+// completion got lost is still a fault.
+void testCtsStillDetectsLostCompletion()
+{
+	fake::reset();
+	Fixture f;
+	f.configure();
+	f.huart.Init.HwFlowCtl = UART_HWCONTROL_RTS_CTS;
+	f.uart.init(&f.huart);
+	f.uart.setTxHandler([](bool ok) { fake::model().tx_results.push_back(ok); });
+
+	const uint8_t frame[4] = {1, 2, 3, 0};
+	f.uart.send(std::span<const uint8_t>{frame, 4});
+	fake::tx_dma_done();
+	f.huart.Instance->ISR |= USART_ISR_TC;
+	audits(f, UART_ENGINE_FAIL_THRESHOLD + 1);
+
+	check(!f.uart.tx_busy(), "under CTS a lost completion is still detected");
 }
 
 /* ============================== Watchdog =============================== */
@@ -400,8 +481,14 @@ int main()
 	group("FaultInjection");
 	testFailedAbortKeepsOwnership();
 	testFailedArmDoesNotLeakSlot();
-	testTxTimeoutReportsFailureOnce();
-	testCtsDisablesTxDeadline();
+
+	group("TxLiveness");
+	testProgressingTransferNeverTrips();
+	testFrozenCounterTrips();
+	testDmaDrainedWithoutTcIsNotCompletion();
+	testLostCompletionIsDetected();
+	testCtsFrozenCounterNeverTrips();
+	testCtsStillDetectsLostCompletion();
 
 	group("Watchdog");
 	testWatchdogRevivesDeadReceiver();

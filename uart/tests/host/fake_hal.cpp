@@ -159,14 +159,40 @@ void rx_error(uint32_t code) noexcept
 	raise([]() { HAL_UART_ErrorCallback(g_model.huart); });
 }
 
-void tx_done() noexcept
+// Stage 1: the DMA has moved the last byte into the peripheral. The HAL only
+// clears DMAT and enables TCIE here — TxCpltCallback comes later, from TC.
+void tx_dma_done() noexcept
 {
+	if (!g_model.tx_armed) { return; }
+	g_model.huart->hdmatx->CountRemaining = 0u;
+	g_model.huart->Instance->CR3 &= ~USART_CR3_DMAT;
+	g_model.huart->hdmatx->State = HAL_DMA_STATE_READY;
+}
+
+// Stage 2: the shift register is empty, TC is set, the completion is raised.
+void tx_uart_tc() noexcept
+{
+	g_model.huart->Instance->ISR |= USART_ISR_TC;
 	if (!g_model.tx_armed) { return; }
 	g_model.tx_armed = false;
 	g_model.huart->gState = HAL_UART_STATE_READY;
-	g_model.huart->Instance->CR3 &= ~USART_CR3_DMAT;
-	g_model.huart->hdmatx->State = HAL_DMA_STATE_READY;
 	raise([]() { HAL_UART_TxCpltCallback(g_model.huart); });
+}
+
+void tx_done() noexcept
+{
+	tx_dma_done();
+	tx_uart_tc();
+}
+
+// The DMA moved some bytes without finishing: what a healthy long transfer
+// looks like to the progress watchdog.
+void tx_progress(uint16_t moved) noexcept
+{
+	auto* const h = g_model.huart;
+	if (!g_model.tx_armed) { return; }
+	h->hdmatx->CountRemaining = (h->hdmatx->CountRemaining > moved)
+		? (h->hdmatx->CountRemaining - moved) : 0u;
 }
 
 void tx_error() noexcept
@@ -231,6 +257,8 @@ HAL_StatusTypeDef HAL_UART_Transmit_DMA(UART_HandleTypeDef* h, const uint8_t* sr
 	m.tx_armed = true;
 	m.tx_src = src;
 	m.tx_len = len;
+	h->hdmatx->CountRemaining = len;
+	h->Instance->ISR &= ~USART_ISR_TC; // TC clears when a new transfer starts
 	h->gState = HAL_UART_STATE_BUSY_TX;
 	h->hdmatx->State = HAL_DMA_STATE_BUSY;
 	h->Instance->CR3 |= USART_CR3_DMAT;
