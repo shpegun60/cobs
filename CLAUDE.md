@@ -49,15 +49,20 @@ Tests are grouped by guarantee (Initialization, RxOwnership, RxDiscontinuity, Tx
 
 **Run both suites after any change to `uart/`.**
 
-### COBS decoder tests
+### COBS host tests
 
-`cobs/CobsDecoder` holds no allocator and no transport, so its suite is an ordinary host program — no HAL, no fake anything:
+The COBS layer owns no HAL, so its suites are ordinary host programs — no fake anything:
 
 ```bash
 PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH" sh cobs/tests/run.sh
 ```
 
-The script builds with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` and adds `-fsanitize=address,undefined` when the toolchain provides the runtime. MinGW does not, so for a sanitized run use WSL (the exact command is in the script header). The battery is mostly property tests: every length × pattern × span-boundary combination, ~20k checks.
+It builds and runs two independent binaries, so a failure names the layer without needing a stack trace:
+
+- `test_decoder` — framing only; mostly property tests (every length × pattern × span-boundary combination, ~20k checks).
+- `test_packet_lifetime` — `FixedPoolAllocator` + `RxPacket` + `PacketRef`: exhaustion, reuse, refcount, assignment and self-assignment, ready-queue ownership transfer, and retention consuming pool capacity.
+
+The script builds with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` and adds `-fsanitize=address,undefined` when the toolchain provides the runtime. MinGW does not, so for a sanitized run use WSL (the exact command is in the script header). `COBS_POOL_CHECKS` (on by default in debug builds) compiles in the pool's double-free and foreign-pointer detection; a rejected free is counted and ignored rather than corrupting the free list.
 
 ## Architecture
 

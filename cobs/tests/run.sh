@@ -17,20 +17,23 @@ OUT="$HERE/out"
 mkdir -p "$OUT"
 
 WARN="-Wall -Wextra -Wpedantic -Wshadow -Wconversion"
-SRC="$COBS/CobsDecoder.cpp $HERE/test_decoder.cpp"
-
+SAN=""
 if echo 'int main(){return 0;}' | "$CXX" -fsanitize=address,undefined -x c++ - \
      -o "$OUT/.sancheck" 2>/dev/null; then
-  rm -f "$OUT/.sancheck" "$OUT/.sancheck.exe"
   echo "=== sanitized build (address, undefined) ==="
-  # shellcheck disable=SC2086
-  "$CXX" -std=gnu++20 -O1 -g $WARN -fsanitize=address,undefined \
-    -fno-omit-frame-pointer -I"$COBS" $SRC -o "$OUT/test_decoder.exe"
+  SAN="-fsanitize=address,undefined -fno-omit-frame-pointer"
 else
-  rm -f "$OUT/.sancheck" "$OUT/.sancheck.exe"
   echo "=== plain build (no sanitizer runtime in this toolchain) ==="
-  # shellcheck disable=SC2086
-  "$CXX" -std=gnu++20 -O1 -g $WARN -I"$COBS" $SRC -o "$OUT/test_decoder.exe"
 fi
+rm -f "$OUT/.sancheck" "$OUT/.sancheck.exe"
+
+# Each suite is its own binary: a failure names the layer without a stack trace.
+# shellcheck disable=SC2086
+"$CXX" -std=gnu++20 -O1 -g $WARN $SAN -I"$COBS" \
+  "$COBS/CobsDecoder.cpp" "$HERE/test_decoder.cpp" -o "$OUT/test_decoder.exe"
+# shellcheck disable=SC2086
+"$CXX" -std=gnu++20 -O1 -g $WARN $SAN -I"$COBS" \
+  "$HERE/test_packet_lifetime.cpp" -o "$OUT/test_packet_lifetime.exe"
 
 "$OUT/test_decoder.exe"
+"$OUT/test_packet_lifetime.exe"
