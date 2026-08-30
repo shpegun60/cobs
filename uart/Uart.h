@@ -759,14 +759,25 @@ private:
 		m_huart->ErrorCode = HAL_UART_ERROR_NONE;
 
 		// Direct field read, not HAL_UART_GetState() — see isrTxCplt().
+		//
+		// NOTE: F1, G4 and H7RS never assign HAL_UART_STATE_ERROR or
+		// _TIMEOUT to gState at all — those legacy enum values are unused by
+		// the modern UART HAL, which reports faults through ErrorCode. The
+		// deadState test is therefore defensive (a family that does use them
+		// still gets handled); no recovery logic may depend on it firing.
 		const uint32_t gState = m_huart->gState;
 		const bool deadState = (gState == HAL_UART_STATE_ERROR) ||
 		                       (gState == HAL_UART_STATE_TIMEOUT);
 
-		// RX: reception ended (blocking error) or the peripheral is dead ->
-		// the chunk DMA was filling holds an unknown/unreliable prefix: void
-		// it and let proceed() re-arm from thread context.
-		if (deadState || m_huart->RxState == HAL_UART_STATE_READY) {
+		// RX ownership is decided on RX EVIDENCE ONLY. gState describes the
+		// global/TX side of the peripheral, so admitting it here would let a
+		// TX-side fault release a chunk that the RX DMA is still writing —
+		// the same ownership hazard, wearing a different hat. RxState READY
+		// means HAL really did end the reception (it does so even for a
+		// TX-triggered DMA fault: UART_DMAError() ends each direction
+		// independently), so the chunk holds an unreliable prefix: void it
+		// and let proceed() re-arm from thread context.
+		if (m_huart->RxState == HAL_UART_STATE_READY) {
 			++m_stats.rx_errors;
 			voidActiveChunk();
 			m_started = false; // proceed() -> receiveRestart() with live tick
@@ -845,6 +856,9 @@ private:
 		const uint32_t gState = m_huart->gState;
 		const uint32_t errorCode = HAL_UART_GetError(m_huart);
 
+		// The gState terms are defensive only (see isrError): on every
+		// audited family the effective triggers are ErrorCode, a silently
+		// stopped receiver, and the DMA error codes below.
 		bool bad = (gState == HAL_UART_STATE_ERROR) ||
 		           (gState == HAL_UART_STATE_TIMEOUT) ||
 		           (errorCode != HAL_UART_ERROR_NONE);
