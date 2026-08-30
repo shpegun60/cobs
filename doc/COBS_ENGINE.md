@@ -161,6 +161,29 @@ for another — would silently change which wire frames the protocol accepts.
 The protocol states its requirement; the allocator either meets it or fails
 to compile.
 
+The same rule applies one level down, to how an allocator is configured. A
+pool is parameterized by the **payload capacity it offers**, never by its raw
+block size:
+
+```cpp
+template<std::size_t PayloadCapacity, std::size_t BlockCount>
+class FixedPoolAllocator;
+
+using RxPool = FixedPoolAllocator<MaxDecodedSize, 8>;
+```
+
+A block is a packet header followed by its payload, and the header's size is
+an ABI property — 24 bytes on x86-64, 12 on Cortex-M. Parameterizing by block
+size would make the same configuration accept different wire frames on
+different platforms, which is the ABI deciding protocol semantics. Configured
+this way, `payload_capacity` is exactly the number requested everywhere, and
+the ABI only moves the RAM cost (`storage_size` = 1048 bytes per block on
+x86-64 against 1036 on Cortex-M, for a 1024-byte capacity).
+
+`storage_size` is the logical content of a block and is deliberately **not**
+promised to equal the physical `sizeof(Block)`: alignment may add tail
+padding.
+
 The decoder itself knows neither constant. It is handed a
 `std::span<uint8_t>` and the span's own extent is the limit it respects.
 

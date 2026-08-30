@@ -1,6 +1,7 @@
 /*
- * FixedPoolAllocator — BlockCount blocks of BlockSize bytes, in static
- * storage. No heap, no virtuals, no mutex, O(1) allocate and deallocate.
+ * FixedPoolAllocator — BlockCount packets of PayloadCapacity bytes each, in
+ * static storage. No heap, no virtuals, no mutex, O(1) allocate and
+ * deallocate.
  *
  * Contract: doc/COBS_ENGINE.md §4.1 and §6. The allocator does NOT define the
  * protocol limit; it advertises what it can hold and the protocol asserts that
@@ -8,9 +9,22 @@
  *
  *     static_assert(Allocator::payload_capacity >= MaxDecodedSize);
  *
- * A block holds one RxPacket header followed by its payload, so
- * payload_capacity is BlockSize minus the header — one number, derived in one
- * place, rather than a constant that has to be kept in sync by hand.
+ * The template parameter is the PAYLOAD capacity, not the block size, and
+ * that direction matters. A block is one RxPacket header followed by its
+ * payload, and the header's size is an ABI property: 24 bytes on x86-64, 12 on
+ * Cortex-M. Were the block size the knob, the same configuration would accept
+ * different wire frames on different platforms — the platform would be
+ * deciding protocol semantics. Parameterized this way,
+ *
+ *     FixedPoolAllocator<1024, 8>
+ *
+ * means "eight packets of exactly 1024 decoded bytes" everywhere, and the ABI
+ * only moves the RAM cost (1048 bytes per block on x86-64, 1036 on Cortex-M).
+ *
+ * storage_size is the logical block content. It is deliberately NOT promised
+ * to equal sizeof(Block): alignment may add tail padding, and a name that
+ * implied otherwise would eventually start an investigation into the
+ * compiler's alleged crimes.
  *
  * Free blocks are threaded on an intrusive list stored in the blocks
  * themselves, so the pool costs no bookkeeping memory beyond one pointer.
@@ -39,21 +53,21 @@
 #	endif
 #endif
 
-template<std::size_t BlockSize, std::size_t BlockCount>
+template<std::size_t PayloadCapacity, std::size_t BlockCount>
 class FixedPoolAllocator final {
 public:
 	// RxPacket only stores an Allocator*, so naming this incomplete type here
-	// is legal and is what lets payload_capacity be derived below.
+	// is legal. It is now used only for the pool's internal geometry, never
+	// to derive a number the protocol depends on.
 	using Packet = RxPacket<FixedPoolAllocator>;
 
-	static constexpr std::size_t block_size  = BlockSize;
+	static constexpr std::size_t payload_capacity = PayloadCapacity;
 	static constexpr std::size_t block_count = BlockCount;
-	static constexpr std::size_t payload_capacity = BlockSize - sizeof(Packet);
+	// Logical content of one block; sizeof(Block) may exceed this by padding.
+	static constexpr std::size_t storage_size = sizeof(Packet) + PayloadCapacity;
 
 	static_assert(BlockCount >= 1, "a pool needs at least one block");
-	static_assert(BlockSize > sizeof(Packet),
-		"BlockSize must exceed the RxPacket header, or no payload fits");
-	static_assert(BlockSize >= sizeof(void*),
+	static_assert(storage_size >= sizeof(void*),
 		"a free block must be able to hold the free-list link");
 
 	struct Stats {
@@ -122,8 +136,13 @@ public:
 	[[nodiscard]] const Stats& stats() const noexcept { return m_stats; }
 
 private:
-	struct alignas(alignof(std::max_align_t)) Block {
-		unsigned char bytes[BlockSize];
+	// Aligned for what actually lives here — a Packet — not for the strictest
+	// type in the language. Nothing DMAs into this pool (the transport fills
+	// its own chunks; COBS decodes CPU-side), so max_align_t would only waste
+	// up to 15 bytes per block. A Packet contains pointers, so its alignment
+	// also covers the free-list link stored in a free block.
+	struct alignas(Packet) Block {
+		unsigned char bytes[storage_size];
 	};
 
 	// A free block stores the link to the next free block in its own storage;

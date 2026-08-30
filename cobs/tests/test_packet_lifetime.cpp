@@ -10,6 +10,7 @@
 #include "FixedPoolAllocator.h"
 #include "PacketRef.h"
 
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -33,7 +34,8 @@ void check(const bool ok, const std::string& what)
 }
 
 constexpr std::size_t kBlocks = 4;
-using Pool = FixedPoolAllocator<128, kBlocks>;
+constexpr std::size_t kCapacity = 100; // deliberately not a round block size
+using Pool = FixedPoolAllocator<kCapacity, kBlocks>;
 using Packet = Pool::Packet;
 using Ref = PacketRef<Pool>;
 
@@ -71,14 +73,19 @@ bool contentsMatch(const Ref& r, const uint8_t tag, const std::size_t n)
 
 void testPoolGeometry()
 {
-	check(Pool::payload_capacity == 128u - sizeof(Packet),
-	      "payload_capacity is the block minus the header, derived not declared");
-	check(Pool::payload_capacity > 0u, "and there is payload room left");
+	// The whole point of parameterizing by capacity: this number is exactly
+	// what was asked for, on every ABI. Only the RAM cost moves.
+	check(Pool::payload_capacity == kCapacity,
+	      "payload_capacity is exactly the requested capacity, not an ABI leftover");
+	check(Pool::storage_size == sizeof(Packet) + kCapacity,
+	      "storage_size is the header plus that capacity");
+	check(sizeof(Pool) >= kBlocks * Pool::storage_size,
+	      "and the pool is at least that big (padding may add to it)");
 
 	Pool pool;
 	Packet* const p = pool.allocate();
 	check(p != nullptr, "a fresh pool allocates");
-	check(p->writable_payload().size() == Pool::payload_capacity,
+	check(p->writable_payload().size() == kCapacity,
 	      "the packet's writable payload spans exactly that capacity");
 
 	// The payload must live inside the block, right after the header.
@@ -86,10 +93,64 @@ void testPoolGeometry()
 	const auto* const payload = p->writable_payload().data();
 	check(payload == header + sizeof(Packet),
 	      "the payload sits immediately after the header, in the same block");
+	check(reinterpret_cast<std::uintptr_t>(p) % alignof(Packet) == 0,
+	      "the packet handed out is correctly aligned");
 	check(p->refs == 1 && p->size == 0 && p->next_ready == nullptr,
 	      "a fresh packet carries one reference and no queue link");
 	check(p->owner == &pool, "and knows which pool must reclaim it");
+
+	// Writing the whole payload must stay inside the block: with the
+	// sanitizer on, an off-by-one in the geometry fails here and nowhere else.
+	const auto out = p->writable_payload();
+	for (std::size_t i = 0; i < out.size(); ++i) {
+		out[i] = static_cast<uint8_t>(i);
+	}
+	check(out[0] == 0 && out[kCapacity - 1] == static_cast<uint8_t>(kCapacity - 1),
+	      "the full capacity is writable and reads back");
 	pool.deallocate(p);
+}
+
+// Every block must be aligned and non-overlapping, whatever the capacity.
+// A capacity that is not a multiple of the alignment is the case that would
+// expose a stride computed from storage_size instead of sizeof(Block).
+template<std::size_t Cap>
+bool probeGeometry()
+{
+	using P = FixedPoolAllocator<Cap, 3>;
+	using Pk = typename P::Packet;
+
+	P pool;
+	Pk* held[3] = {};
+	bool ok = (P::payload_capacity == Cap);
+
+	for (Pk*& h : held) {
+		h = pool.allocate();
+		ok = ok && h != nullptr &&
+		     (reinterpret_cast<std::uintptr_t>(h) % alignof(Pk) == 0) &&
+		     h->writable_payload().size() == Cap;
+		if (h != nullptr) {
+			// Touch both ends: with the sanitizer on, a stride computed from
+			// storage_size instead of sizeof(Block) shows up right here.
+			const auto out = h->writable_payload();
+			out.front() = 0xAA;
+			out.back() = 0x55;
+		}
+	}
+	for (int i = 0; i + 1 < 3; ++i) {
+		const auto a = reinterpret_cast<std::uintptr_t>(held[i]);
+		const auto b = reinterpret_cast<std::uintptr_t>(held[i + 1]);
+		ok = ok && ((a < b ? b - a : a - b) >= P::storage_size);
+	}
+	for (Pk* const h : held) { pool.deallocate(h); }
+	return ok && pool.stats().rejected == 0;
+}
+
+void testGeometryAcrossCapacities()
+{
+	check(probeGeometry<1>(), "capacity 1 is laid out correctly");
+	check(probeGeometry<7>(), "capacity 7 (odd, unaligned) is laid out correctly");
+	check(probeGeometry<64>(), "capacity 64 is laid out correctly");
+	check(probeGeometry<1024>(), "capacity 1024 is laid out correctly");
 }
 
 void testExhaustionAndReuse()
@@ -316,6 +377,7 @@ int main()
 {
 	group("Pool");
 	testPoolGeometry();
+	testGeometryAcrossCapacities();
 	testExhaustionAndReuse();
 	testPoolRejectsAbuse();
 
