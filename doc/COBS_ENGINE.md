@@ -31,7 +31,7 @@ only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 | Ready queue | intrusive, threaded through the packets themselves |
 | RX lifetime | intrusive refcount, `PacketRef`, payload immutable after publication |
 | Refcount | plain (single execution domain); no atomic policy in v1 |
-| Allocator | compile-time type; **must satisfy** the protocol limit, never define it. Defaults to a fixed pool sized to that limit — never a heap allocator |
+| Allocator | a compile-time **policy** (§9): one type, one template parameter, any backing memory. **Must satisfy** the protocol limit, never define it. Defaults to a fixed pool — never a heap allocator |
 | `MaxDecodedSize` | COBS/protocol configuration, includes any future integrity trailer |
 | TX ownership | move-only `CobsMsg`, exclusive until the transport accepts it |
 | Transport busy before encoding | message stays `Building` |
@@ -184,25 +184,6 @@ x86-64 against 1036 on Cortex-M, for a 1024-byte capacity).
 promised to equal the physical `sizeof(Block)`: alignment may add tail
 padding.
 
-### 4.3 Template parameter order
-
-`CobsRx<MaxDecodedSize, Allocator>`, in that order. It reads in protocol order
-and matches the rest of the codebase (`Uart<ChunkSize, ChunkCount>`,
-`FixedPoolAllocator<PayloadCapacity, BlockCount>` — the shape before the
-mechanism), but the binding reason is that it is the only order that can carry
-a default: a template parameter with a default may not precede one without,
-and `MaxDecodedSize` has no sensible default while the allocator does.
-
-That default is a **fixed pool sized exactly to `MaxDecodedSize`**, not the
-heap allocator the original architecture sketch proposed. This stack exists to
-run where `malloc` is unwelcome, so the out-of-the-box choice must be the one
-that is always safe there; a heap-backed allocator remains available as an
-explicit argument. `CobsRx<N>::AllocatorType` names it, so taking the default
-still lets the user construct the pool they own.
-
-The decoder itself knows neither constant. It is handed a
-`std::span<uint8_t>` and the span's own extent is the limit it respects.
-
 ### 4.2 Encoded size
 
 ```cpp
@@ -246,6 +227,27 @@ Worked values, all verified against the canonical encoder:
 | 255 | 257 | 2 | `0xFF` block plus a two-byte block |
 | 508 | 510 | 2 | two `0xFF` blocks |
 | 509 | 512 | 3 | |
+
+---
+
+### 4.3 Template parameter order
+
+`CobsRx<MaxDecodedSize, Allocator>`, in that order. It reads in protocol order
+and matches the rest of the codebase (`Uart<ChunkSize, ChunkCount>`,
+`FixedPoolAllocator<PayloadCapacity, BlockCount>` — the shape before the
+mechanism), but the binding reason is that it is the only order that can carry
+a default: a template parameter with a default may not precede one without,
+and `MaxDecodedSize` has no sensible default while the allocator does.
+
+That default is a **fixed pool sized exactly to `MaxDecodedSize`**, not the
+heap allocator the original architecture sketch proposed. This stack exists to
+run where `malloc` is unwelcome, so the out-of-the-box choice must be the one
+that is always safe there; a heap-backed allocator remains available as an
+explicit argument. `CobsRx<N>::AllocatorType` names it, so taking the default
+still lets the user construct the pool they own.
+
+The decoder itself knows neither constant. It is handed a
+`std::span<uint8_t>` and the span's own extent is the limit it respects.
 
 ---
 
@@ -603,7 +605,129 @@ Two consequences worth keeping in the document, because both are easy to
 
 ---
 
-## 9. Counters
+## 9. Allocator policy
+
+Memory is a **policy**: one type, one template parameter, arbitrarily many
+implementations. `Cobs` never learns whether the bytes come from a heap, a
+static pool, external SDRAM, a TLSF arena or a debug allocator that poisons
+freed blocks — it asks for RX memory, returns RX memory, asks for TX memory,
+returns TX memory. No virtuals and no runtime dispatch: the compiler welds the
+protocol to the memory at instantiation.
+
+The point of a single policy is that a user supplying their own memory writes
+**one** implementation, not a matched pair. `MyRxAllocator` plus `MyTxAllocator`
+would be two nearly identical bodies of code and two chances to get the same
+thing wrong.
+
+### 9.1 The contract
+
+```cpp
+struct SomeCobsAllocator {
+    // What this policy can hold. NOT what the protocol accepts — see 9.2.
+    static constexpr std::size_t rx_capacity = ...;
+    static constexpr std::size_t tx_capacity = ...;
+
+    [[nodiscard]] RxAllocation allocate_rx() noexcept;
+    void deallocate_rx(RxPacket<SomeCobsAllocator>* packet) noexcept;
+
+    [[nodiscard]] TxAllocation allocate_tx() noexcept;
+    void deallocate_tx(std::byte* memory) noexcept;
+};
+
+struct RxAllocation {
+    RxPacket<...>*     packet  = nullptr; // constructed, refs == 1
+    std::span<uint8_t> payload{};         // where the decoder may write
+};
+
+struct TxAllocation {
+    std::byte*  memory   = nullptr;
+    std::size_t capacity = 0;
+};
+```
+
+Both allocations report their region rather than letting the caller compute
+it, so a policy is free to place the payload somewhere other than immediately
+after the header — a heap policy may allocate them separately, a pool policy
+keeps them in one block. Exhaustion is a null `packet` / `memory`, never an
+error code: `if (!allocation.packet)` is the check either way.
+
+Three obligations that are easy to get wrong:
+
+- **`deallocate_rx` runs the packet's destructor.** The policy owns that,
+  because only the policy knows whether the pointer is valid at all. A
+  validating pool must refuse a foreign or already-freed pointer **before**
+  running any destructor on it — tearing down an object on memory that may
+  belong to somebody else is worse than the leak a refusal costs.
+- **RX and TX quotas are independent.** A policy may share one backing store,
+  but RX exhaustion must never starve TX. A link that cannot transmit because
+  the application is holding received packets is a deadlock, not back-pressure.
+- **A rejected deallocation leaks one block; it must never corrupt the
+  allocator.** Losing a block is recoverable and countable. A corrupted free
+  list is neither.
+
+### 9.2 The policy advertises capacity; it does not define the limit
+
+This is the rule of §4.1 restated where it is most tempting to break. It would
+be natural to let `rx_capacity` be the maximum frame the protocol accepts, and
+drop `MaxDecodedSize` entirely. That must not happen: swapping a policy with
+4096-byte blocks for one with 1024-byte blocks would then silently change
+**which wire frames are legal**, making the memory backend a protocol
+decision.
+
+So the protocol limit stays a parameter of `Cobs`, and the policy is checked
+against it:
+
+```cpp
+template<std::size_t MaxDecodedSize, class Allocator = CobsFixedAllocator<MaxDecodedSize>>
+class Cobs final {
+    static_assert(Allocator::rx_capacity >= MaxDecodedSize);
+    static_assert(Allocator::tx_capacity >= cobs_max_wire_size(MaxDecodedSize));
+};
+```
+
+A default that names the earlier parameter is legal, so the common spelling
+stays one argument:
+
+```cpp
+Cobs<1024> cobs{allocator};                       // default policy
+Cobs<1024, SdramCobsAllocator> cobs{allocator};   // somebody else's memory
+```
+
+The default policy is a **fixed pool**, not a heap one (§4.3): this stack
+exists to run where `malloc` is unwelcome, so the out-of-the-box choice must be
+safe there. `CobsHeapAllocator` is a perfectly good explicit argument.
+
+`Cobs` also clamps what it hands the decoder to `MaxDecodedSize` even when the
+policy returns a larger payload span, so a generous allocator cannot widen the
+protocol by accident.
+
+### 9.3 What the policy must not contain
+
+```text
+Cobs<MaxDecodedSize, Allocator>
+        |                    |
+     protocol             memory
+        |                    |
+  decoder / encoder     allocate / deallocate
+  RX and TX state       geometry and limits
+  ready queue           anything: heap, pool, SDRAM, external region
+  PacketRef / CobsMsg
+```
+
+A policy that starts to know about encoding, decoder state, the ready queue or
+`PacketRef` behaviour has stopped being a memory policy. Keeping it dumb is
+what makes "write your own allocator" a small job rather than a diploma in
+metaprogramming.
+
+### 9.4 Transport is not part of it
+
+The transport is bound separately (§2.1) and never travels through the
+allocator: memory and byte movement are unrelated concerns, and coupling them
+would mean a new allocator for every transport.
+
+---
+
+## 10. Counters
 
 Counters only — no hot-path instrumentation unless a probe is compiled in,
 following the same rule as the transport layer.
@@ -619,18 +743,18 @@ application, and it is deliberately a number rather than an event (§7).
 
 ---
 
-## 10. Test plan
+## 11. Test plan
 
 The decoder is a non-template class over a plain span, so all of this runs as
 a host binary with no HAL, no pool and no transport.
 
-### 10.1 Lengths
+### 11.1 Lengths
 
 ```text
 0, 1, 253, 254, 255, 508, 509, MaxDecodedSize
 ```
 
-### 10.2 Patterns, for every length above
+### 11.2 Patterns, for every length above
 
 ```text
 all non-zero
@@ -642,7 +766,7 @@ alternating zero / non-zero
 deterministic pseudo-random
 ```
 
-### 10.3 Streaming boundaries
+### 11.3 Streaming boundaries
 
 More important than a hundred whole-frame vectors: the same encoded input
 must decode identically however it is split.
@@ -656,22 +780,22 @@ split before the delimiter
 split between the last data byte and the delimiter
 ```
 
-### 10.4 Round trip
+### 11.4 Round trip
 
 `decode(encode(x)) == x` for every length × pattern × boundary combination,
 and `encode` output length `<= cobs_max_encoded_size(len)`, with the
 all-non-zero payloads attaining it for every length (other payloads may attain
 it too — see §4.2).
 
-### 10.5 In-place TX encoding
+### 11.5 In-place TX encoding
 
 The overlapping encoder gets its own property test with sentinel bytes
-surrounding the block, checked for every length in §10.1 and the lengths
+surrounding the block, checked for every length in §11.1 and the lengths
 adjacent to each of them. An overlapping encoder that is only tested on round
 numbers has a remarkable talent for working until the first 254-byte customer
 packet.
 
-### 10.6 State machine
+### 11.6 State machine
 
 ```text
 gap between frames        → next frame after the delimiter is decoded
@@ -686,7 +810,7 @@ leading delimiter         → harmless
 
 ---
 
-## 11. Explicitly not in v1
+## 12. Explicitly not in v1
 
 - CRC / integrity trailer. Reserved by the `MaxDecodedSize` definition (§4.1);
   the decoder and the block layout do not change when it is added.
