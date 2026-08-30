@@ -487,6 +487,12 @@ private:
 	// exactly the number of valid bytes in that chunk.
 	void isrRxEvent(const uint16_t size) noexcept
 	{
+		// A stray event delivered while a recovery is pending (m_started
+		// cleared, hardware not stopped yet) must not publish anything.
+		if (!m_started) {
+			return;
+		}
+
 #if UART_ENGINE_HAS_RXEVENT_TYPE
 		if (HAL_UARTEx_GetRxEventType(m_huart) == HAL_UART_RXEVENT_HT) {
 			return; // HT is disabled in receiveArm(); ignore if it slips through
@@ -500,18 +506,27 @@ private:
 		//   IDLE -> HAL_UART_IRQHandler() clears CR3.DMAR, sets RxState READY
 		//           and calls HAL_DMA_Abort(hdmarx) itself, and only then
 		//           invokes HAL_UARTEx_RxEventCallback.
-		// So the abort below is only a safety net for a HAL that leaves
-		// reception running (a continuous mode — which init() rejects for
-		// every DMA IP — or a future HAL change). Normally it is skipped,
-		// which keeps a full HAL teardown out of the hot path.
+		// If reception is somehow STILL running (a continuous mode that
+		// slipped past init(), or a future HAL change), freeze software
+		// ownership and defer the hardware stop to thread context. The
+		// chunk is deliberately NOT published: DMA may still be writing
+		// into it, and publishing would hand the slot to the consumer and
+		// then back to the free pool while hardware still owns it. It stays
+		// claimed in m_active, so receiveArm() re-uses that very chunk once
+		// receiveRestart() has stopped the DMA for real. Aborting here is
+		// not an option either: HAL_UART_AbortReceive() issues
+		// UART_RXDATA_FLUSH_REQUEST on the new USART IP, discarding bytes
+		// already sitting in RDR/FIFO.
 		if (m_huart->RxState != HAL_UART_STATE_READY) {
-			HAL_UART_AbortReceive(m_huart);
+			++m_stats.rx_errors;
+			m_started = false; // proceed() -> receiveRestart(), tick alive
+			return;
 		}
 
 		__DMB(); // DMA-written data visible before publishing
 
 		// HAL sampled `size` from the DMA counter at IRQ entry, but the DMA
-		// kept running until the stop above — bytes it moved into the chunk in
+		// kept running until HAL stopped it — bytes it moved into the chunk in
 		// that window are already consumed from RDR/FIFO and would be lost
 		// silently if the stale value were published. The counter is frozen
 		// now (disable never resets CNDTR/NDTR/BNDT), so re-derive the
@@ -597,6 +612,14 @@ private:
 		// restart path is already lossy and COBS resynchronizes on 0x00.)
 		UART_ENGINE_CLEAR_RX_ERRORS(m_huart);
 		m_huart->ErrorCode = HAL_UART_ERROR_NONE;
+
+		// A chunk still claimed here (e.g. the ISR froze ownership because
+		// reception had not stopped) is now safe to touch: the abort above
+		// ended the transfer. Drop its unreliable content and let
+		// receiveArm() re-arm DMA into that same slot — no publish, no leak.
+		if (m_active) {
+			m_active->commit_size(0);
+		}
 
 		++m_stats.restarts;
 		receiveArm();
