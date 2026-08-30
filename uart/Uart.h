@@ -355,6 +355,25 @@ public:
 		if (huart->Init.BaudRate == 0u) {
 			return false; // TX deadline computation needs a real baud rate
 		}
+		// The DMA must move BYTES. HAL programs the transfer as a count of
+		// ELEMENTS (ChunkSize), so a half-word memory width would make the
+		// controller write 2 * ChunkSize bytes into a ChunkSize buffer and
+		// run straight off the end of the chunk — a real overflow, typically
+		// reached by configuring 9-bit data or by a CubeMX slip.
+#if defined(DMA_MDATAALIGN_BYTE)
+		// Classic channel/stream DMA: the memory side is the chunk on RX and
+		// the caller's frame on TX.
+		if (huart->hdmarx->Init.MemDataAlignment != DMA_MDATAALIGN_BYTE ||
+				huart->hdmatx->Init.MemDataAlignment != DMA_MDATAALIGN_BYTE) {
+			return false;
+		}
+#elif defined(DMA_DEST_DATAWIDTH_BYTE)
+		// GPDMA/HPDMA: memory is the destination on RX, the source on TX.
+		if (huart->hdmarx->Init.DestDataWidth != DMA_DEST_DATAWIDTH_BYTE ||
+				huart->hdmatx->Init.SrcDataWidth != DMA_SRC_DATAWIDTH_BYTE) {
+			return false;
+		}
+#endif
 
 		/* --- registration ------------------------------------------------ */
 		// Ownership progression: validate -> registry attach -> callbacks ->
@@ -480,6 +499,12 @@ public:
 	bool send(std::span<const uint8_t> bytes) noexcept
 	{
 		if (m_txBusy || bytes.empty() || !m_huart) {
+			return false;
+		}
+		// The HAL transfer length is a uint16_t: silently truncating here
+		// would transmit a wrong, shorter frame and report success.
+		if (bytes.size() > 65535u) {
+			++m_stats.tx_errors;
 			return false;
 		}
 
@@ -680,7 +705,11 @@ private:
 		// Report the real outcome, not blind success (portable: gState and the
 		// TX DMA error code exist on every series with DMA support).
 		bool ok = true;
-		const HAL_UART_StateTypeDef gState = HAL_UART_GetState(m_huart);
+		// gState is read DIRECTLY: HAL_UART_GetState() returns gState|RxState,
+		// so while reception is armed (RxState = BUSY_RX = 0x22) an error
+		// state (0xE0) reads back as 0xE2 and compares equal to NOTHING —
+		// every state test through that accessor is blind in this driver.
+		const uint32_t gState = m_huart->gState;
 		if (gState == HAL_UART_STATE_ERROR || gState == HAL_UART_STATE_TIMEOUT) {
 			ok = false;
 		}
@@ -729,7 +758,8 @@ private:
 #endif
 		m_huart->ErrorCode = HAL_UART_ERROR_NONE;
 
-		const HAL_UART_StateTypeDef gState = HAL_UART_GetState(m_huart);
+		// Direct field read, not HAL_UART_GetState() — see isrTxCplt().
+		const uint32_t gState = m_huart->gState;
 		const bool deadState = (gState == HAL_UART_STATE_ERROR) ||
 		                       (gState == HAL_UART_STATE_TIMEOUT);
 
@@ -811,7 +841,8 @@ private:
 		}
 		m_lastCheckTime = now_ms;
 
-		const HAL_UART_StateTypeDef gState = HAL_UART_GetState(m_huart);
+		// Direct field read, not HAL_UART_GetState() — see isrTxCplt().
+		const uint32_t gState = m_huart->gState;
 		const uint32_t errorCode = HAL_UART_GetError(m_huart);
 
 		bool bad = (gState == HAL_UART_STATE_ERROR) ||
