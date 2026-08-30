@@ -28,15 +28,45 @@
 #define COBS_RX_H_
 
 #include "CobsDecoder.h"
+#include "FixedPoolAllocator.h"
 #include "PacketRef.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <span>
 
-template<class Allocator, std::size_t MaxDecodedSize>
+// Blocks in the default pool. Four lets the application hold a couple of
+// packets without stalling reception, and is the knob most likely to want
+// raising: every retained packet costs one block (§6, back-pressure).
+#ifndef COBS_RX_DEFAULT_BLOCKS
+#define COBS_RX_DEFAULT_BLOCKS 4u
+#endif
+
+// MaxDecodedSize comes first, and not only because it reads in protocol order
+// ("a receiver for 1024-byte frames, backed by this pool") or because the rest
+// of this codebase puts the shape before the mechanism. It is the only
+// ordering that can carry the default below: a template parameter with a
+// default may not precede one without, and MaxDecodedSize has no sensible
+// default while the allocator does.
+//
+// The default is a fixed pool sized exactly to the protocol limit — not a
+// heap allocator, whatever the original architecture sketch said. This stack
+// exists to run on parts where malloc is not welcome, so the out-of-the-box
+// choice must be the one that is always safe there; a heap-backed allocator
+// remains perfectly possible as an explicit argument.
+//
+//     FixedPoolAllocator<256, 4> pool;
+//     CobsRx<256> rx(pool);
+//
+template<std::size_t MaxDecodedSize,
+         class Allocator = FixedPoolAllocator<MaxDecodedSize, COBS_RX_DEFAULT_BLOCKS>>
 class CobsRx final {
 public:
+	// Exposed so that a user who takes the default can still name the pool
+	// they must construct — without it the default would save nothing:
+	//     CobsRx<256>::AllocatorType pool;
+	//     CobsRx<256> rx(pool);
+	using AllocatorType = Allocator;
 	using Packet = typename Allocator::Packet;
 	using Ref = PacketRef<Allocator>;
 

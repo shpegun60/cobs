@@ -31,7 +31,7 @@ only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 | Ready queue | intrusive, threaded through the packets themselves |
 | RX lifetime | intrusive refcount, `PacketRef`, payload immutable after publication |
 | Refcount | plain (single execution domain); no atomic policy in v1 |
-| Allocator | compile-time type; **must satisfy** the protocol limit, never define it |
+| Allocator | compile-time type; **must satisfy** the protocol limit, never define it. Defaults to a fixed pool sized to that limit — never a heap allocator |
 | `MaxDecodedSize` | COBS/protocol configuration, includes any future integrity trailer |
 | TX ownership | move-only `CobsMsg`, exclusive until the transport accepts it |
 | Transport busy before encoding | message stays `Building` |
@@ -183,6 +183,22 @@ x86-64 against 1036 on Cortex-M, for a 1024-byte capacity).
 `storage_size` is the logical content of a block and is deliberately **not**
 promised to equal the physical `sizeof(Block)`: alignment may add tail
 padding.
+
+### 4.3 Template parameter order
+
+`CobsRx<MaxDecodedSize, Allocator>`, in that order. It reads in protocol order
+and matches the rest of the codebase (`Uart<ChunkSize, ChunkCount>`,
+`FixedPoolAllocator<PayloadCapacity, BlockCount>` — the shape before the
+mechanism), but the binding reason is that it is the only order that can carry
+a default: a template parameter with a default may not precede one without,
+and `MaxDecodedSize` has no sensible default while the allocator does.
+
+That default is a **fixed pool sized exactly to `MaxDecodedSize`**, not the
+heap allocator the original architecture sketch proposed. This stack exists to
+run where `malloc` is unwelcome, so the out-of-the-box choice must be the one
+that is always safe there; a heap-backed allocator remains available as an
+explicit argument. `CobsRx<N>::AllocatorType` names it, so taking the default
+still lets the user construct the pool they own.
 
 The decoder itself knows neither constant. It is handed a
 `std::span<uint8_t>` and the span's own extent is the limit it respects.

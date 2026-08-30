@@ -19,6 +19,7 @@
 
 #include <cstdio>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -43,7 +44,7 @@ void check(const bool ok, const std::string& what)
 constexpr std::size_t kMaxDecoded = 64;
 constexpr std::size_t kBlocks = 4;
 using Pool = FixedPoolAllocator<kMaxDecoded, kBlocks>;
-using Rx = CobsRx<Pool, kMaxDecoded>;
+using Rx = CobsRx<kMaxDecoded, Pool>;
 using Ref = Rx::Ref;
 
 std::vector<uint8_t> payload(const uint8_t tag, const std::size_t n)
@@ -126,6 +127,25 @@ void testSpanBoundaries()
 	              std::to_string(wire.size() + 1) + " positions");
 }
 
+// The default allocator: naming only the protocol limit must give a working
+// receiver, which is the entire reason MaxDecodedSize comes first.
+void testDefaultAllocator()
+{
+	using DefaultRx = CobsRx<32>;
+	static_assert(std::is_same_v<DefaultRx::AllocatorType,
+	                             FixedPoolAllocator<32, COBS_RX_DEFAULT_BLOCKS>>,
+	              "the default is a fixed pool sized to the protocol limit");
+
+	DefaultRx::AllocatorType pool;
+	DefaultRx rx(pool);
+
+	const auto p = payload(0x11, 32);
+	rx.consume(std::span<const uint8_t>{cobs_test::encode(p)});
+	const DefaultRx::Ref r = rx.pop_packet();
+	check(r.size() == p.size(), "CobsRx<32> receives a maximum-size frame with no allocator named");
+	check(pool.available() == COBS_RX_DEFAULT_BLOCKS - 1, "using one block of the default pool");
+}
+
 /* ========================= the protocol limit =========================== */
 
 // The pool has room for MaxDecodedSize and not one byte more here, but the
@@ -134,7 +154,7 @@ void testProtocolLimitNotPoolCapacity()
 {
 	// A pool twice as generous as the protocol allows.
 	using BigPool = FixedPoolAllocator<kMaxDecoded * 2, kBlocks>;
-	using LimitedRx = CobsRx<BigPool, kMaxDecoded>;
+	using LimitedRx = CobsRx<kMaxDecoded, BigPool>;
 
 	BigPool pool;
 	LimitedRx rx(pool);
@@ -380,6 +400,7 @@ int main()
 	testSpanBoundaries();
 
 	group("ProtocolLimit");
+	testDefaultAllocator();
 	testProtocolLimitNotPoolCapacity();
 
 	group("ErrorHandling");
