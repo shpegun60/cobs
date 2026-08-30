@@ -436,7 +436,7 @@ public:
 		}
 #endif
 		if (huart->Init.BaudRate == 0u) {
-			return false; // TX deadline computation needs a real baud rate
+			return false; // an initialized handle with no baud rate is broken
 		}
 		// COBS uses the whole 0x00..0xFF range, so the frame must carry EIGHT
 		// payload bits. WordLength counts the parity bit as one of its data
@@ -865,11 +865,13 @@ private:
 	void publishActive(const uint16_t size) noexcept
 	{
 		if (m_active && size) {
-			m_rxWorkPending = true;
 			uart_detail::dcacheInvalidate(m_active->data(), size);
 			m_active->commit_size(size);
 			m_rx.publish();
 			m_active = nullptr;
+			// Doorbell LAST, so it means "work has been published", not
+			// "work is about to be" — matching voidActiveChunk().
+			m_rxWorkPending = true;
 		}
 	}
 
