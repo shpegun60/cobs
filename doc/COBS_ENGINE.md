@@ -217,10 +217,24 @@ constexpr std::size_t cobs_max_wire_size(std::size_t n) noexcept
 }
 ```
 
-This is a **tight upper bound, not an exact length**. It is attained exactly
-when the payload contains no zero bytes; payloads containing zeros encode
-shorter, because a zero is consumed by the code byte that precedes it. Do not
-use it to predict the length of a specific frame.
+This is a **tight upper bound, not an exact length**. A zero-free payload
+attains it for every `N`, which is what makes the bound tight — but it is not
+the only payload that does, and a payload containing zeros is not necessarily
+shorter. The exact length is
+
+```text
+encoded = N + (number of 0xFF blocks) + (1 if the last block is not an 0xFF block)
+```
+
+so for every `N <= 254` the encoded length is exactly `N + 1` whatever the
+data, zeros included: an 0xFF block needs a run of 254 non-zero bytes, which
+cannot occur. `00 00 00` encodes as `01 01 01 01` — four bytes, the bound.
+Only above 254 does the placement of zeros start to matter, because only there
+can long non-zero runs force extra 0xFF blocks.
+
+Do not use the bound to predict the length of a specific frame. For the
+overlap proof in §8.4 only tightness matters: a zero-free payload is a
+worst-case witness, and nothing depends on it being the unique one.
 
 Worked values, all verified against the canonical encoder:
 
@@ -645,8 +659,9 @@ split between the last data byte and the delimiter
 ### 10.4 Round trip
 
 `decode(encode(x)) == x` for every length × pattern × boundary combination,
-and `encode` output length `<= cobs_max_encoded_size(len)` with equality
-exactly on the all-non-zero payloads.
+and `encode` output length `<= cobs_max_encoded_size(len)`, with the
+all-non-zero payloads attaining it for every length (other payloads may attain
+it too — see §4.2).
 
 ### 10.5 In-place TX encoding
 

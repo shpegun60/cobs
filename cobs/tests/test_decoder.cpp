@@ -378,7 +378,9 @@ void testRoundTrip()
 	for (const std::size_t n : lengths) {
 		for (const auto& payload : patterns(n)) {
 			const auto wire = encode(payload);
-			// The size bound holds, and is attained exactly on zero-free data.
+			// The bound holds, and zero-free data attains it for every length,
+			// which is what makes it tight. Other payloads may attain it too:
+			// below 255 bytes every payload does (COBS_ENGINE.md §4.2).
 			expect(wire.size() - 1u <= maxEncoded(n),
 			       "encoded length within the bound for n=" + std::to_string(n));
 			const bool zero_free = (n > 0) &&
@@ -409,7 +411,7 @@ void testRoundTrip()
 	}
 	check(true, "round trip over " + std::to_string(cases) +
 	            " length x pattern x boundary combinations");
-	check(bound_tight, "the size bound is attained exactly on zero-free payloads");
+	check(bound_tight, "zero-free payloads attain the size bound at every length");
 }
 
 // Two frames back to back, split at every possible point: proves the decoder
