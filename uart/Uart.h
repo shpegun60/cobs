@@ -287,10 +287,18 @@ public:
 	~Uart()
 	{
 		if (m_huart) {
-			// Abort outside an IRQ guard (HAL_DMA_Abort polls HAL_GetTick,
-			// frozen while masked); detach takes its own short guard.
-			HAL_UART_Abort(m_huart);
+			// Detach FIRST: from here on a HAL callback finds no registry
+			// entry and cannot dispatch into an object that is being
+			// destroyed — including while the abort below runs, or if that
+			// abort times out. The abort itself is outside an IRQ guard
+			// (HAL_DMA_Abort polls HAL_GetTick, frozen while masked).
+			//
+			// Residual hazard a destructor cannot fix: if the abort fails,
+			// DMA keeps writing into storage that is about to go away. Give
+			// instances static lifetime (the documented usage) and this
+			// cannot arise.
 			UartRegistry::detach(this);
+			(void)HAL_UART_Abort(m_huart);
 			m_huart = nullptr;
 		}
 	}
@@ -415,15 +423,21 @@ public:
 		if (m_started && m_active == nullptr && !m_rx.full()) {
 			// The abort runs UNGUARDED — HAL_DMA_Abort polls HAL_GetTick,
 			// which freezes under an IRQ guard (same hazard as everywhere
-			// else). An RX ISR may slip in before the abort takes effect and
-			// re-arm onto a real chunk; the guarded block below then publishes
-			// whatever landed in that chunk (per the frozen DMA counter), so
-			// nothing real is lost, and re-arms.
-			HAL_UART_AbortReceive(m_huart);
-			IRQGuard guard;
-			if (m_started) { // an error ISR may have deferred a full restart
-				publishActive(dmaReceivedCount());
-				receiveArm();
+			// else) — and its result is honoured: on HAL_TIMEOUT the transfer
+			// is still live, so neither the DMA counter nor any chunk may be
+			// touched. Defer to the full restart path instead.
+			if (HAL_UART_AbortReceive(m_huart) != HAL_OK) {
+				++m_stats.rx_errors;
+				m_started = false; // tail of proceed() -> receiveRestart()
+			} else {
+				IRQGuard guard;
+				// An RX ISR may have slipped in before the abort took effect
+				// and re-armed onto a real chunk; publish whatever landed in
+				// it (per the now-frozen counter) so nothing real is lost.
+				if (m_started) { // an error ISR may have deferred a full restart
+					publishActive(dmaReceivedCount());
+					receiveArm();
+				}
 			}
 		}
 
@@ -748,13 +762,23 @@ private:
 			// which is frozen under a guard). Aborting a transfer that just
 			// completed is harmless; the guarded re-check below keeps the
 			// bookkeeping consistent if the completion ISR won the race.
-			HAL_UART_AbortTransmit(m_huart);
-			IRQGuard guard;
-			if (m_txBusy) {
-				m_txBusy = false;
+			//
+			// The result is honoured for the TX mirror of the RX invariant:
+			// the caller's span is only released once the DMA is confirmed
+			// stopped. On HAL_TIMEOUT the transfer is still reading that
+			// memory, so tx_busy() must STAY true — clearing it would invite
+			// the layer above to free or reuse a buffer hardware still owns.
+			// The periodic audit below then escalates to a full recovery.
+			if (HAL_UART_AbortTransmit(m_huart) != HAL_OK) {
 				++m_stats.tx_errors;
-				if (m_txHandler) {
-					m_txHandler(false);
+			} else {
+				IRQGuard guard;
+				if (m_txBusy) {
+					m_txBusy = false;
+					++m_stats.tx_errors;
+					if (m_txHandler) {
+						m_txHandler(false);
+					}
 				}
 			}
 		}
@@ -801,9 +825,16 @@ private:
 
 			// Blocking HAL aborts run with interrupts enabled (tick alive, so
 			// the HAL's own timeouts remain functional); only the state
-			// mutation is IRQ-guarded.
-			HAL_UART_DMAStop(m_huart);
-			HAL_UART_Abort(m_huart);
+			// mutation is IRQ-guarded. Both the RX and TX invariants apply:
+			// release nothing until the transfers are confirmed stopped, or
+			// voidActiveChunk() would publish a slot DMA still writes and
+			// tx_busy() would free a span DMA still reads.
+			(void)HAL_UART_DMAStop(m_huart);
+			if (HAL_UART_Abort(m_huart) != HAL_OK) {
+				++m_stats.rx_errors;
+				m_started = false; // retry from proceed() on every iteration
+				return;
+			}
 			{
 				IRQGuard guard;
 				voidActiveChunk();
