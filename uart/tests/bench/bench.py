@@ -41,19 +41,24 @@ SCENARIOS = {
 }
 
 
-def drain(port):
-    """Read and discard whatever the board is sending (TX generator frames)."""
+def drain(port, max_s=0.0):
+    """Read and discard whatever the board is sending (TX generator frames).
+    Bounded by wall time: with the generator saturating the line there is no
+    'silence' to wait for, an unbounded loop would never return."""
     n = 0
+    deadline = time.time() + max_s
     while True:
         chunk = port.read(4096)
-        if not chunk:
+        if chunk:
+            n += len(chunk)
+        if not chunk or time.time() >= deadline:
             return n
-        n += len(chunk)
 
 
 def command(port, byte):
-    time.sleep(CMD_PAUSE)
-    port.write(byte)
+    port.flush()            # block until the OS has SENT everything queued,
+    time.sleep(CMD_PAUSE)   # then give the line real silence: the command
+    port.write(byte)        # must arrive as its own 1-byte IDLE chunk
     port.flush()
     time.sleep(CMD_PAUSE)
 
@@ -75,7 +80,8 @@ def run_scenario(port, num, seconds):
     tx_on = num in (3, 4, 5)
     rx_kind = {1: "cont", 2: "burst", 4: "cont", 5: "burst"}.get(num)
 
-    drain(port)
+    command(port, b"t")   # force a known state: a crashed previous run may
+    drain(port, max_s=1.0)  # have left the generator flooding the line
     command(port, b"R")
     if tx_on:
         command(port, b"T")
@@ -83,25 +89,27 @@ def run_scenario(port, num, seconds):
     t_end = time.time() + seconds
     if rx_kind == "cont":
         while time.time() < t_end:
-            port.write(PAYLOAD * 8)   # 384 bytes per write, back to back
-            drain(port)
+            port.write(PAYLOAD * 32)  # 1.5K per blocking write: line-rate RX
+            if tx_on:
+                drain(port, max_s=0.02)
     elif rx_kind == "burst":
         while time.time() < t_end:
             port.write(PAYLOAD[:50] * 2)  # a 100-byte burst
             port.flush()
             time.sleep(0.02)              # ~20 ms of line silence -> IDLE
-            drain(port)
+            if tx_on:
+                drain(port, max_s=0.02)
     else:
         while time.time() < t_end:
             time.sleep(0.05)
-            drain(port)
+            drain(port, max_s=0.05)
 
     if tx_on:
-        command(port, b"t")
+        command(port, b"t")           # flushes our queue, then stops the flood
         time.sleep(0.3)
-        drain(port)
+        drain(port, max_s=1.0)        # generator tail
     time.sleep(0.3)  # let the last RX chunk flush before the stop command
-    drain(port)
+    drain(port, max_s=0.5)
 
     command(port, b"S")
     return read_report(port)
