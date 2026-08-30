@@ -111,6 +111,12 @@
 // this to 0 if the compiler reports HAL_UARTEx_GetRxEventType undeclared:
 // the event kind is then derived from RxState (READY -> TC, still
 // receiving -> IDLE/HT), which is equivalent for this driver.
+#if defined(__GNUC__)
+#	define UART_ENGINE_NOINLINE __attribute__((noinline))
+#else
+#	define UART_ENGINE_NOINLINE
+#endif
+
 #ifndef UART_ENGINE_HAS_RXEVENT_TYPE
 #	define UART_ENGINE_HAS_RXEVENT_TYPE 1
 #endif
@@ -569,10 +575,36 @@ public:
 	// Drains published RX chunks and runs the self-healing watchdog. The span
 	// handed to the handler is valid ONLY during the callback (the slot
 	// returns to the DMA producer on pop). Call this from the main loop.
+	// Hot path: a handful of instructions when there is nothing to do. It
+	// deliberately does NOT touch the SPSC queue — reading it would take the
+	// consumer-side acquire (a dmb on Cortex-M) on every single iteration.
+	// A plain doorbell flag, raised by the ISR whenever it actually leaves
+	// work behind, answers the same question for free. The race is benign:
+	// a publication landing just after the flag is cleared simply raises it
+	// again, so the worst case is one redundant slow pass, never missed work.
+	//
+	// Pass now_ms explicitly from the main loop — the default argument
+	// evaluates HAL_GetTick() at the CALL SITE, so `uart.proceed()` pays for
+	// a tick read on every iteration even when it returns immediately.
 	void proceed(const uint32_t now_ms = HAL_GetTick()) noexcept
 	{
 		if (m_huart == nullptr) {
 			return; // not initialized (or init() failed) — nothing to service
+		}
+		const bool audit_due =
+			(now_ms - m_lastCheckTime) >= UART_ENGINE_CHECK_PERIOD_MS;
+		if (!m_rxWorkPending && m_started && !audit_due) {
+			return;
+		}
+		proceedSlow(now_ms, audit_due);
+	}
+
+private:
+	UART_ENGINE_NOINLINE void proceedSlow(const uint32_t now_ms, const bool audit_due) noexcept
+	{
+		if (m_rxWorkPending) {
+			IRQGuard guard;
+			m_rxWorkPending = false;
 		}
 
 		// Discontinuities are ordered STRUCTURALLY, never by counting:
@@ -594,10 +626,7 @@ public:
 		}
 		announceGap();
 
-		// The audit is deliberately slow-running: everything in it is periodic,
-		// so the call itself is gated here and the hot loop pays only one
-		// subtract-and-compare per iteration instead of a call and prologue.
-		if ((now_ms - m_lastCheckTime) >= UART_ENGINE_CHECK_PERIOD_MS) {
+		if (audit_due) {
 			m_lastCheckTime = now_ms;
 			healthCheck();
 		}
@@ -653,6 +682,7 @@ public:
 		}
 	}
 
+public:
 	/* -------------------------------- TX -------------------------------- */
 
 	[[nodiscard]] bool tx_busy() const noexcept { return m_txBusy; }
@@ -835,6 +865,7 @@ private:
 	void publishActive(const uint16_t size) noexcept
 	{
 		if (m_active && size) {
+			m_rxWorkPending = true;
 			uart_detail::dcacheInvalidate(m_active->data(), size);
 			m_active->commit_size(size);
 			m_rx.publish();
@@ -861,6 +892,7 @@ private:
 			if ((m_active = m_rx.try_claim()) == nullptr) {
 				++m_stats.rx_overrun;
 				m_rxGapPending = true; // bytes will be lost; tell the decoder
+				m_rxWorkPending = true;
 			}
 		}
 		uint8_t* const dst = (m_active != nullptr) ? m_active->data() : m_drop.data();
@@ -1072,10 +1104,86 @@ private:
 			m_active->commit_size(0);
 			m_rx.publish();
 			m_active = nullptr;
+			m_rxWorkPending = true; // the marker itself is work for the drain
 		}
 	}
 
 	/* ----------------------- watchdog (main loop) ----------------------- */
+
+	// TX liveness, judged by what the hardware is doing rather than by a
+	// per-frame deadline — and resolved TX-ONLY, so a transmitter problem
+	// never tears the receiver down and punches a hole in the RX stream.
+	// Runs once per audit period from healthCheck().
+	void txLivenessAudit() noexcept
+	{
+		if (!m_txBusy || !m_huart->hdmatx) {
+			return;
+		}
+		const uint32_t remaining = __HAL_DMA_GET_COUNTER(m_huart->hdmatx);
+
+		// A COMPLETION THAT GOT LOST — and note this is a SUCCESS, not a
+		// failure. TX ends in two stages: the DMA drains into the peripheral
+		// (the HAL only clears DMAT and enables TCIE there) and the shift
+		// register empties afterwards, which raises TxCpltCallback. So an
+		// empty counter alone proves nothing, but an empty counter TOGETHER
+		// with TC means the last stop bit is already on the wire. Every
+		// audited family clears TC when a new transfer starts, so it cannot
+		// be a leftover from the previous frame. The frame was delivered;
+		// only the software event went missing. Stays armed under CTS.
+		if (remaining == 0u &&
+				__HAL_UART_GET_FLAG(m_huart, UART_FLAG_TC) != 0u &&
+				HAL_DMA_GetError(m_huart->hdmatx) == HAL_DMA_ERROR_NONE) {
+			finishTx(true);
+			return;
+		}
+
+		// A TRANSFER THAT STOPPED MOVING. Disabled under CTS, where the peer
+		// may legitimately hold the DMA still for as long as it likes. Its
+		// own counter is the whole debounce: feeding a confirmed stall into
+		// m_failCounter as well would double the latency and drag the
+		// receiver into a fault that is not its own.
+		if (!m_txProgressWatchEnabled) {
+			return;
+		}
+		if (!m_txProgressValid || remaining != m_txLastRemaining) {
+			m_txLastRemaining = remaining;
+			m_txProgressValid = true;
+			m_txStallChecks = 0u;
+			return;
+		}
+		if (++m_txStallChecks >= UART_ENGINE_FAIL_THRESHOLD) {
+			m_txStallChecks = 0u;
+			++m_stats.tx_errors;
+			finishTx(false);
+		}
+	}
+
+	// Bring the TX side back to rest and hand the frame's fate to its owner.
+	// The abort result is honoured: on HAL_TIMEOUT the DMA may still be
+	// reading the caller's buffer, so ownership is NOT returned and the next
+	// audit tries again. Whoever claims the terminal event first wins — if the
+	// real ISR got there before the gate went up, m_txBusy is already clear
+	// and this does nothing.
+	void finishTx(const bool ok) noexcept
+	{
+		bool notify = false;
+		{
+			TxTeardown ts(*this);
+			if (HAL_UART_AbortTransmit(m_huart) == HAL_OK) {
+				IRQGuard guard;
+				if (m_txBusy) {
+					m_txBusy = false;
+					m_txProgressValid = false;
+					notify = true;
+				}
+			}
+		}
+		// Outside both the guard and the gate: the handler may legitimately
+		// start the next frame straight away.
+		if (notify && m_txHandler) {
+			m_txHandler(ok);
+		}
+	}
 
 	// Periodic self-care: detects silently dead receivers, locked DMA streams
 	// and stalled or lost TX transfers on any STM32 series, and recovers
@@ -1084,6 +1192,8 @@ private:
 	// time. Thread context only.
 	void healthCheck() noexcept
 	{
+		txLivenessAudit();
+
 		// Direct field read, not HAL_UART_GetState() — see isrTxCplt().
 		const uint32_t gState = m_huart->gState;
 		const uint32_t errorCode = HAL_UART_GetError(m_huart);
@@ -1110,43 +1220,6 @@ private:
 		if (!bad && m_txBusy && m_huart->hdmatx &&
 				HAL_DMA_GetError(m_huart->hdmatx) != HAL_DMA_ERROR_NONE) {
 			bad = true;
-		}
-
-		// --- TX liveness, frame-length independent ------------------------
-		// A transfer that neither errors nor completes would otherwise leave
-		// tx_busy() true forever, and nothing else in this audit would ever
-		// notice: no error is reported, gState stays BUSY_TX and the RX-side
-		// checks are about the receiver.
-		if (m_txBusy && m_huart->hdmatx) {
-			const uint32_t remaining = __HAL_DMA_GET_COUNTER(m_huart->hdmatx);
-
-			// A completion that got lost. Note that TX ends in TWO stages:
-			// the DMA drains into the peripheral first, and the UART is still
-			// shifting bits afterwards — the HAL only clears DMAT and enables
-			// TCIE at that point, and calls TxCpltCallback later, from the TC
-			// interrupt. So an empty counter alone proves nothing; the frame
-			// is physically finished only once TC is also set. This stays
-			// armed under CTS: the line went idle, the software event simply
-			// never arrived.
-			if (remaining == 0u &&
-					__HAL_UART_GET_FLAG(m_huart, UART_FLAG_TC) != 0u) {
-				bad = true;
-			}
-
-			// A transfer that stopped moving. Disabled under CTS, where the
-			// peer may legitimately hold the DMA still for as long as it
-			// likes. Its own counter, deliberately not m_failCounter: mixing
-			// unrelated suspicions into one tally would convict the driver on
-			// three different charges at once.
-			if (m_txProgressWatchEnabled) {
-				if (!m_txProgressValid || remaining != m_txLastRemaining) {
-					m_txLastRemaining = remaining;
-					m_txProgressValid = true;
-					m_txStallChecks = 0u;
-				} else if (++m_txStallChecks >= UART_ENGINE_FAIL_THRESHOLD) {
-					bad = true;
-				}
-			}
 		}
 
 		if (!bad) {
@@ -1227,6 +1300,10 @@ private:
 
 	// Set by the ISR when the pool ran dry, cleared by the drain loop.
 	volatile bool m_rxGapPending = false;
+	// Doorbell: raised by the ISR whenever it leaves work for the consumer,
+	// so the hot path can answer "is there anything to do?" without touching
+	// the SPSC queue and paying its acquire barrier on every iteration.
+	volatile bool m_rxWorkPending = false;
 	// TX liveness observation (thread context only). Stall detection is off
 	// while CTS flow control may legitimately hold the transmitter still.
 	bool     m_txProgressWatchEnabled = false;

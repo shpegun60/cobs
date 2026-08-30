@@ -354,11 +354,14 @@ void testFrozenCounterTrips()
 	static std::vector<uint8_t> big(4096, 0x5A);
 	f.uart.send(std::span<const uint8_t>{big.data(), big.size()});
 	fake::tx_progress(100); // moves once, then wedges
-	audits(f, 2 * UART_ENGINE_FAIL_THRESHOLD + 2);
+	// A single debounce now: the stall counter IS the debounce, it is not fed
+	// into m_failCounter as well.
+	audits(f, UART_ENGINE_FAIL_THRESHOLD + 2);
 
-	check(!f.uart.tx_busy(), "a stalled transfer is eventually reclaimed");
+	check(!f.uart.tx_busy(), "a stalled transfer is reclaimed after one debounce");
 	check(fake::model().tx_results.size() == 1 && !fake::model().tx_results[0],
 	      "exactly one terminal event, reporting failure");
+	check(fake::model().rx_armed, "the receiver keeps running — a TX stall is TX-only");
 }
 
 // The DMA drained but the UART is still shifting: NOT a completion yet.
@@ -377,7 +380,10 @@ void testDmaDrainedWithoutTcIsNotCompletion()
 	check(fake::model().tx_results.empty(), "no terminal event while the line still shifts");
 }
 
-void testLostCompletionIsDetected()
+// remaining == 0 AND TC set means the last stop bit is already on the wire:
+// the frame WAS delivered and only the notification went missing, so the
+// synthetic completion must report SUCCESS.
+void testLostCompletionIsSyntheticSuccess()
 {
 	fake::reset();
 	Fixture f;
@@ -391,8 +397,9 @@ void testLostCompletionIsDetected()
 	audits(f, UART_ENGINE_FAIL_THRESHOLD + 1);
 
 	check(!f.uart.tx_busy(), "a lost completion is detected and ownership returned");
-	check(fake::model().tx_results.size() == 1 && !fake::model().tx_results[0],
-	      "the caller is told the frame failed");
+	check(fake::model().tx_results.size() == 1 && fake::model().tx_results[0],
+	      "the caller is told the frame SUCCEEDED — it was physically sent");
+	check(fake::model().rx_armed, "the receiver was not torn down for a TX event");
 }
 
 void testCtsFrozenCounterNeverTrips()
@@ -430,6 +437,8 @@ void testCtsStillDetectsLostCompletion()
 	audits(f, UART_ENGINE_FAIL_THRESHOLD + 1);
 
 	check(!f.uart.tx_busy(), "under CTS a lost completion is still detected");
+	check(fake::model().tx_results.size() == 1 && fake::model().tx_results[0],
+	      "and is still reported as success");
 }
 
 /* ============================== Watchdog =============================== */
@@ -486,7 +495,7 @@ int main()
 	testProgressingTransferNeverTrips();
 	testFrozenCounterTrips();
 	testDmaDrainedWithoutTcIsNotCompletion();
-	testLostCompletionIsDetected();
+	testLostCompletionIsSyntheticSuccess();
 	testCtsFrozenCounterNeverTrips();
 	testCtsStillDetectsLostCompletion();
 
