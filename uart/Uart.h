@@ -984,7 +984,12 @@ private:
 		// queued is guaranteed to predate the gap. Counting chunks could not
 		// give this — the ISR keeps publishing while a slow handler runs.
 		if (m_active == nullptr && !m_rxGapPending) {
-			if ((m_active = m_rx.try_claim()) == nullptr) {
+			// Claimed into a local first: reading the value OF an assignment
+			// to a volatile operand is deprecated in C++20 (an error in later
+			// drafts), and this way the store is the only volatile access.
+			RxChunk* const claimed = m_rx.try_claim();
+			m_active = claimed;
+			if (claimed == nullptr) {
 				++m_stats.rx_overrun;
 				m_rxGapPending = true; // bytes will be lost; tell the decoder
 				m_rxWorkPending = true;
