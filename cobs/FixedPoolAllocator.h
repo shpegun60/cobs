@@ -1,7 +1,11 @@
 /*
- * FixedPoolAllocator — BlockCount packets of PayloadCapacity bytes each, in
- * static storage. No heap, no virtuals, no mutex, O(1) allocate and
- * deallocate.
+ * FixedPoolAllocator — BlockCount packets of PayloadCapacity bytes each.
+ *
+ * A thin RX adapter over detail::StaticBlockPool: the pool owns the memory
+ * mechanics (free list, validation, statistics), this owns the interpretation
+ * — each block is one RxPacket header followed by its payload. The same pool
+ * primitive backs TX blocks, which are plain bytes; that is the split, and it
+ * is why a user supplying memory writes one backend rather than two.
  *
  * Contract: doc/COBS_ENGINE.md §4.1 and §6. The allocator does NOT define the
  * protocol limit; it advertises what it can hold and the protocol asserts that
@@ -10,208 +14,86 @@
  *     static_assert(Allocator::payload_capacity >= MaxDecodedSize);
  *
  * The template parameter is the PAYLOAD capacity, not the block size, and
- * that direction matters. A block is one RxPacket header followed by its
- * payload, and the header's size is an ABI property: 24 bytes on x86-64, 12 on
- * Cortex-M. Were the block size the knob, the same configuration would accept
- * different wire frames on different platforms — the platform would be
- * deciding protocol semantics. Parameterized this way,
+ * that direction matters. A block is a header plus a payload, and the
+ * header's size is an ABI property: 24 bytes on x86-64, 12 on Cortex-M. Were
+ * the block size the knob, the same configuration would accept different wire
+ * frames on different platforms — the platform deciding protocol semantics.
+ * Parameterized this way,
  *
  *     FixedPoolAllocator<1024, 8>
  *
  * means "eight packets of exactly 1024 decoded bytes" everywhere, and the ABI
  * only moves the RAM cost (1048 bytes per block on x86-64, 1036 on Cortex-M).
- *
- * storage_size is the logical block content. It is deliberately NOT promised
- * to equal sizeof(Block): alignment may add tail padding, and a name that
- * implied otherwise would eventually start an investigation into the
- * compiler's alleged crimes.
- *
- * Free blocks are threaded on an intrusive list stored in the blocks
- * themselves, so the pool costs no bookkeeping memory beyond one pointer.
- *
- * Validation (double free, foreign or misaligned pointer) is compiled in only
- * when COBS_POOL_CHECKS is on — by default in debug builds and in the test
- * suite, never on the hot path of a release build. A rejected deallocate is
- * counted and ignored: leaking one block is a far better failure than
- * corrupting the free list.
  */
 
 #ifndef COBS_FIXED_POOL_ALLOCATOR_H_
 #define COBS_FIXED_POOL_ALLOCATOR_H_
 
 #include "RxPacket.h"
+#include "detail/StaticBlockPool.h"
 
 #include <cstddef>
-#include <cstdint>
+#include <memory>
 #include <new>
-
-#ifndef COBS_POOL_CHECKS
-#	ifdef NDEBUG
-#		define COBS_POOL_CHECKS 0
-#	else
-#		define COBS_POOL_CHECKS 1
-#	endif
-#endif
 
 template<std::size_t PayloadCapacity, std::size_t BlockCount>
 class FixedPoolAllocator final {
 public:
 	// RxPacket only stores an Allocator*, so naming this incomplete type here
-	// is legal. It is now used only for the pool's internal geometry, never
-	// to derive a number the protocol depends on.
+	// is legal. It is used for the pool's geometry, never to derive a number
+	// the protocol depends on.
 	using Packet = RxPacket<FixedPoolAllocator>;
 
 	static constexpr std::size_t payload_capacity = PayloadCapacity;
 	static constexpr std::size_t block_count = BlockCount;
-	// Logical content of one block; sizeof(Block) may exceed this by padding.
+	// Logical content of one block. The pool may spend more per block (its
+	// own alignment and free-list link); see detail::StaticBlockPool.
 	static constexpr std::size_t storage_size = sizeof(Packet) + PayloadCapacity;
 
-	static_assert(BlockCount >= 1, "a pool needs at least one block");
-	static_assert(storage_size >= sizeof(void*),
-		"a free block must be able to hold the free-list link");
+private:
+	// Alignment is requested for the Packet placed at the block's start. The
+	// pool raises it further if its own bookkeeping needs more, which is why
+	// this adapter no longer has to assert that a Packet happens to be
+	// pointer-aligned: that is now the pool's problem, structurally.
+	using Pool = cobs::detail::StaticBlockPool<storage_size, BlockCount, alignof(Packet)>;
 
-	struct Stats {
-		uint32_t in_use   = 0; // blocks currently handed out
-		uint32_t high_water = 0;
-		uint32_t exhausted  = 0; // allocate() calls that found the pool dry
-		uint32_t rejected   = 0; // deallocate() calls refused by the checks
-	};
+public:
+	using Stats = typename Pool::Stats;
 
-	FixedPoolAllocator() noexcept
-	{
-		// Thread every block onto the free list, first block at the head.
-		for (std::size_t i = BlockCount; i > 0; --i) {
-			Block* const b = &m_blocks[i - 1];
-			link_of(b) = m_free;
-			m_free = b;
-		}
-	}
-
+	FixedPoolAllocator() noexcept = default;
 	FixedPoolAllocator(const FixedPoolAllocator&) = delete;
 	FixedPoolAllocator& operator=(const FixedPoolAllocator&) = delete;
 
-	// Hands out a constructed packet owning the rest of its block, or nullptr
-	// when the pool is dry. Never blocks, never allocates.
+	// A constructed packet owning the rest of its block, or nullptr when the
+	// pool is dry. Never blocks, never allocates.
 	[[nodiscard]] Packet* allocate() noexcept
 	{
-		Block* const b = m_free;
-		if (b == nullptr) {
-			++m_stats.exhausted;
+		std::byte* const memory = m_pool.allocate();
+		if (memory == nullptr) {
 			return nullptr;
 		}
-		m_free = link_of(b);
-
-		++m_stats.in_use;
-		if (m_stats.in_use > m_stats.high_water) {
-			m_stats.high_water = m_stats.in_use;
-		}
-
-		Packet* const p = ::new (static_cast<void*>(b->bytes)) Packet{};
+		Packet* const p = ::new (static_cast<void*>(memory)) Packet{};
 		p->owner = this;
 		return p;
 	}
 
 	void deallocate(Packet* const p) noexcept
 	{
-		if (p == nullptr) {
-			return;
-		}
-		Block* const b = block_of(p);
-#if COBS_POOL_CHECKS
-		if (!owns(b) || is_free(b)) {
-			++m_stats.rejected; // foreign, misaligned or already free
-			return;
-		}
-#endif
-		p->~Packet();
-		link_of(b) = m_free;
-		m_free = b;
-		--m_stats.in_use;
+		// The destructor runs through the pool's callback rather than here,
+		// so it can only run AFTER the pointer has been validated: tearing
+		// down an object on a foreign or already-freed block would be worse
+		// than the leak the rejection costs.
+		(void)m_pool.release(reinterpret_cast<std::byte*>(p),
+		                     [](std::byte* const memory) noexcept {
+			                     std::destroy_at(reinterpret_cast<Packet*>(memory));
+		                     });
 	}
 
-	[[nodiscard]] std::size_t available() const noexcept
-	{
-		return BlockCount - m_stats.in_use;
-	}
-	[[nodiscard]] const Stats& stats() const noexcept { return m_stats; }
+	[[nodiscard]] std::size_t available() const noexcept { return m_pool.available(); }
+	[[nodiscard]] const Stats& stats() const noexcept { return m_pool.stats(); }
 
 private:
-	// Aligned for what actually lives here — a Packet — not for the strictest
-	// type in the language. Nothing DMAs into this pool (the transport fills
-	// its own chunks; COBS decodes CPU-side), so max_align_t would only waste
-	// up to 15 bytes per block. A Packet contains pointers, so its alignment
-	// also covers the free-list link stored in a free block.
-	struct alignas(Packet) Block {
-		unsigned char bytes[storage_size];
-	};
-
-	// m_blocks itself needs no alignas: every element of an array of Block is
-	// placed at alignof(Block) by the language, which is why sizeof(Block) —
-	// not storage_size — is the stride used below.
-	static_assert(alignof(Block) >= alignof(Packet),
-		"Block must be aligned for the Packet placed at its start");
-	// The second condition is the one that could actually be lost. A free
-	// block stores the free-list link at its start, so it must also be
-	// aligned for a pointer — and today that holds ONLY because RxPacket
-	// happens to contain pointers. Replace Allocator* owner with a pool index
-	// (a perfectly reasonable four-byte saving) and the packet's alignment
-	// drops to 2, making every free-list write unaligned: undefined behaviour
-	// on the host, a real fault on some Cortex-M parts, and visible nowhere
-	// near this file.
-	static_assert(alignof(Block) >= alignof(Block*),
-		"a free block holds the free-list link at its start, so it must be "
-		"aligned for a pointer as well as for a Packet");
-
-	// A free block stores the link to the next free block in its own storage;
-	// a block is never both linked and in use, so this cannot alias live data.
-	static Block*& link_of(Block* const b) noexcept
-	{
-		return *reinterpret_cast<Block**>(b->bytes);
-	}
-
-	Block* block_of(Packet* const p) noexcept
-	{
-		return reinterpret_cast<Block*>(reinterpret_cast<unsigned char*>(p));
-	}
-
-#if COBS_POOL_CHECKS
-	// Inside this pool, and exactly on a block boundary — a pointer into the
-	// middle of a block is as wrong as a pointer from somewhere else.
-	//
-	// Done on integer addresses, not on pointers: relational comparison and
-	// subtraction of pointers into DIFFERENT objects have no portable meaning,
-	// and a foreign pointer is precisely the case this function exists to
-	// catch. Here uintptr_t is not a dodge — the question really is about an
-	// address.
-	bool owns(const Block* const b) const noexcept
-	{
-		const auto address = reinterpret_cast<std::uintptr_t>(b);
-		const auto begin   = reinterpret_cast<std::uintptr_t>(&m_blocks[0]);
-		const auto end     = begin + sizeof(m_blocks);
-
-		if (address < begin || address >= end) {
-			return false;
-		}
-		return ((address - begin) % sizeof(Block)) == 0u;
-	}
-
-	// O(n) on purpose: this exists to catch a double free during testing, not
-	// to be fast. It is compiled out entirely in a release build.
-	bool is_free(const Block* const b) const noexcept
-	{
-		for (const Block* f = m_free; f != nullptr;
-		     f = link_of(const_cast<Block*>(f))) {
-			if (f == b) {
-				return true;
-			}
-		}
-		return false;
-	}
-#endif
-
-	Block  m_blocks[BlockCount]{};
-	Block* m_free = nullptr;
-	Stats  m_stats{};
+	Pool m_pool{};
 };
 
 #endif /* COBS_FIXED_POOL_ALLOCATOR_H_ */
