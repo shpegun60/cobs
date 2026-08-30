@@ -7,6 +7,7 @@
 #include "uart_test_fixture.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -441,6 +442,9 @@ void testCtsStillDetectsLostCompletion()
 	      "and is still reported as success");
 }
 
+#include "test_uart_races.inc"
+#include "test_uart_torture.inc"
+
 /* ============================== Watchdog =============================== */
 
 void testWatchdogRevivesDeadReceiver()
@@ -463,8 +467,24 @@ void testWatchdogRevivesDeadReceiver()
 
 } // namespace
 
-int main()
+// `test_uart --seed 0xDEADBEEF --steps 1000000` beats the driver with a
+// chair for as long as you like; the default suite runs many shorter seeds.
+int main(int argc, char** argv)
 {
+	uint32_t one_seed = 0;
+	std::size_t steps = 20000;
+	for (int i = 1; i + 1 < argc; i += 2) {
+		const std::string k = argv[i];
+		if (k == "--seed")  { one_seed = static_cast<uint32_t>(std::strtoul(argv[i + 1], nullptr, 0)); }
+		if (k == "--steps") { steps = static_cast<std::size_t>(std::strtoul(argv[i + 1], nullptr, 0)); }
+	}
+	if (one_seed != 0u) {
+		std::printf("\n[Torture] seed=0x%08X steps=%zu\n", one_seed, steps);
+		const bool ok = torture::run(one_seed, steps);
+		std::printf("%s\n", ok ? "  ok    survived" : "  FAIL");
+		return ok ? 0 : 1;
+	}
+
 	group("Initialization");
 	testInitAcceptsValidConfig();
 	testInitRefusalMatrix();
@@ -499,8 +519,22 @@ int main()
 	testCtsFrozenCounterNeverTrips();
 	testCtsStillDetectsLostCompletion();
 
+	group("CrossDirection");
+	testRxErrorDuringTxTeardown();
+	testTxErrorDuringRxTeardown();
+
+	group("FailureRecovery");
+	testInitFailsWhenFirstArmFails();
+	testSendFailureLeavesNoTrace();
+	testDrainingUartIsNeverAStall();
+	testSyntheticAndRealCompletionRaceOnce();
+	testAbortTimeoutDuringStallKeepsOwnership();
+
 	group("Watchdog");
 	testWatchdogRevivesDeadReceiver();
+
+	group("RandomizedTorture");
+	testRandomizedTorture(steps);
 
 	std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;

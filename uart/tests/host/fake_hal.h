@@ -73,6 +73,7 @@ void note_consumer_sees(const void* buf) noexcept;
 void note_consumer_done(const void* buf) noexcept;
 
 std::size_t distinct_chunks_armed() noexcept;
+void clear_armed_history() noexcept; // restart the census (e.g. after overflow)
 
 } // namespace fake
 

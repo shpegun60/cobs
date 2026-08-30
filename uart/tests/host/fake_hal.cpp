@@ -83,6 +83,8 @@ void note_consumer_sees(const void* buf) noexcept
 
 void note_consumer_done(const void* buf) noexcept { mark(buf, Slot::Free); }
 
+void clear_armed_history() noexcept { g_model.armed_history.clear(); }
+
 std::size_t distinct_chunks_armed() noexcept
 {
 	std::vector<const void*> uniq;

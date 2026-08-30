@@ -1139,7 +1139,20 @@ private:
 			return;
 		}
 
-		// A TRANSFER THAT STOPPED MOVING. Disabled under CTS, where the peer
+		// DMA FINISHED FEEDING THE UART, which is still shifting the tail out
+		// of its FIFO and shift register. The counter sits at zero and cannot
+		// move again, so "frozen" here means progress-complete, not stalled —
+		// the rule above owns what happens next, when TC arrives. Without
+		// this the stall detector would report failure for a frame that is
+		// physically still going out, which at low baud rates (a full FIFO
+		// takes ~0.5 s to drain at 300 baud) is reachable rather than
+		// theoretical.
+		if (remaining == 0u) {
+			return;
+		}
+
+		// A TRANSFER THAT STOPPED MOVING. Only a non-zero counter can
+		// meaningfully stall. Disabled under CTS, where the peer
 		// may legitimately hold the DMA still for as long as it likes. Its
 		// own counter is the whole debounce: feeding a confirmed stall into
 		// m_failCounter as well would double the latency and drag the
