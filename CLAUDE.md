@@ -51,7 +51,7 @@ Tests are grouped by guarantee (Initialization, RxOwnership, RxDiscontinuity, Tx
 
 ## Architecture
 
-`doc/UART_COBS_ARCHITECTURE.md` is the authoritative design document — read it before implementing or modifying any transport code. Its core rules:
+`doc/UART_COBS_ARCHITECTURE.md` is the original design document — read it before implementing or modifying any transport code. Its core rules:
 
 - **Three layers**: byte transport (UART/TCP/…) → COBS (framing, packet lifetime, allocation) → application (`CobsMsg` / `PacketRef`). "UART handles bytes. COBS handles packets."
 - The transport implements only `tx_busy()` and `send(span)` (interface `IByteTx`); it has **no TX queue**, no knowledge of framing, CRC, or packet sizes. TX-busy policy (retry/drop/queue) belongs to layers above.
@@ -61,6 +61,8 @@ Tests are grouped by guarantee (Initialization, RxOwnership, RxDiscontinuity, Tx
 - CRC is a COBS/protocol policy, never a UART feature.
 
 Section 33 of the doc ("Key invariants") lists the invariants any implementation must preserve.
+
+**`doc/COBS_ENGINE.md` supersedes it for the COBS layer.** The architecture document is a design sketch and its UART sections are now partly historical (the implemented driver is a template with an internal chunk pool, not the external-storage engine it describes); `COBS_ENGINE.md` is the reviewed contract the COBS implementation must satisfy — decision table, decoder state machine, size arithmetic, the in-place TX overlap invariant with its proof, and the test plan. Where the two disagree, `COBS_ENGINE.md` wins. Notably it replaces the virtual `IByteTx` with a compile-time `ByteTransport` concept and splits a non-template `CobsDecoder` out of the templated `Cobs`.
 
 ## Reference material
 
