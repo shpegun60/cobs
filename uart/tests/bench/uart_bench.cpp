@@ -41,6 +41,12 @@
 #ifndef BENCH_CHUNK_COUNT
 #define BENCH_CHUNK_COUNT 4u
 #endif
+/* High-baud sweep: rebuild with -DBENCH_BAUD=1000000/3000000/6000000/10000000.
+ * USART3 kernel clock is PCLK1 = 150 MHz: oversampling 16 tops out at
+ * 9.375 Mbaud, so faster rates switch to oversampling 8 (max 18.75M). */
+#ifndef BENCH_BAUD
+#define BENCH_BAUD 115200u
+#endif
 
 BenchCounter g_bench_usart_irq;
 BenchCounter g_bench_rx_dma_irq;
@@ -147,10 +153,11 @@ void buildReport()
 	 * library sites. probe.rx is already inside usart/rx_dma. */
 	const uint64_t cycles = f.usart.total + f.rx_dma.total + f.tx_dma.total
 	                      + f.probe.slow.total + f.probe.tx_start.total;
-	/* Basis points of one core: cycles / (SystemCoreClock * win_s) * 1e4. */
+	/* Milli-percent of one core: at these clock rates two decimal places
+	 * round everything interesting down to 0.00. */
 	const uint64_t denom =
 		static_cast<uint64_t>(SystemCoreClock / 1000u) * (f.win_ms ? f.win_ms : 1u);
-	const uint32_t cpu_bp = static_cast<uint32_t>((cycles * 10000u) / denom);
+	const uint32_t cpu_mp = static_cast<uint32_t>((cycles * 100000u) / denom);
 
 	std::snprintf(
 		s_report, sizeof s_report,
@@ -161,7 +168,7 @@ void buildReport()
 		"SLOW=%lucy/%lu avg=%lu max=%lu | "
 		"TXSTART=%lucy/%lu avg=%lu max=%lu | "
 		"BYTES=%lu CH=%lu GAP=%lu TXFR=%lu | "
-		"WIN=%lums CPU=%lu.%02lu%% | OVR=%lu ERR=%lu RST=%lu\r\n",
+		"WIN=%lums CPU=%lu.%03lu%% | OVR=%lu ERR=%lu RST=%lu\r\n",
 		static_cast<unsigned long>(sat32(f.probe.rx.total)),
 		static_cast<unsigned long>(f.probe.rx.calls),
 		static_cast<unsigned long>(avgp(f.probe.rx)),
@@ -191,8 +198,8 @@ void buildReport()
 		static_cast<unsigned long>(f.win.gaps),
 		static_cast<unsigned long>(f.win.tx_frames),
 		static_cast<unsigned long>(f.win_ms),
-		static_cast<unsigned long>(cpu_bp / 100u),
-		static_cast<unsigned long>(cpu_bp % 100u),
+		static_cast<unsigned long>(cpu_mp / 1000u),
+		static_cast<unsigned long>(cpu_mp % 1000u),
 		static_cast<unsigned long>(f.ovr),
 		static_cast<unsigned long>(f.rxe + f.txe),
 		static_cast<unsigned long>(f.rst));
@@ -226,6 +233,19 @@ extern "C" void bench_init(void)
 	SCB_EnableDCache();
 
 	uart_probe::init(); // TRCENA + CM7 CoreSight unlock + CYCCNTENA
+
+	/* Sweep support: rebase the CubeMX-configured UART onto the bench baud.
+	 * HAL_UART_Init rewrites CR1, dropping FIFOEN, so the FIFO setup from
+	 * MX_USART3_UART_Init is repeated afterwards. */
+	huart3.Init.BaudRate = BENCH_BAUD;
+	huart3.Init.OverSampling = (BENCH_BAUD > 9000000u) ? UART_OVERSAMPLING_8
+	                                                   : UART_OVERSAMPLING_16;
+	if (HAL_UART_Init(&huart3) != HAL_OK ||
+	    HAL_UARTEx_SetTxFifoThreshold(&huart3, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK ||
+	    HAL_UARTEx_SetRxFifoThreshold(&huart3, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK ||
+	    HAL_UARTEx_EnableFifoMode(&huart3) != HAL_OK) {
+		Error_Handler();
+	}
 
 	std::memset(s_tx_frame, 0x55, sizeof s_tx_frame);
 

@@ -734,6 +734,12 @@ public:
 			started = (HAL_UART_Transmit_DMA(m_huart, bytes.data(),
 			                                 static_cast<uint16_t>(bytes.size())) == HAL_OK);
 			if (started) {
+#ifdef DMA_IT_HT
+				// Mirror of the RX side: this driver exposes no half-TX
+				// event, yet the HAL enables HT on every start — measured on
+				// H7S as exactly 2 DMA IRQs per frame instead of 1.
+				__HAL_DMA_DISABLE_IT(m_huart->hdmatx, DMA_IT_HT);
+#endif
 				m_txBusy = true;
 			}
 		}

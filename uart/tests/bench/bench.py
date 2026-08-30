@@ -139,7 +139,7 @@ def main():
             if args.csv:
                 with open(args.csv, "a", encoding="utf-8") as f:
                     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
-                    f.write(f"{stamp},{num},{name},{report}\n")
+                    f.write(f"{stamp},{args.baud},{num},{name},{report}\n")
 
 
 if __name__ == "__main__":
