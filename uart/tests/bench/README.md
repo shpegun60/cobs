@@ -87,3 +87,31 @@ Note on 115200 baud: cycles-per-event numbers (avg/max) are baud-independent
 — they are the LL-decision inputs. CPU% at this baud will be tiny; project
 it to a target baud as `events/s × cycles/event` rather than re-running at
 every speed.
+
+## Design verdict (from the 115200→10M sweep, results_*.csv)
+
+```text
+HAL backend:
+    ACCEPTED
+
+LL backend:
+    REJECTED by measured ROI
+    (full RX IRQ ≈ 1100 cy / 256 B chunk = 4.3 cy/B; even the VCP-shaped
+     worst case — 8.5k IDLE events/s at 10 Mbaud full duplex — costs 2.2%
+     of one 600 MHz M7)
+
+Default ChunkSize:
+    workload-dependent
+    128 better for short/IDLE-heavy bursts on M7 (cache-invalidate scales
+    with chunk size: 603/637/692 cy RX for 128/256/512 at 10M over VCP)
+    larger chunks expected to benefit true continuous (TC-heavy) streams
+
+Verified:
+    H7S3 @ 600 MHz, D-cache enabled, up to 10 Mbaud, full duplex
+    zero OVR / ERR / RST / GAP at every point of the sweep
+```
+
+A future loopback run (true TC-heavy continuous, no USB bridge in the path)
+is a characterization test only — one more point on the graph to confirm the
+128/256/512 crossover. Nothing in `Uart.h` changes from its results unless
+they show OVR/GAP or a concrete functional defect.
