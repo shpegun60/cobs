@@ -34,7 +34,12 @@
 
 #include "main.h" // must provide the HAL / UART_HandleTypeDef for the target series
 
-#if defined(HAL_UART_MODULE_ENABLED) || defined(HAL_USART_MODULE_ENABLED)
+// This driver targets the asynchronous UART HAL exclusively: every symbol it
+// uses (UART_HandleTypeDef, HAL_UARTEx_ReceiveToIdle_DMA, ...) is declared
+// only under HAL_UART_MODULE_ENABLED. Accepting HAL_USART_MODULE_ENABLED as
+// well would let a synchronous-USART-only project through this guard and fail
+// deep inside the body instead of compiling out cleanly.
+#if defined(HAL_UART_MODULE_ENABLED)
 
 #include "uart_regs.h"       // SR/DR vs ISR/RDR abstraction (all STM32 series)
 #include "irq/IRQGuard.h"
@@ -307,13 +312,25 @@ public:
 				huart->hdmatx->State == HAL_DMA_STATE_RESET) {
 			return false; // HAL_DMA_Init() was never run for rx/tx
 		}
+		// The buffer-switching scheme REQUIRES a one-shot RX DMA: the
+		// reception must END when the buffer fills or the line goes idle, so
+		// that a published chunk is never written behind the consumer's back.
+		// Both continuous modes must be rejected, and they are spelled
+		// differently per DMA IP:
 #ifdef DMA_CIRCULAR
-		// The buffer-switching scheme REQUIRES normal-mode RX DMA: in
-		// circular mode TC does not stop reception and the published chunk
-		// would be overwritten behind the consumer's back. (On GPDMA-only
-		// families DMA_CIRCULAR is not defined and basic transfers are
-		// normal-mode by construction.)
+		// Classic channel/stream DMA (F0/F1/F3/F4/F7/G0/G4/L4/H7 DMA1-2 ...).
 		if (huart->hdmarx->Init.Mode == DMA_CIRCULAR) {
+			return false;
+		}
+#endif
+#ifdef DMA_LINKEDLIST
+		// GPDMA/HPDMA (H5, H7RS, U5, WBA ...): DMA_CIRCULAR does not exist
+		// there; the continuous variant is DMA_LINKEDLIST_CIRCULAR, which the
+		// UART HAL itself tests before deciding whether to end reception on
+		// IDLE. Plain linked-list mode is refused as well: HAL_DMA_Abort()
+		// zeroes CBR1 for linked-list transfers, which would make the
+		// received-count read in dmaReceivedCount() report a full chunk.
+		if ((huart->hdmarx->Mode & DMA_LINKEDLIST) != 0u) {
 			return false;
 		}
 #endif
@@ -471,39 +488,25 @@ private:
 	void isrRxEvent(const uint16_t size) noexcept
 	{
 #if UART_ENGINE_HAS_RXEVENT_TYPE
-		const HAL_UART_RxEventTypeTypeDef evt = HAL_UARTEx_GetRxEventType(m_huart);
-
-		if (evt == HAL_UART_RXEVENT_HT) {
+		if (HAL_UARTEx_GetRxEventType(m_huart) == HAL_UART_RXEVENT_HT) {
 			return; // HT is disabled in receiveArm(); ignore if it slips through
 		}
-
-		if (evt == HAL_UART_RXEVENT_IDLE) {
-			// Reception is still running into the current buffer — it must be
-			// stopped before the chunk can be handed to the consumer.
-			// (On TC reception has already stopped by itself.)
-			//
-			// IDLE by definition means the line has been quiet for >= 1 frame
-			// time, so no byte is in flight at this instant. Bytes that start
-			// arriving during this ISR are held by the RX hardware (RDR +
-			// shift register on legacy IP: 2 bytes; RX FIFO on newer IP:
-			// 8..16 bytes) and are picked up when DMA is re-armed below; an
-			// overflow beyond that raises ORE, which the error path recovers.
-			//
-			// This abort is the one blocking HAL call made from an ISR: the
-			// DMA EN bit clears within a few AHB cycles after the disable, so
-			// the internal poll exits immediately in practice (this is also
-			// ST's own reference pattern for buffer switching); a truly
-			// wedged bus is the IWDG's job, not this driver's.
-			HAL_UART_AbortReceive(m_huart);
-		}
-#else
-		// Old HAL without HAL_UARTEx_GetRxEventType(): reception state is an
-		// equivalent discriminator — READY means the transfer completed (TC),
-		// anything else means IDLE fired mid-buffer and DMA is still running.
+#endif
+		// On BOTH event kinds the HAL has already ENDED the reception before
+		// invoking this callback — verified in the F1, G4 and H7RS HAL
+		// sources:
+		//   TC   -> UART_DMAReceiveCplt() clears CR3.DMAR and sets RxState
+		//           READY (the DMA finished by itself in normal mode);
+		//   IDLE -> HAL_UART_IRQHandler() clears CR3.DMAR, sets RxState READY
+		//           and calls HAL_DMA_Abort(hdmarx) itself, and only then
+		//           invokes HAL_UARTEx_RxEventCallback.
+		// So the abort below is only a safety net for a HAL that leaves
+		// reception running (a continuous mode — which init() rejects for
+		// every DMA IP — or a future HAL change). Normally it is skipped,
+		// which keeps a full HAL teardown out of the hot path.
 		if (m_huart->RxState != HAL_UART_STATE_READY) {
 			HAL_UART_AbortReceive(m_huart);
 		}
-#endif /* UART_ENGINE_HAS_RXEVENT_TYPE */
 
 		__DMB(); // DMA-written data visible before publishing
 
@@ -830,5 +833,5 @@ extern "C" void HAL_UART_ErrorCallback(UART_HandleTypeDef* huart)
 #endif /* UART_ENGINE_IMPLEMENT */
 #endif /* internal callbacks */
 
-#endif /* HAL_UART_MODULE_ENABLED || HAL_USART_MODULE_ENABLED */
+#endif /* HAL_UART_MODULE_ENABLED */
 #endif /* UART_ENGINE_UART_H_ */

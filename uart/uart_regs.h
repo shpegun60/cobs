@@ -21,7 +21,7 @@
 
 #include "main.h" // pulls the family HAL and CMSIS device header
 
-#if defined(HAL_UART_MODULE_ENABLED) || defined(HAL_USART_MODULE_ENABLED)
+#if defined(HAL_UART_MODULE_ENABLED)
 
 /* ------------------------- register map detection ------------------------ */
 
@@ -101,5 +101,5 @@
 
 #endif /* UART_ENGINE_NEW_USART_IP */
 
-#endif /* HAL_UART_MODULE_ENABLED || HAL_USART_MODULE_ENABLED */
+#endif /* HAL_UART_MODULE_ENABLED */
 #endif /* UART_ENGINE_UART_REGS_H_ */
