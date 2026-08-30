@@ -7,3 +7,6 @@ build/
 
 # STM32 portability test objects
 uart/tests/port/out/
+
+# Local STM32CubeIDE hardware-test project (vendored CMSIS/HAL live in libs/)
+stm32_cube_test/
