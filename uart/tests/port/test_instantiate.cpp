@@ -47,6 +47,7 @@ extern "C" int uart_port_test()
 	s_uart.setRxHandler([](std::span<const uint8_t> bytes) { (void)bytes; });
 	s_uart.setTxHandler([](bool tx_ok) { (void)tx_ok; });
 	s_uart.setErrorHandler([](uint32_t code) { (void)code; });
+	s_uart.setRxGapHandler([]() { /* decoder would drop its partial frame */ });
 
 	s_uart.proceed(0u);
 	s_uart.proceed();   // default argument (HAL_GetTick) instantiation
