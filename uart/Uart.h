@@ -310,7 +310,7 @@ public:
 			// instances static lifetime (the documented usage) and this
 			// cannot arise.
 			UartRegistry::detach(this);
-			TeardownScope ts(*this);
+			AllTeardown ts(*this);
 			(void)HAL_UART_Abort(m_huart);
 			m_huart = nullptr;
 		}
@@ -344,9 +344,9 @@ public:
 				huart->RxState != HAL_UART_STATE_READY) {
 			return false;
 		}
-		if (huart->hdmarx->State == HAL_DMA_STATE_RESET ||
-				huart->hdmatx->State == HAL_DMA_STATE_RESET) {
-			return false; // HAL_DMA_Init() was never run for rx/tx
+		if (huart->hdmarx->State != HAL_DMA_STATE_READY ||
+				huart->hdmatx->State != HAL_DMA_STATE_READY) {
+			return false; // HAL_DMA_Init() never run, or a transfer is live
 		}
 		// __HAL_LINKDMA() sets the back-pointer that every HAL DMA callback
 		// casts and dereferences (UART_DMAReceiveCplt, UART_DMAError, ...).
@@ -424,6 +424,32 @@ public:
 		if (huart->Init.BaudRate == 0u) {
 			return false; // TX deadline computation needs a real baud rate
 		}
+		// COBS uses the whole 0x00..0xFF range, so the frame must carry EIGHT
+		// payload bits. WordLength counts the parity bit as one of its data
+		// bits, so "8B + parity" actually transports only 7 payload bits and
+		// would silently mangle the encoding. Exactly two configurations
+		// qualify: 8 bits without parity, or 9 bits with it.
+		{
+			const bool parity = (huart->Init.Parity != UART_PARITY_NONE);
+			const bool eight_bit_payload =
+				((huart->Init.WordLength == UART_WORDLENGTH_8B) && !parity) ||
+				((huart->Init.WordLength == UART_WORDLENGTH_9B) && parity);
+			if (!eight_bit_payload) {
+				return false;
+			}
+		}
+		// The engine keeps RX permanently armed while allowing TX, so both
+		// directions must be enabled...
+		if (huart->Init.Mode != UART_MODE_TX_RX) {
+			return false;
+		}
+#ifdef USART_CR3_HDSEL
+		// ...and the line must not be shared: in half-duplex the transmitter
+		// drives the very wire our receiver is listening on.
+		if (READ_BIT(huart->Instance->CR3, USART_CR3_HDSEL) != 0u) {
+			return false;
+		}
+#endif
 		// The DMA must move BYTES. HAL programs the transfer as a count of
 		// ELEMENTS (ChunkSize), so a half-word memory width would make the
 		// controller write 2 * ChunkSize bytes into a ChunkSize buffer and
@@ -433,13 +459,19 @@ public:
 		// Classic channel/stream DMA: the memory side is the chunk on RX and
 		// the caller's frame on TX.
 		if (huart->hdmarx->Init.MemDataAlignment != DMA_MDATAALIGN_BYTE ||
-				huart->hdmatx->Init.MemDataAlignment != DMA_MDATAALIGN_BYTE) {
+				huart->hdmatx->Init.MemDataAlignment != DMA_MDATAALIGN_BYTE ||
+				huart->hdmarx->Init.PeriphDataAlignment != DMA_PDATAALIGN_BYTE ||
+				huart->hdmatx->Init.PeriphDataAlignment != DMA_PDATAALIGN_BYTE) {
 			return false;
 		}
 #elif defined(DMA_DEST_DATAWIDTH_BYTE)
 		// GPDMA/HPDMA: memory is the destination on RX, the source on TX.
+		// memory side: RX destination, TX source; peripheral side: the other
+		// two. All four must be byte-wide.
 		if (huart->hdmarx->Init.DestDataWidth != DMA_DEST_DATAWIDTH_BYTE ||
-				huart->hdmatx->Init.SrcDataWidth != DMA_SRC_DATAWIDTH_BYTE) {
+				huart->hdmarx->Init.SrcDataWidth != DMA_SRC_DATAWIDTH_BYTE ||
+				huart->hdmatx->Init.SrcDataWidth != DMA_SRC_DATAWIDTH_BYTE ||
+				huart->hdmatx->Init.DestDataWidth != DMA_DEST_DATAWIDTH_BYTE) {
 			return false;
 		}
 #endif
@@ -527,24 +559,24 @@ public:
 			return; // not initialized (or init() failed) — nothing to service
 		}
 
-		// Every chunk queued on entry predates a pending gap: an overflow can
-		// only happen with the fifo FULL, and a chunk published after it needs
-		// a pop first. Draining that many chunks before announcing the gap
-		// therefore places the notification EXACTLY between the bytes received
-		// before the loss and those received after it.
-		std::size_t pre_gap = m_rx.size();
+		// Discontinuities are ordered STRUCTURALLY, never by counting:
+		//  - a zero-length chunk IS an in-band marker, published by every
+		//    path that throws away a partly filled buffer (error recovery,
+		//    restart), so it arrives in the queue exactly where the bytes
+		//    were lost;
+		//  - an overflow gap cannot be published (the queue was full), so it
+		//    is flagged instead, and the producer stays in the drop buffer
+		//    until announced — hence nothing received after it can be queued
+		//    ahead of the announcement below.
 		while (RxChunk* const c = m_rx.try_front()) {
-			if (pre_gap != 0u) {
-				--pre_gap;
-			} else {
-				announceGap();
-			}
-			if (m_rxHandler && c->size()) { // size()==0: chunk voided by recovery
+			if (c->size() == 0u) {
+				reportGap();
+			} else if (m_rxHandler) {
 				m_rxHandler(std::span<const uint8_t>{c->data(), c->size()});
 			}
 			m_rx.pop();
 		}
-		announceGap(); // no post-gap chunk arrived yet; do not hold it back
+		announceGap();
 
 		healthCheck(now_ms);
 
@@ -560,7 +592,7 @@ public:
 			// else) — and its result is honoured: on HAL_TIMEOUT the transfer
 			// is still live, so neither the DMA counter nor any chunk may be
 			// touched. Defer to the full restart path instead.
-			TeardownScope ts(*this);
+			RxTeardown ts(*this);
 			if (HAL_UART_AbortReceive(m_huart) != HAL_OK) {
 				++m_stats.rx_errors;
 				m_started = false; // tail of proceed() -> receiveRestart()
@@ -642,15 +674,27 @@ public:
 private:
 	// RAII: raises the teardown gate for the duration of a HAL abort. Thread
 	// context only — the counter is only ever mutated here.
+	template<bool Rx, bool Tx>
 	class TeardownScope final {
 	public:
-		explicit TeardownScope(Uart& u) noexcept : m_u(u) { ++m_u.m_teardown; }
-		~TeardownScope() { --m_u.m_teardown; }
+		explicit TeardownScope(Uart& u) noexcept : m_u(u)
+		{
+			if constexpr (Rx) { ++m_u.m_rxTeardown; }
+			if constexpr (Tx) { ++m_u.m_txTeardown; }
+		}
+		~TeardownScope()
+		{
+			if constexpr (Rx) { --m_u.m_rxTeardown; }
+			if constexpr (Tx) { --m_u.m_txTeardown; }
+		}
 		TeardownScope(const TeardownScope&) = delete;
 		TeardownScope& operator=(const TeardownScope&) = delete;
 	private:
 		Uart& m_u;
 	};
+	using RxTeardown  = TeardownScope<true, false>;
+	using TxTeardown  = TeardownScope<false, true>;
+	using AllTeardown = TeardownScope<true, true>;
 
 	/* ---------------------------- ISR: RX ------------------------------- */
 
@@ -662,7 +706,7 @@ private:
 		// A stray event delivered while a recovery is pending (m_started
 		// cleared, hardware not stopped yet), or one raised by a HAL abort
 		// in progress, must not publish anything or re-arm.
-		if (!m_started || m_teardown) {
+		if (!m_started || m_rxTeardown) {
 			return;
 		}
 
@@ -712,16 +756,23 @@ private:
 		receiveArm();
 	}
 
-	// Hand a pending discontinuity to the application exactly once.
+	// The byte stream is broken at this point in the sequence.
+	void reportGap() noexcept
+	{
+		if (m_gapHandler) {
+			m_gapHandler();
+		}
+	}
+
+	// Hand a pending overflow discontinuity to the application exactly once,
+	// which also releases the producer from the drop buffer.
 	void announceGap() noexcept
 	{
 		if (!m_rxGapPending) {
 			return;
 		}
 		m_rxGapPending = false;
-		if (m_gapHandler) {
-			m_gapHandler();
-		}
+		reportGap();
 	}
 
 	// Bit-times per transmitted byte for the configured frame format. The
@@ -778,7 +829,13 @@ private:
 		// attempt that failed) instead of claiming a second one: a claimed
 		// slot that never gets published would leak out of the fifo cycle
 		// permanently and shrink the pool.
-		if (m_active == nullptr) {
+		// While an overflow gap is pending the producer deliberately STAYS in
+		// the drop buffer. That is what makes the notification exactly
+		// ordered: no chunk received after the loss can enter the queue
+		// before proceed() has announced it, so everything the consumer finds
+		// queued is guaranteed to predate the gap. Counting chunks could not
+		// give this — the ISR keeps publishing while a slow handler runs.
+		if (m_active == nullptr && !m_rxGapPending) {
 			if ((m_active = m_rx.try_claim()) == nullptr) {
 				++m_stats.rx_overrun;
 				m_rxGapPending = true; // bytes will be lost; tell the decoder
@@ -819,7 +876,7 @@ private:
 		// proceed() retries this recovery. Invariant: only ever touch
 		// m_active once the DMA is confirmed stopped.
 		{
-			TeardownScope ts(*this);
+			RxTeardown ts(*this);
 			if (HAL_UART_AbortReceive(m_huart) != HAL_OK) {
 				++m_stats.rx_errors;
 				m_started = false;
@@ -838,11 +895,12 @@ private:
 
 		// A chunk still claimed here (e.g. the ISR froze ownership because
 		// reception had not stopped) is now safe to touch: the abort above
-		// ended the transfer. Drop its unreliable content and let
-		// receiveArm() re-arm DMA into that same slot — no publish, no leak.
-		if (m_active) {
-			m_active->commit_size(0);
-		}
+		// ended the transfer. Its content is unreliable and the line was not
+		// being received during the restart, so publish it EMPTY — that
+		// zero-length chunk is the in-band discontinuity marker the drain
+		// loop turns into a gap notification, in the right place in the
+		// stream. Publishing also returns the slot through the normal cycle.
+		voidActiveChunk();
 
 		++m_stats.restarts;
 		receiveArm();
@@ -857,7 +915,7 @@ private:
 		// flight, or this callback was raised by a HAL abort we are running
 		// (see m_teardown) — reporting success there would tell the layer
 		// above that a frame it never sent has been delivered.
-		if (!m_txBusy || m_teardown) {
+		if (!m_txBusy || m_txTeardown) {
 			return;
 		}
 
@@ -901,7 +959,7 @@ private:
 	// actual re-arm to proceed() (m_started = false), where HAL timeouts work.
 	void isrError() noexcept
 	{
-		if (m_teardown) {
+		if (m_rxTeardown || m_txTeardown) {
 			return; // raised by our own abort; the teardown path owns recovery
 		}
 
@@ -996,18 +1054,26 @@ private:
 			// memory, so tx_busy() must STAY true — clearing it would invite
 			// the layer above to free or reuse a buffer hardware still owns.
 			// The periodic audit below then escalates to a full recovery.
-			TeardownScope ts(*this);
-			if (HAL_UART_AbortTransmit(m_huart) != HAL_OK) {
-				++m_stats.tx_errors;
-			} else {
-				IRQGuard guard;
-				if (m_txBusy) {
-					m_txBusy = false;
+			bool notify = false;
+			{
+				TxTeardown ts(*this);
+				if (HAL_UART_AbortTransmit(m_huart) != HAL_OK) {
 					++m_stats.tx_errors;
-					if (m_txHandler) {
-						m_txHandler(false);
+				} else {
+					IRQGuard guard;
+					if (m_txBusy) {
+						m_txBusy = false;
+						++m_stats.tx_errors;
+						notify = true;
 					}
 				}
+			}
+			// Reported only after BOTH the guard and the gate are gone: the
+			// handler may legitimately call send() straight away, and that
+			// new transfer must neither run with interrupts masked nor have
+			// its completion swallowed by the gate that killed the old one.
+			if (notify && m_txHandler) {
+				m_txHandler(false);
 			}
 		}
 
@@ -1069,7 +1135,7 @@ private:
 			// m_txBusy says afterwards is ours alone to act on.
 			bool tx_was_active = false;
 			{
-				TeardownScope ts(*this);
+				AllTeardown ts(*this);
 				tx_was_active = m_txBusy;
 
 				(void)HAL_UART_DMAStop(m_huart);
@@ -1134,7 +1200,11 @@ private:
 	// success for a frame that was never sent, and RX would publish a partial
 	// chunk and re-arm DMA in the middle of the teardown. A depth counter,
 	// not a flag: recovery nests (healthCheck -> receiveRestart).
-	volatile uint8_t m_teardown = 0;
+	// One counter PER DIRECTION: RX and TX tear down independently, and a
+	// single gate would let an RX abort swallow a genuine TX completion (and
+	// vice versa) for the microseconds it runs. Full recovery raises both.
+	volatile uint8_t m_rxTeardown = 0;
+	volatile uint8_t m_txTeardown = 0;
 
 	// Watchdog state (thread context only).
 	uint32_t m_lastCheckTime = 0;
