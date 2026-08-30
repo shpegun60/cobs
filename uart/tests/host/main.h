@@ -130,7 +130,16 @@ typedef struct __UART_HandleTypeDef {
 	uint32_t ErrorCode;
 	HAL_UART_RxEventTypeTypeDef RxEventType;
 	uint16_t RxXferSize;
+	uint32_t FifoMode;
 } UART_HandleTypeDef;
+
+/* FIFO of the newer IP: modelled so the driver's save/restore around
+ * HAL_UART_Init is executed here, not merely compiled by the port matrix. */
+#define USART_CR1_FIFOEN    (1UL << 29)
+#define USART_CR3_TXFTCFG   (7UL << 29)
+#define USART_CR3_RXFTCFG   (7UL << 25)
+#define UART_FIFOMODE_ENABLE  USART_CR1_FIFOEN
+#define UART_FIFOMODE_DISABLE 0x00000000U
 
 /* --------------------------------- API ---------------------------------- */
 #ifdef __cplusplus
@@ -138,6 +147,10 @@ extern "C" {
 #endif
 
 uint32_t HAL_GetTick(void);
+HAL_StatusTypeDef HAL_UART_Init(UART_HandleTypeDef*);
+HAL_StatusTypeDef HAL_UARTEx_EnableFifoMode(UART_HandleTypeDef*);
+HAL_StatusTypeDef HAL_UARTEx_SetTxFifoThreshold(UART_HandleTypeDef*, uint32_t);
+HAL_StatusTypeDef HAL_UARTEx_SetRxFifoThreshold(UART_HandleTypeDef*, uint32_t);
 HAL_StatusTypeDef HAL_UARTEx_ReceiveToIdle_DMA(UART_HandleTypeDef*, uint8_t*, uint16_t);
 HAL_StatusTypeDef HAL_UART_Transmit_DMA(UART_HandleTypeDef*, const uint8_t*, uint16_t);
 HAL_StatusTypeDef HAL_UART_AbortReceive(UART_HandleTypeDef*);

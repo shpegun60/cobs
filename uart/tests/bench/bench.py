@@ -29,7 +29,11 @@ except ImportError:
     sys.exit("pyserial required: pip install pyserial")
 
 CMD_PAUSE = 0.15          # line silence around a command byte -> its own chunk
-PAYLOAD = bytes(range(0x20, 0x50))  # excludes 'R'(0x52) 'S'(0x53) 'T'(0x54) 't'(0x74)
+# Command bytes are 'R' 'S' 'T' 't' '1' '3'; 0x38..0x50 excludes all of them.
+PAYLOAD = bytes(range(0x38, 0x50))
+
+# Live speed change (setBaudRate on the board): command byte -> new rate.
+SWITCH = {115200: b"1", 3000000: b"3"}
 
 SCENARIOS = {
     0: "idle",
@@ -124,7 +128,19 @@ def main():
     ap.add_argument("--all", action="store_true", help="run scenarios 0..5 in order")
     ap.add_argument("--seconds", type=float, default=10.0)
     ap.add_argument("--csv", help="append raw report lines to this file")
+    ap.add_argument("--switch-to", type=int, choices=sorted(SWITCH),
+                    help="tell the board to setBaudRate() to this rate, reopen "
+                         "the port there, and verify the link still works")
     args = ap.parse_args()
+
+    if args.switch_to:
+        with serial.Serial(args.port, args.baud, timeout=0.05) as port:
+            command(port, SWITCH[args.switch_to])
+        time.sleep(0.5)  # the board tears down and re-arms reception
+        with serial.Serial(args.port, args.switch_to, timeout=0.05) as port:
+            print(f"--- after setBaudRate({args.switch_to}) ---")
+            print(run_scenario(port, 1, 3.0))
+        return
 
     todo = sorted(SCENARIOS) if args.all else [args.scenario]
     if todo == [None]:

@@ -31,6 +31,11 @@ struct Model {
 
 	uint32_t tick = 0;
 
+	/* --- reconfiguration (HAL_UART_Init) --- */
+	uint32_t applied_baud = 0;        // what the peripheral actually runs at
+	uint32_t init_calls   = 0;
+	uint32_t max_baud     = 10000000; // above this the kernel clock cannot go
+
 	/* --- fault injection --- */
 	int  fail_abort_receive  = 0; // N next calls return HAL_TIMEOUT (transfer stays live)
 	int  fail_abort_transmit = 0;

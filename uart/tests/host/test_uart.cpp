@@ -443,6 +443,7 @@ void testCtsStillDetectsLostCompletion()
 }
 
 #include "test_uart_races.inc"
+#include "test_uart_baud.inc"
 #include "test_uart_torture.inc"
 
 /* ============================== Watchdog =============================== */
@@ -532,6 +533,13 @@ int main(int argc, char** argv)
 
 	group("Watchdog");
 	testWatchdogRevivesDeadReceiver();
+
+	group("BaudRate");
+	testBaudRefusedWhileTransmitting();
+	testBaudChangeReArmsAndGaps();
+	testBaudChangePreservesFifoConfiguration();
+	testUnreachableBaudKeepsTheLinkAlive();
+	testBaudChangeRejectsNonsense();
 
 	group("RandomizedTorture");
 	testRandomizedTorture(steps);

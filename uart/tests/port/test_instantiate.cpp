@@ -23,6 +23,9 @@ static Uart<256, 4> s_uart;
 // accidentally valid only for one <ChunkSize, ChunkCount> pair, and puts a
 // second entry in the static registry.
 static Uart<64, 2> s_uart2;
+// The default configuration must itself be valid on every series — including
+// the D-cache alignment asserts that only fire on the M7 target.
+static Uart<> s_uart_defaults;
 
 extern "C" int uart_port_test()
 {
@@ -52,9 +55,16 @@ extern "C" int uart_port_test()
 	s_uart.proceed(0u);
 	s_uart.proceed();   // default argument (HAL_GetTick) instantiation
 	s_uart2.proceed(0u);
+	s_uart_defaults.proceed(0u);
 
 	static const uint8_t frame[8] = {1, 2, 3, 4, 5, 6, 7, 0};
 	ok = ok && s_uart.send(std::span<const uint8_t>{frame, sizeof frame});
+
+	// Line-speed reconfiguration: on FIFO-capable series this instantiates the
+	// save/restore around HAL_UART_Init, on the legacy IP that whole block
+	// must compile out.
+	ok = ok && s_uart.setBaudRate(921600u);
+	(void)s_uart2.setBaudRate(9600u);
 
 	(void)s_uart.tx_busy();
 	(void)s_uart.stats();

@@ -222,6 +222,53 @@ HAL_UART_RxEventTypeTypeDef HAL_UARTEx_GetRxEventType(const UART_HandleTypeDef* 
 	return h->RxEventType;
 }
 
+// Models the real HAL_UART_Init faithfully in the two ways that matter here:
+// it CLEARS FIFOEN and both threshold fields (they are inside the CR1/CR3
+// masks it rewrites but never in the value written back), and on an
+// unreachable baud rate it returns HAL_ERROR leaving gState BUSY.
+HAL_StatusTypeDef HAL_UART_Init(UART_HandleTypeDef* h)
+{
+	auto& m = fake::model();
+	++m.init_calls;
+	if (h->Instance == nullptr) { return HAL_ERROR; }
+	if (m.rx_armed || m.tx_armed) {
+		fake::fail("the peripheral was reconfigured with a transfer still live");
+	}
+
+	h->gState = HAL_UART_STATE_BUSY;
+	h->Instance->CR1 &= ~USART_CR1_FIFOEN;
+	h->Instance->CR3 &= ~(USART_CR3_TXFTCFG | USART_CR3_RXFTCFG);
+
+	// A rate the kernel clock cannot produce: the real UART_SetConfig bails
+	// out here, leaving the handle BUSY and the peripheral disabled.
+	if (h->Init.BaudRate > m.max_baud) { return HAL_ERROR; }
+
+	m.applied_baud = h->Init.BaudRate;
+	h->ErrorCode = HAL_UART_ERROR_NONE;
+	h->gState = HAL_UART_STATE_READY;
+	h->RxState = HAL_UART_STATE_READY;
+	return HAL_OK;
+}
+
+HAL_StatusTypeDef HAL_UARTEx_EnableFifoMode(UART_HandleTypeDef* h)
+{
+	h->FifoMode = UART_FIFOMODE_ENABLE;
+	h->Instance->CR1 |= USART_CR1_FIFOEN;
+	return HAL_OK;
+}
+
+HAL_StatusTypeDef HAL_UARTEx_SetTxFifoThreshold(UART_HandleTypeDef* h, uint32_t thr)
+{
+	h->Instance->CR3 = (h->Instance->CR3 & ~USART_CR3_TXFTCFG) | (thr & USART_CR3_TXFTCFG);
+	return HAL_OK;
+}
+
+HAL_StatusTypeDef HAL_UARTEx_SetRxFifoThreshold(UART_HandleTypeDef* h, uint32_t thr)
+{
+	h->Instance->CR3 = (h->Instance->CR3 & ~USART_CR3_RXFTCFG) | (thr & USART_CR3_RXFTCFG);
+	return HAL_OK;
+}
+
 HAL_StatusTypeDef HAL_UARTEx_ReceiveToIdle_DMA(UART_HandleTypeDef* h, uint8_t* dst, uint16_t len)
 {
 	auto& m = fake::model();

@@ -254,7 +254,17 @@ private:
 
 /* ================================ engine ================================== */
 
-template<std::size_t ChunkSize = 256, std::size_t ChunkCount = 4>
+// Defaults chosen from the H7S bench (10 Mbaud, D-cache on, cycles per useful
+// received byte — the whole engine, IRQs included):
+//     128x4 18.72   128x8 18.93   256x4 19.39   512x4 20.81
+// The per-event cost is dominated by invalidating the WHOLE chunk before
+// arming, so it grows with ChunkSize while the event rate falls more slowly:
+// smaller chunks win. 8 chunks rather than 4 keeps the pool at the same 1 KB
+// of buffering the old 256x4 default provided — halving ChunkSize alone would
+// silently halve every application's overflow headroom.
+// Raise ChunkSize for a genuinely continuous stream (each TC then replaces
+// several IDLE events); lower ChunkCount only if RAM is scarce.
+template<std::size_t ChunkSize = 128, std::size_t ChunkCount = 8>
 class Uart final {
 	static_assert(ChunkSize >= 32, "ChunkSize must be >= 32");
 	static_assert(ChunkSize <= 65535, "HAL reception length is u16");
@@ -569,6 +579,79 @@ public:
 	{
 		IRQGuard guard;
 		m_gapHandler = static_cast<GapHandler&&>(h);
+	}
+
+	// Change the line speed of an already-initialised engine, typically once
+	// at start-up right after init(). This driver keeps NO copy of the
+	// configuration: huart->Init is the single source of truth, so anything
+	// else the new rate needs — OverSampling for the very high rates of the
+	// newer IP — is set by the application there beforehand.
+	//
+	// Thread context only (the loop that runs proceed()), and never with a
+	// frame in flight: reprogramming BRR under a live TX would corrupt it.
+	// Reception is torn down and restarted, so the layer above sees a gap and
+	// never merges bytes received at the old speed into the new stream.
+	//
+	// Returns false — with the PREVIOUS speed restored and running — when the
+	// engine is unbound, the rate is zero or unreachable for this kernel
+	// clock, or a transmission is in progress.
+	bool setBaudRate(const uint32_t baud) noexcept
+	{
+		if (m_huart == nullptr || baud == 0u || m_txBusy) {
+			return false;
+		}
+
+		// Reception must be stopped before the peripheral is reprogrammed:
+		// HAL_UART_Init disables the UART and rewrites CR1/CR2/CR3 while the
+		// DMA would still be writing into a claimed chunk. Same rule as
+		// receiveRestart(): the abort runs outside an IRQ guard (it polls
+		// HAL_GetTick), and a failed abort means the transfer is NOT stopped,
+		// so nothing may be touched — leave the old speed and let proceed()
+		// retry the recovery.
+		{
+			RxTeardown ts(*this);
+			if (HAL_UART_AbortReceive(m_huart) != HAL_OK) {
+				++m_stats.rx_errors;
+				m_started = false;
+				return false;
+			}
+		}
+
+		// HAL_UART_Init only runs MspInit and resets the registered callbacks
+		// when gState is RESET (verified in the ST sources for every series):
+		// bound and READY, this reconfigures the peripheral alone — GPIO,
+		// DMA, NVIC and our callbacks all survive.
+#if defined(USART_CR1_FIFOEN)
+		// ...but it does silently drop the FIFO: FIFOEN and both threshold
+		// fields are inside the CR1/CR3 masks it clears and are never in the
+		// value written back, while huart->FifoMode keeps claiming the mode
+		// is on. Save the truth from the registers (no shadow copy in this
+		// object) and put the hardware back in agreement afterwards.
+		const uint32_t fifo_on = m_huart->Instance->CR1 & USART_CR1_FIFOEN;
+		const uint32_t tx_thr  = m_huart->Instance->CR3 & USART_CR3_TXFTCFG;
+		const uint32_t rx_thr  = m_huart->Instance->CR3 & USART_CR3_RXFTCFG;
+#endif
+		const uint32_t previous = m_huart->Init.BaudRate;
+		m_huart->Init.BaudRate = baud;
+		const bool ok = (HAL_UART_Init(m_huart) == HAL_OK);
+		if (!ok) {
+			// An unreachable rate leaves the peripheral half-configured and
+			// disabled. Put the working speed back so a bad request costs a
+			// gap, not the link.
+			m_huart->Init.BaudRate = previous;
+			(void)HAL_UART_Init(m_huart);
+		}
+#if defined(USART_CR1_FIFOEN)
+		if (fifo_on != 0u) {
+			(void)HAL_UARTEx_EnableFifoMode(m_huart);
+			(void)HAL_UARTEx_SetTxFifoThreshold(m_huart, tx_thr);
+			(void)HAL_UARTEx_SetRxFifoThreshold(m_huart, rx_thr);
+		}
+#endif
+		// Voids the stale chunk (the gap the decoder needs), clears the error
+		// flags the speed change may have raised on the line, and re-arms.
+		receiveRestart();
+		return ok && m_started;
 	}
 
 	/* ---------------------------- main loop ----------------------------- */

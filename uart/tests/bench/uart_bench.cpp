@@ -33,13 +33,14 @@
 #include <cstdio>
 #include <cstring>
 
-/* Chunk geometry of the run: rebuild with -DBENCH_CHUNK_SIZE=128/256/512
- * for the ChunkSize sweep; the baseline is 256/4. */
+/* Chunk geometry of the run: rebuild with -DBENCH_CHUNK_SIZE=128/256/512 for
+ * the sweep. The defaults mirror the library's own, so a plain build measures
+ * exactly the configuration an application gets from Uart<>. */
 #ifndef BENCH_CHUNK_SIZE
-#define BENCH_CHUNK_SIZE 256u
+#define BENCH_CHUNK_SIZE 128u
 #endif
 #ifndef BENCH_CHUNK_COUNT
-#define BENCH_CHUNK_COUNT 4u
+#define BENCH_CHUNK_COUNT 8u
 #endif
 /* High-baud sweep: rebuild with -DBENCH_BAUD=1000000/3000000/6000000/10000000.
  * USART3 kernel clock is PCLK1 = 150 MHz: oversampling 16 tops out at
@@ -83,6 +84,7 @@ struct Frozen {
 Window s_win;
 Frozen s_frozen;
 volatile bool s_report_pending = false;
+volatile uint32_t s_pending_baud = 0u;
 bool s_tx_gen = false;
 
 /* 0x55 pattern, no '\n': the PC reader separates report lines from generator
@@ -216,6 +218,10 @@ void onRx(std::span<const uint8_t> bytes)
 		          s_report_pending = true;  return;
 		case 'T': s_tx_gen = true;          return;
 		case 't': s_tx_gen = false;         return;
+		/* Live speed change. Deferred to the loop: this runs in the ISR,
+		 * setBaudRate() is thread-context only (it aborts and re-inits). */
+		case '1': s_pending_baud = 115200u;  return;
+		case '3': s_pending_baud = 3000000u; return;
 		default: break;
 		}
 	}
@@ -261,6 +267,13 @@ extern "C" void bench_init(void)
 extern "C" void bench_loop(void)
 {
 	s_uart.proceed();
+
+	if (s_pending_baud != 0u && !s_uart.tx_busy()) {
+		const uint32_t baud = s_pending_baud;
+		s_pending_baud = 0u;
+		s_uart.setBaudRate(baud); // failure leaves the old speed running
+		return;
+	}
 
 	if (s_report_pending) {
 		if (!s_uart.tx_busy()) {
