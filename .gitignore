@@ -13,3 +13,4 @@ stm32_cube_test/
 
 # Host test binaries
 uart/tests/host/out/
+cobs/tests/out/

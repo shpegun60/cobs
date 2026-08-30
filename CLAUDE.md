@@ -49,6 +49,16 @@ Tests are grouped by guarantee (Initialization, RxOwnership, RxDiscontinuity, Tx
 
 **Run both suites after any change to `uart/`.**
 
+### COBS decoder tests
+
+`cobs/CobsDecoder` holds no allocator and no transport, so its suite is an ordinary host program — no HAL, no fake anything:
+
+```bash
+PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH" sh cobs/tests/run.sh
+```
+
+The script builds with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` and adds `-fsanitize=address,undefined` when the toolchain provides the runtime. MinGW does not, so for a sanitized run use WSL (the exact command is in the script header). The battery is mostly property tests: every length × pattern × span-boundary combination, ~20k checks.
+
 ## Architecture
 
 `doc/UART_COBS_ARCHITECTURE.md` is the original design document — read it before implementing or modifying any transport code. Its core rules:
