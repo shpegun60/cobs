@@ -1,6 +1,6 @@
 #!/bin/sh
-# Host verification for cobs/CobsDecoder. No HAL, no allocator, no transport —
-# the decoder is a plain non-template class, so this is an ordinary program.
+# Host verification for the COBS layer. No HAL, no allocator fakes, no
+# transport — every suite here is an ordinary program.
 #
 # Sanitizers are used when the toolchain has them: a bounds error in a decoder
 # must fail loudly here, not become a discussion about why a test only fails on
@@ -27,13 +27,21 @@ else
 fi
 rm -f "$OUT/.sancheck" "$OUT/.sancheck.exe"
 
-# Each suite is its own binary: a failure names the layer without a stack trace.
-# shellcheck disable=SC2086
-"$CXX" -std=gnu++20 -O1 -g $WARN $SAN -I"$COBS" \
-  "$COBS/CobsDecoder.cpp" "$HERE/test_decoder.cpp" -o "$OUT/test_decoder.exe"
-# shellcheck disable=SC2086
-"$CXX" -std=gnu++20 -O1 -g $WARN $SAN -I"$COBS" \
-  "$HERE/test_packet_lifetime.cpp" -o "$OUT/test_packet_lifetime.exe"
+# One binary per layer, so a failure names the layer without a stack trace:
+#   test_decoder         framing only
+#   test_packet_lifetime the pool and the block geometry it lays out
+#   test_cobs_rx         the assembled RX vertical, end to end
+build() {
+	name="$1"
+	shift
+	# shellcheck disable=SC2086
+	"$CXX" -std=gnu++20 -O1 -g $WARN $SAN -I"$COBS" -I"$HERE" "$@" -o "$OUT/$name.exe"
+}
+
+build test_decoder         "$COBS/CobsDecoder.cpp" "$HERE/test_decoder.cpp"
+build test_packet_lifetime "$HERE/test_packet_lifetime.cpp"
+build test_cobs_rx         "$COBS/CobsDecoder.cpp" "$HERE/test_cobs_rx.cpp"
 
 "$OUT/test_decoder.exe"
 "$OUT/test_packet_lifetime.exe"
+"$OUT/test_cobs_rx.exe"

@@ -1,14 +1,17 @@
 /*
- * Host verification for the RX memory vertical: FixedPoolAllocator, RxPacket
- * and PacketRef. No decoder, no transport, no Cobs<> — if something here goes
- * red, the culprit is either the pool or the lifetime, and nothing else.
+ * Host verification for the allocator and the packet geometry it lays out:
+ * FixedPoolAllocator and RxPacket. No decoder, no PacketRef, no CobsRx — if
+ * something here goes red, the culprit is the pool and nothing else.
+ *
+ * PacketRef's semantics live in test_cobs_rx.cpp instead: adopt() is private
+ * to its legitimate owner, so a reference can only be obtained from a real
+ * CobsRx — which is the whole point of closing that API.
  *
  * The pool's own validation (COBS_POOL_CHECKS) is on in this build, so a
  * double free or a foreign pointer is observable as a rejection rather than as
  * a corrupted free list that surfaces three tests later.
  */
 #include "FixedPoolAllocator.h"
-#include "PacketRef.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -37,37 +40,6 @@ constexpr std::size_t kBlocks = 4;
 constexpr std::size_t kCapacity = 100; // deliberately not a round block size
 using Pool = FixedPoolAllocator<kCapacity, kBlocks>;
 using Packet = Pool::Packet;
-using Ref = PacketRef<Pool>;
-
-// A packet carrying recognisable contents, so a use-after-free or a mixed-up
-// block shows as wrong data and not merely as a wrong count.
-Packet* make(Pool& pool, const uint8_t tag, const std::size_t n)
-{
-	Packet* const p = pool.allocate();
-	if (p == nullptr) {
-		return nullptr;
-	}
-	const auto out = p->writable_payload();
-	for (std::size_t i = 0; i < n && i < out.size(); ++i) {
-		out[i] = static_cast<uint8_t>(tag + i);
-	}
-	p->size = static_cast<uint16_t>(n);
-	return p;
-}
-
-bool contentsMatch(const Ref& r, const uint8_t tag, const std::size_t n)
-{
-	if (r.size() != n) {
-		return false;
-	}
-	const auto d = r.data();
-	for (std::size_t i = 0; i < n; ++i) {
-		if (d[i] != static_cast<uint8_t>(tag + i)) {
-			return false;
-		}
-	}
-	return true;
-}
 
 /* ============================== the pool ================================ */
 
@@ -215,162 +187,6 @@ void testPoolRejectsAbuse()
 	check(pool.stats().rejected == 2, "a null free is a harmless no-op, not a rejection");
 }
 
-/* ============================== PacketRef =============================== */
-
-void testRefCounting()
-{
-	Pool pool;
-	{
-		Ref a = Ref::adopt(make(pool, 0x10, 8));
-		check(pool.available() == kBlocks - 1, "an adopted packet holds its block");
-		check(a.get()->refs == 1, "adoption takes over the existing reference, without incrementing");
-		check(contentsMatch(a, 0x10, 8), "and the payload reads back correctly");
-
-		{
-			Ref b = a;                                    // copy
-			check(a.get()->refs == 2, "a copy increments the count");
-			check(contentsMatch(b, 0x10, 8), "and sees the same bytes");
-			Ref c = std::move(b);                         // move
-			check(a.get()->refs == 2, "a move leaves the count alone");
-			check(!b, "the moved-from handle is empty");  // NOLINT: intentional
-			check(contentsMatch(c, 0x10, 8), "the moved-to handle owns the packet");
-		}
-		check(a.get()->refs == 1, "both temporaries released their references");
-		check(pool.available() == kBlocks - 1, "the block is still held by the last reference");
-	}
-	check(pool.available() == kBlocks, "the last reference returns the block");
-	check(pool.stats().rejected == 0, "and it was freed exactly once");
-}
-
-void testAssignment()
-{
-	Pool pool;
-
-	Ref a = Ref::adopt(make(pool, 0x20, 4));
-	Ref b = Ref::adopt(make(pool, 0x30, 6));
-	check(pool.available() == kBlocks - 2, "two packets are held");
-
-	b = a; // copy assignment: b's old packet must be released
-	check(pool.available() == kBlocks - 1, "copy assignment releases the overwritten packet");
-	check(a.get()->refs == 2, "and shares the assigned one");
-	check(contentsMatch(b, 0x20, 4), "b now sees a's payload");
-
-	Ref c = Ref::adopt(make(pool, 0x40, 5));
-	c = std::move(a); // move assignment
-	check(contentsMatch(c, 0x20, 4), "move assignment transfers the packet");
-	check(!a, "leaving the source empty");
-	check(pool.available() == kBlocks - 1, "and releases what c held before");
-
-	c.reset();
-	check(c.size() == 0 && !c, "reset empties the handle");
-	check(pool.available() == kBlocks - 1, "b still holds the shared packet");
-	b.reset();
-	check(pool.available() == kBlocks, "releasing the last reference frees it");
-	check(pool.stats().rejected == 0, "nothing was freed twice along the way");
-}
-
-void testSelfAssignment()
-{
-	Pool pool;
-	Ref a = Ref::adopt(make(pool, 0x50, 3));
-
-	// The classic way to destroy a refcounted handle: release before
-	// incrementing, and self-assignment frees what it is about to keep.
-	Ref& alias = a;
-	a = alias;
-	check(static_cast<bool>(a), "self copy-assignment leaves the handle valid");
-	check(a.get()->refs == 1, "with the count unchanged");
-	check(contentsMatch(a, 0x50, 3), "and the payload intact");
-	check(pool.stats().rejected == 0, "nothing was freed");
-
-	a = std::move(alias);
-	check(static_cast<bool>(a), "self move-assignment leaves the handle valid");
-	check(contentsMatch(a, 0x50, 3), "and the payload intact");
-
-	a.reset();
-	check(pool.available() == kBlocks, "and it still frees exactly once at the end");
-}
-
-/* ===================== ready-queue ownership transfer ==================== */
-
-// The intrusive queue of §6.2, small enough to be obviously correct: it is
-// here to exercise the ownership handshake, not to be the real one.
-class ReadyQueue final {
-public:
-	void push(Packet* const p) noexcept // takes the caller's reference
-	{
-		p->next_ready = nullptr;
-		if (m_tail != nullptr) { m_tail->next_ready = p; } else { m_head = p; }
-		m_tail = p;
-	}
-	[[nodiscard]] Ref pop() noexcept // hands that reference on, unchanged
-	{
-		Packet* const p = m_head;
-		if (p == nullptr) { return Ref{}; }
-		m_head = p->next_ready;
-		if (m_head == nullptr) { m_tail = nullptr; }
-		p->next_ready = nullptr;
-		return Ref::adopt(p);
-	}
-private:
-	Packet* m_head = nullptr;
-	Packet* m_tail = nullptr;
-};
-
-void testReadyQueueTransfer()
-{
-	Pool pool;
-	ReadyQueue q;
-
-	q.push(make(pool, 0x60, 2));
-	q.push(make(pool, 0x70, 3));
-	check(pool.available() == kBlocks - 2, "queued packets hold their blocks");
-
-	Ref first = q.pop();
-	check(contentsMatch(first, 0x60, 2), "packets come out in order");
-	check(first.get()->refs == 1,
-	      "the queue's reference became the handle's: no increment, no decrement");
-	check(first.get()->next_ready == nullptr, "and the queue link is cleared on the way out");
-
-	Ref second = q.pop();
-	check(contentsMatch(second, 0x70, 3), "the second packet follows");
-	check(!q.pop(), "an empty queue yields an empty handle");
-
-	first.reset();
-	second.reset();
-	check(pool.available() == kBlocks, "draining and releasing restores the pool");
-	check(pool.stats().rejected == 0, "with no double free anywhere in the handshake");
-}
-
-// The property that makes back-pressure work: an application that keeps
-// packets really does consume the pool, and really does give it back.
-void testRetentionConsumesCapacity()
-{
-	Pool pool;
-	ReadyQueue q;
-	std::vector<Ref> retained;
-
-	for (std::size_t i = 0; i < kBlocks; ++i) {
-		Packet* const p = make(pool, static_cast<uint8_t>(0x80 + i), 1);
-		check(p != nullptr, "packet " + std::to_string(i) + " allocated");
-		q.push(p);
-	}
-	while (Ref r = q.pop()) {
-		retained.push_back(std::move(r));
-	}
-	check(retained.size() == kBlocks, "the application retained every packet");
-	check(pool.available() == 0, "a retained packet holds pool capacity");
-	check(pool.allocate() == nullptr,
-	      "so the pool is genuinely exhausted while the application holds them");
-
-	retained.clear();
-	check(pool.available() == kBlocks, "releasing the retained packets restores capacity");
-	Packet* const again = pool.allocate();
-	check(again != nullptr, "and the pool allocates again");
-	pool.deallocate(again);
-	check(pool.stats().rejected == 0, "no block was ever returned twice");
-}
-
 } // namespace
 
 int main()
@@ -380,15 +196,6 @@ int main()
 	testGeometryAcrossCapacities();
 	testExhaustionAndReuse();
 	testPoolRejectsAbuse();
-
-	group("RefCounting");
-	testRefCounting();
-	testAssignment();
-	testSelfAssignment();
-
-	group("ReadyQueueOwnership");
-	testReadyQueueTransfer();
-	testRetentionConsumesCapacity();
 
 	std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;

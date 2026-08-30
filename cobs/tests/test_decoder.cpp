@@ -4,11 +4,13 @@
  * The decoder holds no allocator and no transport, so this whole battery is a
  * plain host binary: bytes in, bytes out, no HAL anywhere.
  *
- * The encoder here is a REFERENCE implementation for tests only — canonical
- * and straightforward. The production in-place encoder (doc/COBS_ENGINE.md
- * §8.3) is a different piece of code and gets its own tests when it exists.
+ * The encoder used here is the shared test reference (reference_encoder.h),
+ * canonical and straightforward. The production in-place encoder
+ * (doc/COBS_ENGINE.md §8.3) is a different piece of code and gets its own
+ * tests when it exists.
  */
 #include "CobsDecoder.h"
+#include "reference_encoder.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -45,49 +47,7 @@ void expect(const bool ok, const std::string& what)
 	}
 }
 
-/* ------------------------- reference encoder ---------------------------- */
-
-// Canonical/minimal COBS: no redundant trailing block for exact multiples of
-// 254. Delimiter appended.
-std::vector<uint8_t> encode(const std::vector<uint8_t>& payload)
-{
-	std::vector<uint8_t> out;
-	std::size_t code_pos = 0;
-	uint8_t code = 1;
-
-	out.push_back(0); // placeholder for the first code
-	for (const uint8_t b : payload) {
-		if (b != 0u) {
-			out.push_back(b);
-			++code;
-			if (code != 0xFFu) {
-				continue;
-			}
-		}
-		out[code_pos] = code;
-		code_pos = out.size();
-		out.push_back(0); // placeholder for the next code
-		code = 1;
-	}
-	out[code_pos] = code;
-
-	// A trailing 0xFF block consumed nothing and owes no zero: the canonical
-	// encoding stops there instead of emitting an empty 01 block.
-	if (out.back() == 1u && out.size() > 1u && !payload.empty() &&
-	    payload.back() != 0u && out[code_pos] == 1u && code_pos == out.size() - 1u) {
-		bool prev_full = false;
-		// The placeholder we just closed is redundant only when the previous
-		// block was a full 0xFF one and no byte followed it.
-		if (code_pos >= 255u) {
-			prev_full = (out[code_pos - 255u] == 0xFFu);
-		}
-		if (prev_full) {
-			out.pop_back();
-		}
-	}
-	out.push_back(0); // delimiter
-	return out;
-}
+using cobs_test::encode;
 
 /* ---------------------------- drive helper ------------------------------ */
 

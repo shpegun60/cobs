@@ -160,14 +160,22 @@ private:
 #if COBS_POOL_CHECKS
 	// Inside this pool, and exactly on a block boundary — a pointer into the
 	// middle of a block is as wrong as a pointer from somewhere else.
+	//
+	// Done on integer addresses, not on pointers: relational comparison and
+	// subtraction of pointers into DIFFERENT objects have no portable meaning,
+	// and a foreign pointer is precisely the case this function exists to
+	// catch. Here uintptr_t is not a dodge — the question really is about an
+	// address.
 	bool owns(const Block* const b) const noexcept
 	{
-		if (b < &m_blocks[0] || b > &m_blocks[BlockCount - 1]) {
+		const auto address = reinterpret_cast<std::uintptr_t>(b);
+		const auto begin   = reinterpret_cast<std::uintptr_t>(&m_blocks[0]);
+		const auto end     = begin + sizeof(m_blocks);
+
+		if (address < begin || address >= end) {
 			return false;
 		}
-		const auto off = reinterpret_cast<const unsigned char*>(b) -
-		                 reinterpret_cast<const unsigned char*>(&m_blocks[0]);
-		return (static_cast<std::size_t>(off) % sizeof(Block)) == 0;
+		return ((address - begin) % sizeof(Block)) == 0u;
 	}
 
 	// O(n) on purpose: this exists to catch a double free during testing, not

@@ -25,24 +25,27 @@
 #include <span>
 #include <utility>
 
+// The only legitimate source of packet references.
+template<class Allocator, std::size_t MaxDecodedSize>
+class CobsRx;
+
 template<class Allocator>
 class PacketRef final {
+	// adopt() and the raw pointer are deliberately NOT public. With both
+	// `adopt(Packet*)` and a public `get()`, an application could write
+	//
+	//     PacketRef b = PacketRef::adopt(a.get());
+	//
+	// and end up with two RAII owners of the SAME single reference: the first
+	// destructor frees the block, the second is left holding a dangling
+	// pointer. A hand-operated use-after-free factory in the public API.
+	template<class, std::size_t>
+	friend class CobsRx;
+
 public:
 	using Packet = RxPacket<Allocator>;
 
 	PacketRef() noexcept = default;
-
-	// Takes over an EXISTING reference without touching the count: the
-	// reference held by the ready queue becomes the one held here (§6.3).
-	// Named, and never implicit, so an ownership transfer is always visible
-	// at the call site.
-	[[nodiscard]] static PacketRef adopt(Packet* const p) noexcept
-	{
-		PacketRef r;
-		r.m_p = p;
-		return r;
-	}
-
 	~PacketRef() { release(); }
 
 	PacketRef(const PacketRef& other) noexcept : m_p(other.m_p)
@@ -96,10 +99,18 @@ public:
 		return (m_p != nullptr) ? m_p->size : 0u;
 	}
 
-	// For the COBS layer, not the application: the packet itself.
-	[[nodiscard]] Packet* get() const noexcept { return m_p; }
-
 private:
+	// Takes over an EXISTING reference without touching the count: the one
+	// held by the ready queue becomes the one held here (§6.3). Named, never
+	// implicit, and reachable only by the owner that legitimately has a
+	// reference to hand over.
+	[[nodiscard]] static PacketRef adopt(Packet* const p) noexcept
+	{
+		PacketRef r;
+		r.m_p = p;
+		return r;
+	}
+
 	void release() noexcept
 	{
 		if (m_p != nullptr && --m_p->refs == 0u) {

@@ -60,7 +60,8 @@ PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH" sh cobs/tests/run.sh
 It builds and runs two independent binaries, so a failure names the layer without needing a stack trace:
 
 - `test_decoder` — framing only; mostly property tests (every length × pattern × span-boundary combination, ~20k checks).
-- `test_packet_lifetime` — `FixedPoolAllocator` + `RxPacket` + `PacketRef`: exhaustion, reuse, refcount, assignment and self-assignment, ready-queue ownership transfer, and retention consuming pool capacity.
+- `test_packet_lifetime` — `FixedPoolAllocator` + `RxPacket`: block geometry across capacities, exhaustion, reuse, double free, foreign pointer.
+- `test_cobs_rx` — the assembled RX vertical end to end, plus `PacketRef` semantics. Those live here rather than beside the pool because `PacketRef::adopt()` is private to `CobsRx`, its only legitimate source; refcounts are therefore asserted behaviourally, through pool occupancy.
 
 The script builds with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` and adds `-fsanitize=address,undefined` when the toolchain provides the runtime. MinGW does not, so for a sanitized run use WSL (the exact command is in the script header). `COBS_POOL_CHECKS` (on by default in debug builds) compiles in the pool's double-free and foreign-pointer detection; a rejected free is counted and ignored rather than corrupting the free list.
 
