@@ -307,8 +307,18 @@ public:
 
 	// Pre-flight validates EVERYTHING the runtime relies on; a false return
 	// means the CubeMX/startup configuration is wrong, not a transient error.
+	//
+	// A Uart object binds to exactly ONE handle, exactly once: re-binding a
+	// live engine to a second UART would leave the first peripheral's DMA
+	// writing into this object's chunk storage while the second one is armed
+	// onto the very same memory. To drive another UART, use another object.
+	// (A failed init leaves the object unbound, so it may be retried.)
 	bool init(UART_HandleTypeDef* const huart) noexcept
 	{
+		if (m_huart != nullptr) {
+			return false; // already bound — see the one-shot contract above
+		}
+
 		/* --- structural checks ------------------------------------------ */
 		if (!huart || !huart->Instance || !huart->hdmarx || !huart->hdmatx) {
 			return false; // no handle, no peripheral, or DMA not linked (CubeMX)
@@ -347,9 +357,11 @@ public:
 		}
 
 		/* --- registration ------------------------------------------------ */
-		UartRegistry::detach(this); // re-init safe: drop a stale registration
-		m_huart = huart;
-
+		// Ownership progression: validate -> registry attach -> callbacks ->
+		// claim m_huart -> start hardware. m_huart stays null until this
+		// object is the confirmed owner, so a rejected init leaves nothing
+		// behind — in particular the destructor has no handle to abort, and
+		// cannot tear down a peripheral that belongs to another instance.
 		static constexpr UartRegistry::Ops ops = {
 			[](void* self, uint16_t n) { static_cast<Uart*>(self)->isrRxEvent(n); },
 			[](void* self)             { static_cast<Uart*>(self)->isrTxCplt(); },
@@ -372,8 +384,18 @@ public:
 		}
 #endif
 
+		m_huart = huart; // owner from here on; receiveRestart() needs it
+
 		receiveRestart();
-		return m_started;
+		if (!m_started) {
+			// Hardware refused to start: give the handle back rather than
+			// staying half-bound. Registered HAL callbacks (if any) are left
+			// in place — without a registry entry they resolve to no-ops.
+			UartRegistry::detach(this);
+			m_huart = nullptr;
+			return false;
+		}
+		return true;
 	}
 
 	// IRQ-guarded: a handler may be (re)assigned even while reception is
