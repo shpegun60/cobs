@@ -285,6 +285,11 @@ public:
 	// structurally valid frame.
 	using GapHandler   = tiny::delegate<void()>;
 
+	// Diagnostics, not accounting: these are plain counters incremented from
+	// both ISR and thread context, so concurrent increments can lose a count,
+	// and stats() hands out a live reference rather than a coherent snapshot.
+	// They are meant for sizing (is rx_overrun non-zero?), not for arithmetic
+	// anyone depends on. Atomics are deliberately not paid for here.
 	struct Stats {
 		uint32_t rx_overrun   = 0; // no free chunk -> bytes discarded into drop buffer
 		uint32_t rx_errors    = 0; // ORE/FE/NE/PE/DMA errors on the RX path
@@ -602,10 +607,17 @@ public:
 			{
 				RxTeardown ts(*this);
 				abort_status = HAL_UART_AbortReceive(m_huart);
+				if (abort_status != HAL_OK) {
+					// The old transfer may still be alive. Mark the receiver
+					// down BEFORE the gate drops: otherwise its callback slips
+					// through (both !m_started and the gate still look fine),
+					// re-arms, and the restart below then kills that brand-new
+					// transfer — a stream hole for nothing.
+					m_started = false; // tail of proceed() -> receiveRestart()
+				}
 			}
 			if (abort_status != HAL_OK) {
 				++m_stats.rx_errors;
-				m_started = false; // tail of proceed() -> receiveRestart()
 			} else {
 				IRQGuard guard;
 				// An RX ISR may have slipped in before the abort took effect
@@ -978,9 +990,17 @@ private:
 		// direction's genuine error: the blocking HAL aborts clear
 		// XferAbortCallback and do not raise HAL_UART_ErrorCallback
 		// themselves, so anything arriving here during one is real.
-		if (m_rxTeardown && m_txTeardown) {
+		const bool rx_teardown = (m_rxTeardown != 0u);
+		const bool tx_teardown = (m_txTeardown != 0u);
+		if (rx_teardown && tx_teardown) {
 			return;
 		}
+		// Each direction has exactly ONE arbiter of its ownership. Passing the
+		// early return is not enough: with a TX teardown in progress the HAL
+		// abort has already driven gState to READY, so the TX branch below
+		// would release the frame and report failure — stealing the terminal
+		// event from the thread-context path that is tearing it down, which
+		// reports it too. Mirrored for RX.
 
 		const uint32_t errorCode = HAL_UART_GetError(m_huart);
 
@@ -1017,11 +1037,11 @@ private:
 		// TX-triggered DMA fault: UART_DMAError() ends each direction
 		// independently), so the chunk holds an unreliable prefix: void it
 		// and let proceed() re-arm from thread context.
-		if (m_huart->RxState == HAL_UART_STATE_READY) {
+		if (!rx_teardown && m_huart->RxState == HAL_UART_STATE_READY) {
 			++m_stats.rx_errors;
 			voidActiveChunk();
 			m_started = false; // proceed() -> receiveRestart() with live tick
-		} else if (errorCode & UART_ENGINE_RX_PART) {
+		} else if (!rx_teardown && (errorCode & UART_ENGINE_RX_PART)) {
 			// Unreachable while RX runs on DMA (see above); kept for a HAL
 			// that would report a line error without ending the reception.
 			++m_stats.rx_errors;
@@ -1029,7 +1049,8 @@ private:
 
 		// TX: HAL ended the transmission on a TX-side error -> release the
 		// borrowed frame so the layer above can free or retry it.
-		if (m_txBusy && (deadState || gState == HAL_UART_STATE_READY)) {
+		if (!tx_teardown && m_txBusy &&
+				(deadState || gState == HAL_UART_STATE_READY)) {
 			m_txBusy = false;
 			++m_stats.tx_errors;
 			if (m_txHandler) {
