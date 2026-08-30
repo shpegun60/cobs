@@ -145,6 +145,23 @@ private:
 		unsigned char bytes[storage_size];
 	};
 
+	// m_blocks itself needs no alignas: every element of an array of Block is
+	// placed at alignof(Block) by the language, which is why sizeof(Block) —
+	// not storage_size — is the stride used below.
+	static_assert(alignof(Block) >= alignof(Packet),
+		"Block must be aligned for the Packet placed at its start");
+	// The second condition is the one that could actually be lost. A free
+	// block stores the free-list link at its start, so it must also be
+	// aligned for a pointer — and today that holds ONLY because RxPacket
+	// happens to contain pointers. Replace Allocator* owner with a pool index
+	// (a perfectly reasonable four-byte saving) and the packet's alignment
+	// drops to 2, making every free-list write unaligned: undefined behaviour
+	// on the host, a real fault on some Cortex-M parts, and visible nowhere
+	// near this file.
+	static_assert(alignof(Block) >= alignof(Block*),
+		"a free block holds the free-list link at its start, so it must be "
+		"aligned for a pointer as well as for a Packet");
+
 	// A free block stores the link to the next free block in its own storage;
 	// a block is never both linked and in use, so this cannot alias live data.
 	static Block*& link_of(Block* const b) noexcept
