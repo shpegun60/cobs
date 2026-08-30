@@ -592,8 +592,18 @@ public:
 			// else) — and its result is honoured: on HAL_TIMEOUT the transfer
 			// is still live, so neither the DMA counter nor any chunk may be
 			// touched. Defer to the full restart path instead.
-			RxTeardown ts(*this);
-			if (HAL_UART_AbortReceive(m_huart) != HAL_OK) {
+			// The gate covers ONLY the abort. receiveArm() below starts a NEW
+			// transfer, and with a small ChunkSize at multi-Mbaud its first
+			// IDLE/TC event can land almost immediately — inside a still-open
+			// gate it would be mistaken for a leftover of the old transfer
+			// and dropped. Principle: a teardown gate protects the teardown,
+			// never what comes after it.
+			HAL_StatusTypeDef abort_status;
+			{
+				RxTeardown ts(*this);
+				abort_status = HAL_UART_AbortReceive(m_huart);
+			}
+			if (abort_status != HAL_OK) {
 				++m_stats.rx_errors;
 				m_started = false; // tail of proceed() -> receiveRestart()
 			} else {
@@ -950,17 +960,26 @@ private:
 	// blocking HAL abort (HAL_DMA_Abort polls HAL_GetTick, which is frozen
 	// while an interrupt is being serviced). By the time HAL invokes this
 	// callback it has already done the transfer-level cleanup itself:
-	//  - blocking RX errors (ORE, DMA): HAL ended the reception -> RxState READY;
-	//  - non-blocking line noise (PE/FE/NE): reception KEEPS RUNNING — the
-	//    corrupted bytes stay in the stream and are filtered by CRC/COBS above,
-	//    so killing and restarting the receiver here would only lose data;
+	//  - RX errors: with DMA reception active EVERY error is blocking — the
+	//    HAL treats "any error occurs in DMA mode reception" that way, so it
+	//    runs UART_EndRxTransfer() and aborts the RX DMA before calling us,
+	//    leaving RxState READY. That suits us: the partly filled chunk is
+	//    voided, which publishes the zero-length marker the drain loop turns
+	//    into a GapHandler call, and the decoder resynchronizes instead of
+	//    splicing bytes across the corruption;
 	//  - TX-side error: HAL ended the transmission -> gState READY.
 	// This ISR therefore only classifies, releases ownership and defers the
 	// actual re-arm to proceed() (m_started = false), where HAL timeouts work.
 	void isrError() noexcept
 	{
-		if (m_rxTeardown || m_txTeardown) {
-			return; // raised by our own abort; the teardown path owns recovery
+		// Suppressed only while BOTH directions are being torn down, i.e. when
+		// we are deliberately killing the whole peripheral and own its
+		// recovery. A single-direction teardown must not hide the other
+		// direction's genuine error: the blocking HAL aborts clear
+		// XferAbortCallback and do not raise HAL_UART_ErrorCallback
+		// themselves, so anything arriving here during one is real.
+		if (m_rxTeardown && m_txTeardown) {
+			return;
 		}
 
 		const uint32_t errorCode = HAL_UART_GetError(m_huart);
@@ -1003,7 +1022,9 @@ private:
 			voidActiveChunk();
 			m_started = false; // proceed() -> receiveRestart() with live tick
 		} else if (errorCode & UART_ENGINE_RX_PART) {
-			++m_stats.rx_errors; // line noise; reception still running
+			// Unreachable while RX runs on DMA (see above); kept for a HAL
+			// that would report a line error without ending the reception.
+			++m_stats.rx_errors;
 		}
 
 		// TX: HAL ended the transmission on a TX-side error -> release the
