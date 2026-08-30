@@ -602,7 +602,18 @@ private:
 		// timeout with HAL_GetTick(), and the tick freezes while interrupts
 		// are masked — a truly wedged DMA would spin forever. In thread
 		// context the tick keeps running and the HAL timeout can fire.
-		HAL_UART_AbortReceive(m_huart);
+		//
+		// Its result MUST be honoured: on a DMA-abort timeout the HAL returns
+		// HAL_TIMEOUT and the transfer is NOT stopped. Touching or re-arming
+		// m_active then would hand a slot to hardware we do not control. Bail
+		// out instead, leaving the chunk claimed and unpublished — the next
+		// proceed() retries this recovery. Invariant: only ever touch
+		// m_active once the DMA is confirmed stopped.
+		if (HAL_UART_AbortReceive(m_huart) != HAL_OK) {
+			++m_stats.rx_errors;
+			m_started = false;
+			return;
+		}
 
 		IRQGuard guard;
 
