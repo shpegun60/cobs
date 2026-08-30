@@ -33,23 +33,21 @@ New source/header/form files must be added to `SOURCES`/`HEADERS`/`FORMS` in `CO
 sh uart/tests/port/build.sh
 ```
 
-Run this after any change to `uart/`.
+Objects land in `uart/tests/port/out/`; inspect codegen with the same toolchain's `arm-none-eabi-objdump -d -C`. IDE clangd errors like "main.h not found" inside `uart/Uart.h` are expected — that header only compiles against an STM32 HAL via this matrix or the host fake HAL below.
 
 ### Host test suite (executable)
 
-`uart/tests/host/` runs the driver against a fake HAL on the desktop — unlike the
-port matrix it EXECUTES the interleavings (pending-IRQ PRIMASK model, DMA
-ownership tracking, fault injection):
+`uart/tests/host/` runs the driver against a fake HAL on the desktop — unlike the port matrix it EXECUTES the interleavings:
 
 ```bash
 PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH" sh uart/tests/host/run.sh
 ```
 
-Tests are grouped by guarantee (Initialization, RxOwnership, RxDiscontinuity,
-TxOwnership, TeardownArbitration, FaultInjection, Watchdog), not by HAL
-function, so they survive refactoring inside the driver. Objects land in `uart/tests/port/out/`; inspect codegen with the same toolchain's `arm-none-eabi-objdump -d -C`. IDE clangd errors like "main.h not found" inside `uart/Uart.h` are expected — that header only compiles against an STM32 HAL via this matrix.
+The fake HAL models the real behaviours verified in the ST sources (IDLE/TC end reception before the callback; every RX error is blocking in DMA mode; an abort may raise the completion callback of the transfer it interrupts; aborts can return `HAL_TIMEOUT`), plus a PRIMASK where an interrupt raised while masked becomes **pending** and runs on restore, and a DMA ownership model that asserts DMA-owned memory is never handed to the consumer.
 
-There are no tests or linters configured.
+Tests are grouped by guarantee (Initialization, RxOwnership, RxDiscontinuity, TxOwnership, TeardownArbitration, FaultInjection, Watchdog), not by HAL function, so they survive refactoring inside the driver.
+
+**Run both suites after any change to `uart/`.**
 
 ## Architecture
 
