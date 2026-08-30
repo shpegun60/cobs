@@ -10,3 +10,6 @@ uart/tests/port/out/
 
 # Local STM32CubeIDE hardware-test project (vendored CMSIS/HAL live in libs/)
 stm32_cube_test/
+
+# Host test binaries
+uart/tests/host/out/

@@ -1,0 +1,294 @@
+/*
+ * Behaviour of the fake HAL. It deliberately models the REAL HAL quirks we
+ * verified in the F1/G4/H7RS sources, not a convenient version of them:
+ *   - IDLE and TC both END the reception and set RxState READY BEFORE the
+ *     RxEvent callback runs;
+ *   - with DMA reception active every RX error is blocking: the transfer is
+ *     ended and the DMA aborted before HAL_UART_ErrorCallback;
+ *   - an abort may raise the completion callback of the transfer it
+ *     interrupts (ST documents this in HAL_UART_DMAStop);
+ *   - aborts can return HAL_TIMEOUT, leaving the transfer live.
+ */
+#include "fake_hal.h"
+#include <cstring>
+#include <functional>
+#include <vector>
+
+namespace fake {
+
+uint32_t g_primask = 0u;
+
+void dispatch_pending() noexcept; // declared in cmsis_compiler.h, defined below
+
+namespace {
+Model g_model;
+std::vector<std::function<void()>> g_pending;
+bool g_dispatching = false;
+} // namespace
+
+Model& model() noexcept { return g_model; }
+
+void fail(const std::string& what) noexcept { g_model.violations.push_back(what); }
+
+void reset() noexcept
+{
+	g_model = Model{};
+	g_pending.clear();
+	g_primask = 0u;
+	g_dispatching = false;
+}
+
+// Raise an interrupt: it runs now only if PRIMASK allows it, otherwise it
+// becomes pending. That is the whole point of the harness.
+static void raise(std::function<void()> fn) noexcept
+{
+	g_pending.push_back(std::move(fn));
+	dispatch_pending();
+}
+
+void dispatch_pending() noexcept
+{
+	if (g_primask != 0u || g_dispatching) {
+		return;
+	}
+	g_dispatching = true;
+	while (!g_pending.empty() && g_primask == 0u) {
+		auto fn = g_pending.front();
+		g_pending.erase(g_pending.begin());
+		fn();
+	}
+	g_dispatching = false;
+}
+
+/* ------------------------- ownership bookkeeping ------------------------ */
+
+static void mark(const void* buf, Slot s) noexcept
+{
+	if (buf != nullptr) {
+		g_model.slots[buf] = s;
+	}
+}
+
+void note_consumer_sees(const void* buf) noexcept
+{
+	if (g_model.rx_armed && buf == g_model.rx_dst) {
+		fail("consumer was handed the buffer the DMA currently owns");
+	}
+	const auto it = g_model.slots.find(buf);
+	if (it != g_model.slots.end() && it->second == Slot::DmaOwned) {
+		fail("consumer sees a DMA-owned slot");
+	}
+	mark(buf, Slot::ConsumerVisible);
+}
+
+void note_consumer_done(const void* buf) noexcept { mark(buf, Slot::Free); }
+
+std::size_t distinct_chunks_armed() noexcept
+{
+	std::vector<const void*> uniq;
+	for (const void* p : g_model.armed_history) {
+		bool seen = false;
+		for (const void* q : uniq) {
+			if (p == q) { seen = true; break; }
+		}
+		if (!seen) { uniq.push_back(p); }
+	}
+	return uniq.size();
+}
+
+/* ----------------------------- bus events ------------------------------- */
+
+void advance_tick(uint32_t ms) noexcept { g_model.tick += ms; }
+
+void rx_bytes(const void* data, std::size_t n) noexcept
+{
+	if (!g_model.rx_armed) {
+		fail("bytes arrived while no RX transfer was armed");
+		return;
+	}
+	if (n > g_model.huart->hdmarx->CountRemaining) {
+		fail("DMA asked to write past the end of its buffer");
+		return;
+	}
+	const std::size_t written = g_model.rx_len - g_model.huart->hdmarx->CountRemaining;
+	std::memcpy(g_model.rx_dst + written, data, n);
+	g_model.huart->hdmarx->CountRemaining -= static_cast<uint32_t>(n);
+}
+
+// Common tail of IDLE/TC: the HAL ends the reception first, then calls back.
+static void endRxAndNotify(HAL_UART_RxEventTypeTypeDef evt) noexcept
+{
+	UART_HandleTypeDef* const h = g_model.huart;
+	const uint16_t got = static_cast<uint16_t>(g_model.rx_len - h->hdmarx->CountRemaining);
+
+	h->Instance->CR3 &= ~USART_CR3_DMAR;
+	h->RxState = HAL_UART_STATE_READY;
+	h->RxEventType = evt;
+	h->hdmarx->State = HAL_DMA_STATE_READY;
+	mark(g_model.rx_dst, Slot::Free); // no longer DMA-owned; the driver still holds the claim
+	g_model.rx_armed = false;
+
+	raise([got]() { HAL_UARTEx_RxEventCallback(g_model.huart, got); });
+}
+
+void rx_idle() noexcept
+{
+	if (!g_model.rx_armed) { return; }
+	endRxAndNotify(HAL_UART_RXEVENT_IDLE);
+}
+
+void rx_tc() noexcept
+{
+	if (!g_model.rx_armed) { return; }
+	g_model.huart->hdmarx->CountRemaining = 0u;
+	endRxAndNotify(HAL_UART_RXEVENT_TC);
+}
+
+void rx_error(uint32_t code) noexcept
+{
+	UART_HandleTypeDef* const h = g_model.huart;
+	h->ErrorCode |= code;
+	// "any error occurs in DMA mode reception" is blocking: end RX, abort DMA.
+	if (g_model.rx_armed) {
+		h->Instance->CR3 &= ~USART_CR3_DMAR;
+		h->RxState = HAL_UART_STATE_READY;
+		h->hdmarx->State = HAL_DMA_STATE_READY;
+		mark(g_model.rx_dst, Slot::Free);
+		g_model.rx_armed = false;
+	}
+	raise([]() { HAL_UART_ErrorCallback(g_model.huart); });
+}
+
+void tx_done() noexcept
+{
+	if (!g_model.tx_armed) { return; }
+	g_model.tx_armed = false;
+	g_model.huart->gState = HAL_UART_STATE_READY;
+	g_model.huart->Instance->CR3 &= ~USART_CR3_DMAT;
+	g_model.huart->hdmatx->State = HAL_DMA_STATE_READY;
+	raise([]() { HAL_UART_TxCpltCallback(g_model.huart); });
+}
+
+void tx_error() noexcept
+{
+	g_model.huart->ErrorCode |= HAL_UART_ERROR_DMA;
+	g_model.tx_armed = false;
+	g_model.huart->gState = HAL_UART_STATE_READY;
+	g_model.huart->Instance->CR3 &= ~USART_CR3_DMAT;
+	raise([]() { HAL_UART_ErrorCallback(g_model.huart); });
+}
+
+} // namespace fake
+
+/* ------------------------------- HAL API -------------------------------- */
+
+extern "C" {
+
+uint32_t HAL_GetTick(void) { return fake::model().tick; }
+
+uint32_t HAL_UART_GetError(const UART_HandleTypeDef* h) { return h->ErrorCode; }
+uint32_t HAL_DMA_GetError(const DMA_HandleTypeDef* h) { return h->ErrorCode; }
+
+HAL_UART_RxEventTypeTypeDef HAL_UARTEx_GetRxEventType(const UART_HandleTypeDef* h)
+{
+	return h->RxEventType;
+}
+
+HAL_StatusTypeDef HAL_UARTEx_ReceiveToIdle_DMA(UART_HandleTypeDef* h, uint8_t* dst, uint16_t len)
+{
+	auto& m = fake::model();
+	if (m.fail_arm > 0) { --m.fail_arm; return HAL_ERROR; }
+	if (m.rx_armed) {
+		fake::fail("RX armed twice without an intervening stop");
+		return HAL_BUSY;
+	}
+	const auto it = m.slots.find(dst);
+	if (it != m.slots.end() && it->second == fake::Slot::ConsumerVisible) {
+		fake::fail("DMA armed onto a buffer the consumer is reading");
+	}
+
+	m.rx_armed = true;
+	m.rx_dst = dst;
+	m.rx_len = len;
+	m.armed_history.push_back(dst);
+	m.slots[dst] = fake::Slot::DmaOwned;
+
+	h->hdmarx->CountRemaining = len;
+	h->hdmarx->State = HAL_DMA_STATE_BUSY;
+	h->RxState = HAL_UART_STATE_BUSY_RX;
+	h->RxXferSize = len;
+	h->Instance->CR3 |= USART_CR3_DMAR;
+	return HAL_OK;
+}
+
+HAL_StatusTypeDef HAL_UART_Transmit_DMA(UART_HandleTypeDef* h, const uint8_t* src, uint16_t len)
+{
+	auto& m = fake::model();
+	if (m.tx_armed) {
+		fake::fail("TX started while a transfer was still active");
+		return HAL_BUSY;
+	}
+	m.tx_armed = true;
+	m.tx_src = src;
+	m.tx_len = len;
+	h->gState = HAL_UART_STATE_BUSY_TX;
+	h->hdmatx->State = HAL_DMA_STATE_BUSY;
+	h->Instance->CR3 |= USART_CR3_DMAT;
+	return HAL_OK;
+}
+
+HAL_StatusTypeDef HAL_UART_AbortReceive(UART_HandleTypeDef* h)
+{
+	auto& m = fake::model();
+	if (m.rx_cplt_inside_abort && m.rx_armed) {
+		m.rx_cplt_inside_abort = false;
+		fake::rx_idle(); // ST: the interrupted transfer may still raise its callback
+	}
+	if (m.fail_abort_receive > 0) {
+		--m.fail_abort_receive;
+		h->ErrorCode |= HAL_UART_ERROR_DMA;
+		return HAL_TIMEOUT; // transfer deliberately left live
+	}
+	if (m.rx_armed) {
+		fake::note_consumer_done(m.rx_dst);
+		m.rx_armed = false;
+	}
+	h->Instance->CR3 &= ~USART_CR3_DMAR;
+	h->hdmarx->State = HAL_DMA_STATE_READY;
+	h->RxState = HAL_UART_STATE_READY;
+	return HAL_OK;
+}
+
+HAL_StatusTypeDef HAL_UART_AbortTransmit(UART_HandleTypeDef* h)
+{
+	auto& m = fake::model();
+	if (m.tx_cplt_inside_abort && m.tx_armed) {
+		m.tx_cplt_inside_abort = false;
+		fake::tx_done();
+	}
+	if (m.fail_abort_transmit > 0) {
+		--m.fail_abort_transmit;
+		h->ErrorCode |= HAL_UART_ERROR_DMA;
+		return HAL_TIMEOUT;
+	}
+	m.tx_armed = false;
+	h->Instance->CR3 &= ~USART_CR3_DMAT;
+	h->hdmatx->State = HAL_DMA_STATE_READY;
+	h->gState = HAL_UART_STATE_READY;
+	return HAL_OK;
+}
+
+HAL_StatusTypeDef HAL_UART_Abort(UART_HandleTypeDef* h)
+{
+	const HAL_StatusTypeDef a = HAL_UART_AbortReceive(h);
+	const HAL_StatusTypeDef b = HAL_UART_AbortTransmit(h);
+	return (a == HAL_OK && b == HAL_OK) ? HAL_OK : HAL_TIMEOUT;
+}
+
+HAL_StatusTypeDef HAL_UART_DMAStop(UART_HandleTypeDef* h)
+{
+	(void)h;
+	return HAL_OK;
+}
+
+} // extern "C"

@@ -699,15 +699,18 @@ private:
 	template<bool Rx, bool Tx>
 	class TeardownScope final {
 	public:
+		// Explicit load/store, not ++/--: a read-modify-write on a
+		// volatile-qualified operand is deprecated in C++20 and removed in
+		// later drafts.
 		explicit TeardownScope(Uart& u) noexcept : m_u(u)
 		{
-			if constexpr (Rx) { ++m_u.m_rxTeardown; }
-			if constexpr (Tx) { ++m_u.m_txTeardown; }
+			if constexpr (Rx) { m_u.m_rxTeardown = static_cast<uint8_t>(m_u.m_rxTeardown + 1u); }
+			if constexpr (Tx) { m_u.m_txTeardown = static_cast<uint8_t>(m_u.m_txTeardown + 1u); }
 		}
 		~TeardownScope()
 		{
-			if constexpr (Rx) { --m_u.m_rxTeardown; }
-			if constexpr (Tx) { --m_u.m_txTeardown; }
+			if constexpr (Rx) { m_u.m_rxTeardown = static_cast<uint8_t>(m_u.m_rxTeardown - 1u); }
+			if constexpr (Tx) { m_u.m_txTeardown = static_cast<uint8_t>(m_u.m_txTeardown - 1u); }
 		}
 		TeardownScope(const TeardownScope&) = delete;
 		TeardownScope& operator=(const TeardownScope&) = delete;
