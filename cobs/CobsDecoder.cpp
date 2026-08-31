@@ -4,9 +4,16 @@ void CobsDecoder::attach_output(const std::span<uint8_t> output) noexcept
 {
 	// Only meaningful as the answer to NeedOutput. While discarding there is
 	// no frame to decode into, and accepting a buffer would strand it.
-	if (m_state != State::Decoding || m_hasOutput) {
+	if (m_state != State::Decoding) {
 		return;
 	}
+	// A segment that still has room is not being asked for. Replacing it would
+	// silently drop the bytes already written into it, which is exactly the
+	// kind of loss this class exists to make impossible.
+	if (m_hasOutput && m_written != m_output.size()) {
+		return;
+	}
+	m_decodedBefore += m_written; // the finished segment joins the total
 	m_output = output;
 	m_written = 0;
 	m_hasOutput = true;
@@ -48,26 +55,29 @@ CobsDecoder::Result CobsDecoder::consume(const std::span<const uint8_t> input) n
 
 		// State::Decoding
 		if (!m_hasOutput) {
-			// The owner has not answered NeedOutput yet. Ask again rather than
-			// write anywhere; it must attach or discard before progress.
+			// The owner has not answered the FIRST NeedOutput yet. Ask again
+			// rather than write anywhere — and in particular do not report a
+			// completion, which would invent an empty frame out of an
+			// unanswered question.
 			return {i, 0, Event::NeedOutput};
 		}
 
 		if (m_blockRemaining > 0u) {
 			// Data position. A zero cannot legally appear here: the encoder
 			// never produces one, so this is corruption or truncation. Checked
-			// before capacity — it is a framing error regardless of space.
+			// before capacity — it is a framing error regardless of space, and
+			// asking for a segment to put a malformed byte in would be absurd.
 			if (b == 0u) {
 				++i;
 				dropFrame();
 				m_state = State::Synced; // this delimiter already resynchronized us
 				return {i, 0, Event::Malformed};
 			}
-			if (m_written == m_output.size()) {
-				++i; // the byte belongs to a frame that is already doomed
-				dropFrame();
-				m_state = State::DropUntilDelimiter;
-				return {i, 0, Event::Oversize};
+			if (segmentFull()) {
+				// NOT consumed: this byte belongs in the next segment. The
+				// owner attaches one or discards, so the state changes either
+				// way and the next call makes progress.
+				return {i, 0, Event::NeedOutput};
 			}
 			m_output[m_written] = b;
 			++m_written;
@@ -78,8 +88,12 @@ CobsDecoder::Result CobsDecoder::consume(const std::span<const uint8_t> input) n
 
 		// Code position.
 		if (b == 0u) {
+			// A frame ends exactly here, whatever the state of the current
+			// segment: a full one is fine, and no further room is needed. The
+			// pending zero is NOT materialized — a block followed by the
+			// delimiter owes nothing.
 			++i;
-			const std::size_t size = m_written; // pendingZero is NOT materialized
+			const std::size_t size = decodedTotal();
 			dropFrame();
 			m_state = State::Synced;
 			return {i, size, Event::FrameComplete};
@@ -87,13 +101,10 @@ CobsDecoder::Result CobsDecoder::consume(const std::span<const uint8_t> input) n
 
 		// Another block follows, so the zero owed by the previous one is real.
 		if (m_pendingZero) {
-			if (m_written == m_output.size()) {
-				// Overflow detected BEFORE this code byte is taken, so consumed
-				// may be 0. Safe: the state below changes, so the next call
-				// consumes in DropUntilDelimiter.
-				dropFrame();
-				m_state = State::DropUntilDelimiter;
-				return {i, 0, Event::Oversize};
+			if (segmentFull()) {
+				// The implicit zero needs room too, and the code byte that
+				// revealed it is deliberately left unconsumed.
+				return {i, 0, Event::NeedOutput};
 			}
 			m_output[m_written] = 0u;
 			++m_written;

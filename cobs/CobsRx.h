@@ -28,9 +28,11 @@
 #define COBS_RX_H_
 
 #include "CobsDecoder.h"
+#include "CobsFrameFormat.h"
 #include "CobsHeapAllocator.h"
 #include "PacketRef.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -57,13 +59,17 @@ public:
 	static constexpr std::size_t max_decoded_size = Allocator::rx_max_size;
 	static_assert(max_decoded_size <= UINT16_MAX, "RxPacket::size is a uint16_t");
 
+	using Format = CobsFormatFor<Allocator>;
+	static constexpr std::size_t length_size = Format::length_size;
+
 	struct Stats {
-		uint32_t frames_delivered  = 0;
-		uint32_t frames_lost       = 0; // gaps, malformed, oversize, no memory
+		uint32_t frames_delivered   = 0;
+		uint32_t frames_lost        = 0; // every frame that did not reach the queue
 		uint32_t allocation_failure = 0;
-		uint32_t malformed         = 0;
-		uint32_t oversize          = 0;
-		uint32_t resyncs           = 0; // times we had to hunt for a delimiter
+		uint32_t malformed          = 0; // structural COBS error
+		uint32_t oversize           = 0; // declared length above rx_max_size
+		uint32_t length_mismatch    = 0; // header absent/short, or body != declared
+		uint32_t resyncs            = 0; // times we had to hunt for a delimiter
 	};
 
 	explicit CobsRx(Allocator& allocator) noexcept : m_allocator(allocator) {}
@@ -115,11 +121,6 @@ public:
 				// stream (§5.4), so this costs a frame but no resync.
 				dropBuilding();
 				break;
-			case CobsDecoder::Event::Oversize:
-				++m_stats.oversize;
-				dropBuilding();
-				++m_stats.resyncs;
-				break;
 			}
 		}
 	}
@@ -128,16 +129,14 @@ public:
 	// is never told, it simply does not receive that packet.
 	void gap() noexcept
 	{
-		if (m_building != nullptr) {
-			m_allocator.deallocate_rx(m_building);
-			m_building = nullptr;
-		}
+		releaseBuilding();
 		// Counted unconditionally: a gap always destroys framing continuity,
 		// so at least the frame spanning it is gone whether or not one had
 		// started from our side of the loss.
 		++m_stats.frames_lost;
 		++m_stats.resyncs;
 		m_decoder.discard_until_delimiter();
+		resetFrame();
 		// The ready queue is untouched: everything in it structurally
 		// predates the loss.
 	}
@@ -160,34 +159,119 @@ public:
 	[[nodiscard]] const Stats& stats() const noexcept { return m_stats; }
 
 private:
+	/*
+	 * Which segment the decoder is currently filling. This is the whole
+	 * two-stage RX: the header is decoded into a couple of local bytes, and
+	 * only then — knowing exactly how many body bytes are coming — is a packet
+	 * allocated and the decoder pointed straight at its final home.
+	 *
+	 *     Header  ->  parse N  ->  allocate_rx(N)  ->  Body  ->  publish
+	 *
+	 * There is no staging buffer for the payload and no copy after allocation.
+	 * The only temporary decoded storage in the whole RX path is the one or
+	 * two bytes of m_lengthBytes.
+	 */
+	enum class Stage : uint8_t { Header, Body };
+
 	void onNeedOutput() noexcept
 	{
-		m_building = m_allocator.allocate_rx();
-		if (m_building == nullptr) {
-			++m_stats.allocation_failure;
-			++m_stats.frames_lost;
-			++m_stats.resyncs;
-			m_decoder.discard_until_delimiter();
+		if (m_stage == Stage::Header) {
+			if (!m_headerAttached) {
+				// First request of a new frame: give it the length field.
+				m_headerAttached = true;
+				m_decoder.attach_output(std::span<uint8_t>{m_lengthBytes});
+				return;
+			}
+			// The header is complete and MORE decoded bytes are coming, so the
+			// body starts now and its size is already known.
+			beginBody();
 			return;
 		}
-		// No clamp: writable_payload() is defined by the policy's declared
-		// rx_max_size, so it already IS the protocol limit (§9.1.2). A policy
-		// whose storage is smaller than it declares is simply broken, and the
-		// place that catches it is the policy's own static_assert.
-		m_decoder.attach_output(m_building->writable_payload());
+
+		// Stage::Body, and the packet segment is full: the frame carries more
+		// body bytes than it declared.
+		++m_stats.length_mismatch;
+		abandonFrame();
+	}
+
+	// Turns a complete header into an allocated packet, or refuses the frame.
+	void beginBody() noexcept
+	{
+		const std::size_t declared = Format::load_length(m_lengthBytes.data());
+
+		if (declared > max_decoded_size) {
+			++m_stats.oversize;
+			abandonFrame();
+			return;
+		}
+		if (declared == 0u) {
+			// A zero-length body followed by more decoded bytes: the frame
+			// contradicts its own header.
+			++m_stats.length_mismatch;
+			abandonFrame();
+			return;
+		}
+
+		Packet* const packet = m_allocator.allocate_rx(declared);
+		if (packet == nullptr) {
+			++m_stats.allocation_failure;
+			abandonFrame();
+			return;
+		}
+		m_building = packet;
+		m_declared = declared;
+		m_stage = Stage::Body;
+		// EXACTLY the declared length, never rx_max_size: the block may be
+		// that small, and a longer span would both overrun it and hide an
+		// over-length frame that has to be rejected.
+		m_decoder.attach_output(packet->writable_payload(declared));
 	}
 
 	void onFrameComplete(const std::size_t decoded_size) noexcept
 	{
-		if (m_building == nullptr) {
-			// Unreachable through the decoder contract: a completion can only
-			// follow a NeedOutput that was answered. Guarded anyway so a
-			// broken contract costs a frame instead of a null dereference.
+		if (m_stage == Stage::Header) {
+			// The delimiter arrived before any body did. Only one of these is
+			// a real frame.
+			if (decoded_size < length_size) {
+				++m_stats.length_mismatch; // header absent or truncated
+				endFrame(true);
+				return;
+			}
+			const std::size_t declared = Format::load_length(m_lengthBytes.data());
+			if (declared != 0u) {
+				++m_stats.length_mismatch; // declared a body, sent none
+				endFrame(true);
+				return;
+			}
+			// A legitimately empty application packet.
+			Packet* const packet = m_allocator.allocate_rx(0);
+			if (packet == nullptr) {
+				++m_stats.allocation_failure;
+				endFrame(true);
+				return;
+			}
+			m_building = packet;
+			publish(0);
 			return;
 		}
-		m_building->size = static_cast<uint16_t>(decoded_size);
-		m_building->next_ready = nullptr;
 
+		// Stage::Body. decoded_size counts the header too.
+		const std::size_t body = decoded_size - length_size;
+		if (body != m_declared) {
+			// Short: the delimiter came before the declared bytes did. Long is
+			// impossible here — the segment is exactly m_declared bytes, so an
+			// extra byte raises NeedOutput instead of arriving.
+			++m_stats.length_mismatch;
+			endFrame(true);
+			return;
+		}
+		publish(body);
+	}
+
+	void publish(const std::size_t body) noexcept
+	{
+		m_building->size = static_cast<uint16_t>(body);
+		m_building->next_ready = nullptr;
 		if (m_readyTail != nullptr) {
 			m_readyTail->next_ready = m_building;
 		} else {
@@ -196,19 +280,61 @@ private:
 		m_readyTail = m_building;
 		m_building = nullptr;
 		++m_stats.frames_delivered;
+		endFrame(false);
 	}
 
-	void dropBuilding() noexcept
+	// Gives up on a frame BEFORE its delimiter, so the stream still has to be
+	// hunted forward — that is what makes this a resync, unlike a failure the
+	// delimiter itself revealed.
+	void abandonFrame() noexcept
+	{
+		releaseBuilding();
+		++m_stats.frames_lost;
+		++m_stats.resyncs;
+		m_decoder.discard_until_delimiter();
+		resetFrame();
+	}
+
+	// The frame is over — the delimiter has already resynchronized us, so a
+	// loss here costs no resync.
+	void endFrame(const bool lost) noexcept
+	{
+		if (lost) {
+			releaseBuilding();
+			++m_stats.frames_lost;
+		}
+		resetFrame();
+	}
+
+	void resetFrame() noexcept
+	{
+		m_stage = Stage::Header;
+		m_headerAttached = false;
+		m_declared = 0;
+	}
+
+	void releaseBuilding() noexcept
 	{
 		if (m_building != nullptr) {
 			m_allocator.deallocate_rx(m_building);
 			m_building = nullptr;
 		}
+	}
+
+	void dropBuilding() noexcept
+	{
+		releaseBuilding();
 		++m_stats.frames_lost;
+		resetFrame();
 	}
 
 	CobsDecoder m_decoder{};
 	Allocator&  m_allocator;
+
+	std::array<uint8_t, Format::length_size> m_lengthBytes{};
+	std::size_t m_declared = 0;
+	Stage m_stage = Stage::Header;
+	bool  m_headerAttached = false;
 
 	Packet* m_building  = nullptr;
 	Packet* m_readyHead = nullptr;

@@ -9,7 +9,7 @@
 #include "Cobs.h"
 #include "CobsFixedAllocator.h"
 #include "CobsHeapAllocator.h"
-#include "reference_encoder.h"
+#include "reference_frame.h"
 
 #include <cstdio>
 #include <memory>
@@ -104,7 +104,7 @@ void runEngine(const char* name)
 		const auto b = pattern(0x50, 9);
 		std::vector<uint8_t> wire;
 		for (const auto* p : {&a, &b}) {
-			for (const uint8_t x : cobs_test::encode(*p)) { wire.push_back(x); }
+			for (const uint8_t x : cobs_test::frame(*p, Engine::length_size)) { wire.push_back(x); }
 		}
 		cobs.consume(std::span<const uint8_t>{wire});
 
@@ -133,7 +133,7 @@ void runEngine(const char* name)
 		check(cobs.push(msg) == SendResult::Sent, "push sends it");
 		check(!msg, "the message surrendered its block");
 		check(cobs.tx_active(), "which the engine now holds");
-		check(t.sent.size() == 1 && t.sent[0] == cobs_test::encode(payload),
+		check(t.sent.size() == 1 && t.sent[0] == cobs_test::frame(payload, Engine::length_size),
 		      "and the transport received exactly the canonical frame");
 
 		// proceed() must not free the block while the transport still reads it.
@@ -185,7 +185,7 @@ void runEngine(const char* name)
 		check(cobs.push(second) == SendResult::Sent, "it sends once the link frees up");
 		auto expected = payload;
 		expected.push_back(0x34);
-		check(t.sent.back() == cobs_test::encode(expected),
+		check(t.sent.back() == cobs_test::frame(expected, Engine::length_size),
 		      "carrying everything that was written, in order");
 	}
 
@@ -208,7 +208,7 @@ void runEngine(const char* name)
 
 		t.refuse = false;
 		check(cobs.push(msg) == SendResult::Sent, "the retry succeeds");
-		check(t.sent.size() == 1 && t.sent[0] == cobs_test::encode(payload),
+		check(t.sent.size() == 1 && t.sent[0] == cobs_test::frame(payload, Engine::length_size),
 		      "sending the identical frame, encoded exactly once");
 	}
 
@@ -278,7 +278,7 @@ void runEngine(const char* name)
 		check(cobs.push(msg) == SendResult::Sent, "a frame goes out");
 
 		const auto in = pattern(0x70, 11);
-		cobs.consume(std::span<const uint8_t>{cobs_test::encode(in)});
+		cobs.consume(std::span<const uint8_t>{cobs_test::frame(in, Engine::length_size)});
 		const auto got = cobs.pop_packet();
 		check(got.size() == in.size(), "while a frame comes in on the same engine");
 
@@ -410,9 +410,11 @@ public:
 	static constexpr std::size_t tx_max_size = 512;
 
 	using Packet = RxPacket<OverallocPolicy>;
-	[[nodiscard]] Packet* allocate_rx() noexcept
+	using Format = CobsFrameFormat<rx_max_size, tx_max_size>;
+	[[nodiscard]] Packet* allocate_rx(const std::size_t requested_size) noexcept
 	{
-		void* const memory = ::operator new(sizeof(Packet) + rx_max_size, std::nothrow);
+		if (requested_size > rx_max_size) { return nullptr; }
+		void* const memory = ::operator new(sizeof(Packet) + requested_size, std::nothrow);
 		if (memory == nullptr) { return nullptr; }
 		Packet* const p = std::construct_at(static_cast<Packet*>(memory));
 		p->owner = this;
@@ -430,7 +432,7 @@ public:
 		if (requested > tx_max_size) { return {}; }
 		const std::size_t doubled = requested * 2u + 1u;
 		const std::size_t capacity = (doubled > tx_max_size) ? tx_max_size : doubled;
-		void* const memory = ::operator new(cobs_max_wire_size(capacity), std::nothrow);
+		void* const memory = ::operator new(Format::tx_storage_size_for_capacity(capacity), std::nothrow);
 		if (memory == nullptr) { return {}; }
 		++allocations;
 		last_granted = capacity;
@@ -463,7 +465,7 @@ void testReportedCapacitySurvivesTheEngine()
 	const auto payload = pattern(0x80, 12);
 	check(msg.write_bytes(std::span<const uint8_t>{payload}), "a payload is written");
 	check(cobs.push(msg) == SendResult::Sent, "and pushed");
-	check(t.sent.size() == 1 && t.sent[0] == cobs_test::encode(payload),
+	check(t.sent.size() == 1 && t.sent[0] == cobs_test::frame(payload, Engine::length_size),
 	      "the transport got the canonical frame");
 	check(cobs.allocator().frees == 0, "nothing is freed while the transport reads");
 
@@ -490,6 +492,92 @@ void testReportedCapacitySurvivesTheEngine()
 	}
 }
 
+
+/* =================== a complementary pair of engines ==================== */
+
+/*
+ * The wire-format claim of §3, exercised rather than asserted: two engines
+ * with MIRRORED limits agree on the header width and can talk to each other,
+ * while keeping their own directional limits.
+ *
+ *     Peer A: RX 1024, TX 64    -> length_size 2
+ *     Peer B: RX 64,   TX 1024  -> length_size 2
+ *
+ * Nothing here fakes a link: what A's transport was handed is fed straight
+ * into B's consume().
+ */
+void testComplementaryPeers()
+{
+	g_policy = "pair";
+	using A = Cobs<CobsHeapAllocator<1024, 64>>;
+	using B = Cobs<CobsHeapAllocator<64, 1024>>;
+
+	static_assert(A::length_size == 2 && B::length_size == 2,
+	              "the larger limit picks the width, so the pair agrees");
+	static_assert(A::max_decoded_size == 1024 && A::max_send_size == 64,
+	              "while A keeps its own directional limits");
+	static_assert(B::max_decoded_size == 64 && B::max_send_size == 1024,
+	              "and B keeps the mirrored ones");
+	check(true, "mirrored limits agree on the wire header and disagree on capacity");
+
+	A a;
+	B b;
+	FakeTransport ta;
+	FakeTransport tb;
+	check(a.set_transport(sender_for<A>(ta), busy_for<A>(ta)), "A binds");
+	check(b.set_transport(sender_for<B>(tb), busy_for<B>(tb)), "B binds");
+
+	{	// A -> B, at A's maximum send size.
+		const auto out = pattern(0x10, A::max_send_size);
+		auto msg = a.make_msg();
+		check(msg.write_bytes(std::span<const uint8_t>{out}), "A builds a 64-byte frame");
+		check(a.push(msg) == SendResult::Sent, "and sends it");
+
+		b.consume(std::span<const uint8_t>{ta.sent.back()});
+		const auto got = b.pop_packet();
+		check(got.size() == out.size(), "B receives it whole");
+		check(std::vector<uint8_t>(got.data().begin(), got.data().end()) == out,
+		      "byte for byte");
+		ta.finish();
+		a.proceed();
+	}
+	{	// B -> A, at a size only this direction allows: 300 bytes is legal for
+		// B to send and for A to receive, and illegal in the other direction.
+		const auto out = pattern(0x40, 300);
+		auto msg = b.make_msg();
+		check(msg.write_bytes(std::span<const uint8_t>{out}), "B builds a 300-byte frame");
+		check(b.push(msg) == SendResult::Sent, "and sends it");
+
+		a.consume(std::span<const uint8_t>{tb.sent.back()});
+		const auto got = a.pop_packet();
+		check(got.size() == 300, "A receives all 300 bytes");
+		check(std::vector<uint8_t>(got.data().begin(), got.data().end()) == out,
+		      "byte for byte, in the direction that allows it");
+
+		auto too_big = a.make_msg();
+		const auto over = pattern(0x50, 65);
+		check(too_big.write_bytes(std::span<const uint8_t>{over}) == false,
+		      "while A still refuses to SEND more than 64");
+		tb.finish();
+		b.proceed();
+	}
+	{	// And the limit that is not shared: 300 bytes arriving at B, whose
+		// rx_max_size is 64, is refused before any allocation.
+		const auto out = pattern(0x60, 300);
+		auto msg = b.make_msg();
+		check(msg.write_bytes(std::span<const uint8_t>{out}), "B builds another 300 bytes");
+		check(b.push(msg) == SendResult::Sent, "and sends it");
+
+		const std::size_t before = b.rx_stats().oversize;
+		b.consume(std::span<const uint8_t>{tb.sent.back()}); // fed to itself
+		check(b.rx_stats().oversize == before + 1,
+		      "B's own RX refuses a frame its TX side was free to build");
+		check(!b.has_packet(), "and nothing is delivered");
+		tb.finish();
+		b.proceed();
+	}
+}
+
 } // namespace
 
 int main()
@@ -501,6 +589,7 @@ int main()
 	group("FixedSpecific");
 	testFixedExhaustion();
 	testDefaultCapacityHint();
+	testComplementaryPeers();
 	testReportedCapacitySurvivesTheEngine();
 	testDestructorReclaimsActiveTx();
 

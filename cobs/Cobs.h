@@ -28,6 +28,7 @@
 #ifndef COBS_H_
 #define COBS_H_
 
+#include "CobsFrameFormat.h"
 #include "CobsHeapAllocator.h"
 #include "CobsMsg.h"
 #include "CobsRx.h"
@@ -59,6 +60,22 @@ public:
 	// is visible rather than implied (§4.1).
 	static constexpr std::size_t max_decoded_size = Allocator::rx_max_size;
 	static constexpr std::size_t max_send_size    = Allocator::tx_max_size;
+
+	/*
+	 * The wire format this engine speaks (COBS_ENGINE.md §3). Every frame
+	 * carries a fixed-width decoded length prefix, and its width is chosen
+	 * from the LARGER of the two limits so that one engine uses one header
+	 * width in both directions:
+	 *
+	 *     length_size = max(rx_max_size, tx_max_size) <= 255 ? 1 : 2
+	 *
+	 * Peers must agree on this exactly as they agree on a baud rate; two that
+	 * disagree cannot exchange even a one-byte frame. It is constexpr so an
+	 * integration build can static_assert the format it expects.
+	 */
+	using Format = CobsFormatFor<Allocator>;
+	static constexpr std::size_t length_size = Format::length_size;
+	using LengthType = typename Format::LengthType;
 
 	/*
 	 * What make_msg() reserves when the caller gives no hint (§8.3.1).

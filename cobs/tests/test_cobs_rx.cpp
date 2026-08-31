@@ -14,10 +14,13 @@
  * application depends on rather than the bookkeeping behind it.
  */
 #include "CobsFixedAllocator.h"
+#include "CobsHeapAllocator.h"
 #include "CobsRx.h"
-#include "reference_encoder.h"
+#include "reference_frame.h"
 
 #include <cstdio>
+#include <memory>
+#include <new>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -47,6 +50,14 @@ using Pool = CobsFixedAllocator<kMaxDecoded, kBlocks, kMaxDecoded, 2>;
 using Rx = CobsRx<Pool>;
 using Ref = Rx::Ref;
 
+// Every frame in this suite is an ENGINE frame: COBS([length][body]). The
+// length prefix is the protocol's, not the application's, so it is built once
+// here and never spelled out in a test body.
+std::vector<uint8_t> engine_frame(const std::vector<uint8_t>& body)
+{
+	return cobs_test::frame(body, Rx::length_size);
+}
+
 std::vector<uint8_t> payload(const uint8_t tag, const std::size_t n)
 {
 	std::vector<uint8_t> v(n);
@@ -56,7 +67,8 @@ std::vector<uint8_t> payload(const uint8_t tag, const std::size_t n)
 	return v;
 }
 
-bool matches(const Ref& r, const std::vector<uint8_t>& expected)
+template<class R>
+bool matches(const R& r, const std::vector<uint8_t>& expected)
 {
 	if (r.size() != expected.size()) {
 		return false;
@@ -88,7 +100,7 @@ void testRoundTripThroughTheWholeStack()
 
 		std::vector<uint8_t> wire;
 		for (const auto* p : {&a, &b, &c}) {
-			for (const uint8_t x : cobs_test::encode(*p)) { wire.push_back(x); }
+			for (const uint8_t x : engine_frame(*p)) { wire.push_back(x); }
 		}
 		feed(rx, wire);
 
@@ -112,7 +124,7 @@ void testRoundTripThroughTheWholeStack()
 void testSpanBoundaries()
 {
 	const auto p = payload(0x21, 40);
-	const auto wire = cobs_test::encode(p);
+	const auto wire = engine_frame(p);
 
 	bool all_ok = true;
 	for (std::size_t cut = 0; cut <= wire.size(); ++cut) {
@@ -139,7 +151,12 @@ void testDefaultAllocator()
 	DefaultRx rx(allocator);
 
 	const auto p = payload(0x11, 300);
-	rx.consume(std::span<const uint8_t>{cobs_test::encode(p)});
+	// NOT engine_frame(): the default policy's limits are 1024, so it speaks a
+	// TWO-byte header while the pool used elsewhere in this file speaks one.
+	// Feeding it the other engine's frame would be exactly the peer
+	// incompatibility §3 warns about.
+	static_assert(DefaultRx::length_size == 2, "1024 needs a two-byte length field");
+	rx.consume(std::span<const uint8_t>{cobs_test::frame(p, DefaultRx::length_size)});
 	const DefaultRx::Ref r = rx.pop_packet();
 	check(r.size() == p.size(), "CobsRx<> receives a frame with no policy named");
 }
@@ -162,8 +179,8 @@ void testProtocolLimitIsEnforced()
 	const auto fine    = payload(0x50, kMaxDecoded);
 
 	std::vector<uint8_t> wire;
-	for (const uint8_t x : cobs_test::encode(too_big)) { wire.push_back(x); }
-	for (const uint8_t x : cobs_test::encode(fine))    { wire.push_back(x); }
+	for (const uint8_t x : engine_frame(too_big)) { wire.push_back(x); }
+	for (const uint8_t x : engine_frame(fine))    { wire.push_back(x); }
 	rx.consume(std::span<const uint8_t>{wire});
 
 	check(rx.stats().oversize == 1, "a frame one byte over rx_max_size is rejected");
@@ -183,7 +200,7 @@ void testMalformedAndRecovery()
 
 	const auto good = payload(0x60, 3);
 	std::vector<uint8_t> wire{0x04, 0x11, 0x00}; // promises 3 bytes, delimits after 1
-	for (const uint8_t x : cobs_test::encode(good)) { wire.push_back(x); }
+	for (const uint8_t x : engine_frame(good)) { wire.push_back(x); }
 	rx.consume(std::span<const uint8_t>{wire});
 
 	check(rx.stats().malformed == 1, "the truncated frame is reported malformed");
@@ -201,7 +218,7 @@ void testExhaustionDropsFramesAndRecovers()
 	Rx rx(pool);
 
 	const auto p = payload(0x80, 4);
-	const auto one = cobs_test::encode(p);
+	const auto one = engine_frame(p);
 	std::vector<uint8_t> wire;
 	for (int i = 0; i < 6; ++i) { // two more frames than the pool has blocks
 		for (const uint8_t x : one) { wire.push_back(x); }
@@ -237,8 +254,8 @@ void testGapDropsOnlyTheFrameInFlight()
 	const auto later = payload(0xA0, 2);
 
 	// A whole frame, then the start of another.
-	std::vector<uint8_t> head = cobs_test::encode(first);
-	const auto partial = cobs_test::encode(payload(0xB0, 5));
+	std::vector<uint8_t> head = engine_frame(first);
+	const auto partial = engine_frame(payload(0xB0, 5));
 	for (std::size_t i = 0; i + 1 < partial.size(); ++i) { head.push_back(partial[i]); }
 	rx.consume(std::span<const uint8_t>{head});
 	check(rx.stats().frames_delivered == 1, "the complete frame is queued");
@@ -250,9 +267,9 @@ void testGapDropsOnlyTheFrameInFlight()
 
 	// Bytes right after a gap must be discarded even if they look like a
 	// frame: only a delimiter restores framing.
-	const auto bogus = cobs_test::encode(payload(0xC0, 4));
+	const auto bogus = engine_frame(payload(0xC0, 4));
 	rx.consume(std::span<const uint8_t>{bogus.data() + 1, bogus.size() - 1});
-	rx.consume(std::span<const uint8_t>{cobs_test::encode(later)});
+	rx.consume(std::span<const uint8_t>{engine_frame(later)});
 
 	check(rx.stats().frames_delivered == 2, "exactly one further frame is delivered");
 	const Ref a = rx.pop_packet();
@@ -270,7 +287,7 @@ void testGapDropsOnlyTheFrameInFlight()
 void testHandleSemantics()
 {
 	const auto p = payload(0xD0, 6);
-	const auto wire = cobs_test::encode(p);
+	const auto wire = engine_frame(p);
 
 	{	// copy keeps the packet alive past the original
 		Pool pool;
@@ -349,7 +366,7 @@ void testHandleSemantics()
 void testDestructorReleasesEverything()
 {
 	Pool pool;
-	const auto wire = cobs_test::encode(payload(0xE0, 3));
+	const auto wire = engine_frame(payload(0xE0, 3));
 	{
 		Rx rx(pool);
 		feed(rx, wire);
@@ -369,7 +386,7 @@ void testRetentionConsumesCapacity()
 {
 	Pool pool;
 	Rx rx(pool);
-	const auto wire = cobs_test::encode(payload(0xF0, 2));
+	const auto wire = engine_frame(payload(0xF0, 2));
 
 	std::vector<Ref> retained;
 	for (std::size_t i = 0; i < kBlocks; ++i) {
@@ -388,10 +405,323 @@ void testRetentionConsumesCapacity()
 	check(static_cast<bool>(rx.pop_packet()), "and reception resumes");
 }
 
+
+/* ============================ the length field =========================== */
+
+/*
+ * The wire header, checked against hand-written bytes rather than against the
+ * codec that produced them.
+ */
+void testLengthCodec()
+{
+	using Narrow = CobsFrameFormat<200, 100>;   // both limits below 256
+	using Wide   = CobsFrameFormat<1024, 64>;   // one above: two bytes both ways
+	using Wide2  = CobsFrameFormat<64, 1024>;   // ...whichever direction it is
+
+	static_assert(Narrow::length_size == 1);
+	static_assert(Wide::length_size == 2);
+	static_assert(Wide2::length_size == 2);
+	static_assert(CobsFrameFormat<255, 255>::length_size == 1, "255 still fits one byte");
+	static_assert(CobsFrameFormat<256, 1>::length_size == 2, "256 does not");
+	static_assert(std::is_same_v<Narrow::LengthType, uint8_t>);
+	static_assert(std::is_same_v<Wide::LengthType, uint16_t>);
+	check(true, "the header width follows max(rx_max_size, tx_max_size)");
+
+	// The asymmetric pair keeps its directional limits; only the wire header
+	// is shared.
+	static_assert(CobsRx<CobsHeapAllocator<1024, 64>>::max_decoded_size == 1024);
+	static_assert(CobsRx<CobsHeapAllocator<64, 1024>>::max_decoded_size == 64);
+	check(true, "while the RX and TX limits stay independent");
+
+	bool narrow_ok = true;
+	for (const std::size_t n : {std::size_t{0}, std::size_t{1},
+	                            std::size_t{254}, std::size_t{255}}) {
+		uint8_t buf[1] = {0xAA};
+		Narrow::store_length(buf, n);
+		narrow_ok = narrow_ok && buf[0] == static_cast<uint8_t>(n) &&
+		            Narrow::load_length(buf) == n;
+	}
+	check(narrow_ok, "a one-byte length is the byte itself, and round-trips");
+
+	const struct { std::size_t n; uint8_t lo, hi; } wide_cases[] = {
+		{0, 0x00, 0x00}, {1, 0x01, 0x00}, {255, 0xFF, 0x00}, {256, 0x00, 0x01},
+		{0x1234, 0x34, 0x12}, {1024, 0x00, 0x04}, {65535, 0xFF, 0xFF},
+	};
+	bool wide_ok = true;
+	for (const auto& c : wide_cases) {
+		uint8_t buf[2] = {0xAA, 0xBB};
+		Wide::store_length(buf, c.n);
+		wide_ok = wide_ok && buf[0] == c.lo && buf[1] == c.hi &&
+		          Wide::load_length(buf) == c.n;
+	}
+	check(wide_ok, "a two-byte length is little-endian, explicitly, and round-trips");
+}
+
+/* ===================== every way a length can be wrong =================== */
+
+// A policy that records what RX sizes were asked for, so "exact allocation"
+// is a measurement rather than a claim.
+class RecordingHeap final {
+public:
+	static constexpr std::size_t rx_max_size = 64;
+	static constexpr std::size_t tx_max_size = 64;
+	using Packet = RxPacket<RecordingHeap>;
+	using Format = CobsFrameFormat<rx_max_size, tx_max_size>;
+
+	[[nodiscard]] Packet* allocate_rx(const std::size_t requested_size) noexcept
+	{
+		if (requested_size > rx_max_size || refuse) {
+			return nullptr;
+		}
+		void* const memory =
+			::operator new(sizeof(Packet) + requested_size, std::nothrow);
+		if (memory == nullptr) { return nullptr; }
+		requests.push_back(requested_size);
+		Packet* const packet = std::construct_at(static_cast<Packet*>(memory));
+		packet->owner = this;
+		return packet;
+	}
+	void deallocate_rx(Packet* const packet) noexcept
+	{
+		if (packet == nullptr) { return; }
+		++frees;
+		std::destroy_at(packet);
+		::operator delete(static_cast<void*>(packet));
+	}
+	[[nodiscard]] TxAllocation allocate_tx(std::size_t) noexcept { return {}; }
+	void deallocate_tx(std::byte*, std::size_t) noexcept {}
+
+	std::vector<std::size_t> requests;
+	std::size_t frees = 0;
+	bool refuse = false;
+};
+
+using RecRx = CobsRx<RecordingHeap>;
+
+void testExactAllocation()
+{
+	static_assert(RecRx::length_size == 1, "64/64 needs only a one-byte header");
+	RecordingHeap pool;
+	RecRx rx(pool);
+
+	// Nothing is allocated until the declared length is known — and then
+	// exactly that much, once.
+	for (const std::size_t n : {std::size_t{1}, std::size_t{7}, std::size_t{37},
+	                            std::size_t{63}, RecordingHeap::rx_max_size}) {
+		const auto body = payload(0x40, n);
+		rx.consume(std::span<const uint8_t>{cobs_test::frame(body, RecRx::length_size)});
+		const auto r = rx.pop_packet();
+		check(r.size() == n && std::vector<uint8_t>(r.data().begin(), r.data().end()) == body,
+		      "a " + std::to_string(n) + "-byte frame arrives intact");
+	}
+	const std::vector<std::size_t> expected{1, 7, 37, 63, RecordingHeap::rx_max_size};
+	check(pool.requests == expected,
+	      "and each was allocated at EXACTLY its declared length, once");
+
+	{	// A zero-length application packet is a real packet, and costs one
+		// allocation of zero payload bytes.
+		pool.requests.clear();
+		rx.consume(std::span<const uint8_t>{cobs_test::frame({}, RecRx::length_size)});
+		const auto r = rx.pop_packet();
+		check(static_cast<bool>(r) && r.size() == 0,
+		      "an empty application payload is delivered as a zero-length packet");
+		check(pool.requests == std::vector<std::size_t>{0},
+		      "asking the policy for zero payload bytes");
+	}
+}
+
+void testMalformedLengths()
+{
+	const auto counts = [](const RecRx& rx) { return rx.stats(); };
+
+	{	// A frame whose decoded content is empty: no header at all. That is
+		// the old pure-COBS `01 00`, which is no longer an engine frame.
+		RecordingHeap pool;
+		RecRx rx(pool);
+		rx.consume(std::span<const uint8_t>{cobs_test::frame_of_decoded({})});
+		check(counts(rx).length_mismatch == 1 && counts(rx).frames_delivered == 0,
+		      "a frame with no length field at all is a length mismatch");
+		check(pool.requests.empty(), "and allocates nothing");
+		check(counts(rx).resyncs == 0,
+		      "the delimiter that exposed it already resynchronized us");
+	}
+	{	// A truncated two-byte header.
+		using Wide = CobsHeapAllocator<1024, 1024>;
+		Wide pool;
+		CobsRx<Wide> rx(pool);
+		static_assert(CobsRx<Wide>::length_size == 2);
+		rx.consume(std::span<const uint8_t>{cobs_test::frame_of_decoded({0x05})});
+		check(rx.stats().length_mismatch == 1 && rx.stats().frames_delivered == 0,
+		      "half a two-byte header is a length mismatch");
+	}
+	{	// Declared zero, then body bytes anyway.
+		RecordingHeap pool;
+		RecRx rx(pool);
+		rx.consume(std::span<const uint8_t>{
+			cobs_test::frame_declaring(0, payload(0x50, 4), RecRx::length_size)});
+		check(rx.stats().length_mismatch == 1, "a declared zero followed by data is rejected");
+		check(pool.requests.empty(), "with nothing allocated");
+		check(rx.stats().resyncs == 1, "and the rest of the frame has to be skipped");
+	}
+	{	// Declared above rx_max_size: refused before any allocation.
+		RecordingHeap pool;
+		RecRx rx(pool);
+		rx.consume(std::span<const uint8_t>{
+			cobs_test::frame_declaring(RecordingHeap::rx_max_size + 1,
+			                           payload(0x60, 40), RecRx::length_size)});
+		check(rx.stats().oversize == 1 && rx.stats().frames_delivered == 0,
+		      "a declared length above rx_max_size is oversize");
+		check(pool.requests.empty(), "and never reaches the allocator");
+		check(rx.stats().resyncs == 1, "the remaining bytes are discarded to the delimiter");
+	}
+	{	// Body shorter than declared: found BY the delimiter, so no resync.
+		RecordingHeap pool;
+		RecRx rx(pool);
+		rx.consume(std::span<const uint8_t>{
+			cobs_test::frame_declaring(10, payload(0x70, 4), RecRx::length_size)});
+		check(rx.stats().length_mismatch == 1 && rx.stats().frames_delivered == 0,
+		      "a body shorter than declared is a length mismatch");
+		check(pool.requests == std::vector<std::size_t>{10} && pool.frees == 1,
+		      "the packet it allocated is returned");
+		check(rx.stats().resyncs == 0, "and the delimiter already resynchronized us");
+	}
+	{	// Body longer than declared: found BEFORE the delimiter, so resync.
+		RecordingHeap pool;
+		RecRx rx(pool);
+		rx.consume(std::span<const uint8_t>{
+			cobs_test::frame_declaring(4, payload(0x80, 12), RecRx::length_size)});
+		check(rx.stats().length_mismatch == 1 && rx.stats().frames_delivered == 0,
+		      "a body longer than declared is a length mismatch");
+		check(pool.requests == std::vector<std::size_t>{4} && pool.frees == 1,
+		      "the packet is returned");
+		check(rx.stats().resyncs == 1, "and the rest has to be skipped");
+	}
+	{	// Allocation failure after a perfectly good header.
+		RecordingHeap pool;
+		RecRx rx(pool);
+		pool.refuse = true;
+		rx.consume(std::span<const uint8_t>{
+			cobs_test::frame(payload(0x90, 20), RecRx::length_size)});
+		check(rx.stats().allocation_failure == 1 && rx.stats().frames_delivered == 0,
+		      "an allocation failure after a valid header is counted as such");
+		check(rx.stats().length_mismatch == 0, "and not blamed on the length");
+		pool.refuse = false;
+		rx.consume(std::span<const uint8_t>{
+			cobs_test::frame(payload(0xA0, 6), RecRx::length_size)});
+		check(rx.stats().frames_delivered == 1, "and the next frame still arrives");
+	}
+	{	// A gap in the middle of the header, and one in the middle of a body.
+		// After either, the decoder must hunt for a delimiter before it can
+		// trust anything — so the frame that follows the gap is consumed by
+		// the resync, and the one after that is the first to arrive. That is
+		// the pre-existing gap contract, not something the length field
+		// changes.
+		RecordingHeap pool;
+		RecRx rx(pool);
+		const auto wire = cobs_test::frame(payload(0xB0, 20), RecRx::length_size);
+		const auto next = cobs_test::frame(payload(0xC0, 5), RecRx::length_size);
+		const auto after = cobs_test::frame(payload(0xE0, 3), RecRx::length_size);
+
+		rx.consume(std::span<const uint8_t>{wire.data(), 1}); // header started
+		rx.gap();
+		rx.consume(std::span<const uint8_t>{next});   // eaten by the resync
+		rx.consume(std::span<const uint8_t>{after});
+		check(rx.stats().frames_delivered == 1,
+		      "a gap during the header costs that frame and the resync's");
+		check(matches(rx.pop_packet(), payload(0xE0, 3)),
+		      "and the first frame after the resync is intact");
+
+		rx.consume(std::span<const uint8_t>{wire.data(), 6}); // into the body
+		rx.gap();
+		rx.consume(std::span<const uint8_t>{next});   // eaten by the resync
+		rx.consume(std::span<const uint8_t>{after});
+		check(rx.stats().frames_delivered == 2, "and a gap during the body behaves the same");
+		check(matches(rx.pop_packet(), payload(0xE0, 3)),
+		      "with the recovered frame byte-for-byte correct");
+		check(pool.frees >= 1, "and the half-built packet was returned to the policy");
+	}
+}
+
+// The fixed policy answers a small request from a full slab and still
+// publishes only what was declared.
+void testFixedSlabPublishesDeclaredLength()
+{
+	Pool pool;
+	Rx rx(pool);
+	const auto body = payload(0x30, 7);
+	rx.consume(std::span<const uint8_t>{engine_frame(body)});
+	const auto r = rx.pop_packet();
+	check(r.size() == 7, "a fixed policy publishes the declared 7 bytes");
+	check(matches(r, body), "with exactly those bytes");
+	check(pool.rx_available() == kBlocks - 1, "out of one whole slab");
+}
+
+
+/*
+ * RX lengths around every boundary that matters. The header shifts the COBS
+ * block boundaries by length_size, so both the raw lengths (253/254/255) and
+ * the lengths that PUT the header-inclusive size on them are swept — that
+ * off-by-H is exactly what a frame format bolted onto an encoder gets wrong.
+ */
+void testRxLengthSweep()
+{
+	using Wide = CobsHeapAllocator<600, 600>;   // two-byte header
+	static_assert(CobsRx<Wide>::length_size == 2);
+	Wide pool;
+	CobsRx<Wide> rx(pool);
+
+	std::vector<std::size_t> lengths{0, 1, 2, 3};
+	for (const std::size_t n : {252u, 253u, 254u, 255u, 256u, 507u, 508u, 509u}) {
+		lengths.push_back(n);
+	}
+	lengths.push_back(Wide::rx_max_size - 1);
+	lengths.push_back(Wide::rx_max_size);
+
+	bool all_ok = true;
+	std::size_t cases = 0;
+	for (const std::size_t n : lengths) {
+		for (int pattern_id = 0; pattern_id < 3; ++pattern_id) {
+			std::vector<uint8_t> body(n);
+			for (std::size_t i = 0; i < n; ++i) {
+				switch (pattern_id) {
+				case 0: body[i] = static_cast<uint8_t>(1 + (i % 255)); break; // zero-free
+				case 1: body[i] = 0; break;                                  // all zeros
+				default: body[i] = static_cast<uint8_t>((i % 4 == 1) ? 0 : (0x41 + (i % 60)));
+				}
+			}
+			const auto wire = cobs_test::frame(body, CobsRx<Wide>::length_size);
+			rx.consume(std::span<const uint8_t>{wire});
+			const auto r = rx.pop_packet();
+			all_ok = all_ok && r.size() == n &&
+			         std::vector<uint8_t>(r.data().begin(), r.data().end()) == body;
+			++cases;
+		}
+	}
+	check(all_ok, std::to_string(cases) + " RX lengths x patterns across every "
+	              "COBS boundary, header included, arrive byte for byte");
+	check(rx.stats().frames_delivered == cases && rx.stats().frames_lost == 0,
+	      "with nothing lost along the way");
+
+	{	// One byte past the limit is refused from the header alone.
+		rx.consume(std::span<const uint8_t>{
+			cobs_test::frame_declaring(Wide::rx_max_size + 1,
+			                           std::vector<uint8_t>(10, 0x55),
+			                           CobsRx<Wide>::length_size)});
+		check(rx.stats().oversize == 1, "and rx_max_size + 1 is refused from the header");
+	}
+}
+
 } // namespace
 
 int main()
 {
+	group("LengthField");
+	testLengthCodec();
+	testExactAllocation();
+	testMalformedLengths();
+	testFixedSlabPublishesDeclaredLength();
+	testRxLengthSweep();
+
 	group("EndToEnd");
 	testRoundTripThroughTheWholeStack();
 	testSpanBoundaries();

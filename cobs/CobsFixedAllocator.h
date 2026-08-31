@@ -20,6 +20,7 @@
 #define COBS_FIXED_ALLOCATOR_H_
 
 #include "CobsEncoder.h"
+#include "CobsFrameFormat.h"
 #include "RxPacket.h"
 #include "TxAllocation.h"
 #include "detail/StaticBlockPool.h"
@@ -38,6 +39,7 @@ public:
 	// RxPacket only stores an Allocator*, so naming this incomplete type here
 	// is legal — which is what lets the pool below be sized from sizeof(Packet).
 	using Packet = RxPacket<CobsFixedAllocator>;
+	using Format = CobsFrameFormat<RxMaxSize, TxMaxSize>;
 
 	static constexpr std::size_t rx_blocks = RxBlocks;
 	static constexpr std::size_t tx_blocks = TxBlocks;
@@ -53,16 +55,17 @@ private:
 	using RxPool = cobs_detail::StaticBlockPool<
 		sizeof(Packet) + RxMaxSize, RxBlocks, alignof(Packet)>;
 	// TX blocks are plain bytes: the payload needs no alignment beyond 1, and
-	// the pool raises that on its own behalf for the free-list link.
+	// the pool raises that on its own behalf for the free-list link. The block
+	// holds the encoded [length][payload], header included (§8.3).
 	using TxPool = cobs_detail::StaticBlockPool<
-		cobs_max_wire_size(TxMaxSize), TxBlocks, 1>;
+		Format::tx_storage_size_for_capacity(TxMaxSize), TxBlocks, 1>;
 
 public:
 	// The defence against a policy declaring more than it can supply belongs
 	// here, at compile time, inside the policy itself (§9.1.2).
 	static_assert(RxPool::block_size >= sizeof(Packet) + rx_max_size,
 		"the RX pool cannot hold a packet header plus rx_max_size bytes");
-	static_assert(TxPool::block_size >= cobs_max_wire_size(tx_max_size),
+	static_assert(TxPool::block_size >= Format::tx_storage_size_for_capacity(tx_max_size),
 		"the TX pool cannot hold the worst-case wire frame of tx_max_size bytes");
 
 	using Stats = cobs_detail::PoolStats;
@@ -71,8 +74,18 @@ public:
 	CobsFixedAllocator(const CobsFixedAllocator&) = delete;
 	CobsFixedAllocator& operator=(const CobsFixedAllocator&) = delete;
 
-	[[nodiscard]] Packet* allocate_rx() noexcept
+	/*
+	 * One size class, so the request only has to be legal — the block is a
+	 * full rx_max_size slab whatever was asked for. A 7-byte frame therefore
+	 * costs a whole block here, which is this policy being deterministic
+	 * rather than the contract being wasteful, and is exactly what an
+	 * STM32 target wants: no heap, no variance, no fragmentation.
+	 */
+	[[nodiscard]] Packet* allocate_rx(const std::size_t requested_size) noexcept
 	{
+		if (requested_size > rx_max_size) {
+			return nullptr;
+		}
 		std::byte* const memory = m_rx.allocate();
 		if (memory == nullptr) {
 			return nullptr;

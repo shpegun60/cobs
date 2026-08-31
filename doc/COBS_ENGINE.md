@@ -21,13 +21,17 @@ only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 | Question | Decision |
 | --- | --- |
 | Transport binding | delegates, bound as a PAIR by `set_transport`, so `Cobs` is templated on the allocator alone |
+| Frame format | every engine frame is `COBS([length][body]) 00`; the length is fixed-width, little-endian, and counts only the body after it |
+| Length width | 1 byte if `max(rx_max_size, tx_max_size) <= 255`, else 2. One width per engine, both directions; peers must agree |
 | Decoder | standalone **non-template** class, no allocator, no transport |
-| RX decode | incremental, directly into the packet — no encoded staging buffer |
+| Decoder output | SEGMENTED: `NeedOutput` may fire many times per frame, and `decoded_size` is the total across segments |
+| RX decode | two-stage — header into a local 1–2 byte buffer, then the body straight into a packet allocated at exactly the declared length |
+| RX allocation size | `allocate_rx(declared_length)`; a 20-byte frame costs 20 payload bytes on a heap policy |
 | Transport gap | `DropUntilDelimiter`, absorbed entirely by COBS |
 | Bare `0x00` | synchronization / no-op, never a packet |
-| Empty packet | `01 00` |
+| Empty packet | a frame whose declared length is 0; `01 00` (an empty decoded frame) is now MALFORMED at the engine layer, since it carries no length field |
 | Delimiter inside a block | frame discarded, decoder is immediately synchronized |
-| Oversize / allocation failure | `DropUntilDelimiter` |
+| Oversize / allocation failure | `DropUntilDelimiter`; oversize is now decided by CobsRx from the DECLARED length against `rx_max_size`, not by the decoder |
 | Ready queue | intrusive, threaded through the packets themselves |
 | RX lifetime | intrusive refcount, `PacketRef`, payload immutable after publication |
 | Refcount | plain (single execution domain); no atomic policy in v1 |
@@ -121,9 +125,44 @@ was delivered (§8.2).
 
 ## 3. Wire format
 
-A frame is a COBS-encoded byte sequence terminated by a single `0x00`
-delimiter. No length prefix, no header, no leading delimiter is required
-(though a leading delimiter is harmless — see below).
+An engine frame is a COBS-encoded `[length][body]` terminated by a single
+`0x00` delimiter. No leading delimiter is required (though a leading delimiter
+is harmless — see below).
+
+```text
+wire   ::=  COBS( length body ) 0x00
+length ::=  1 or 2 bytes, little-endian, counting ONLY the body after it
+body   ::=  the application payload (plus any future integrity trailer)
+```
+
+The length never counts itself. In v1 the body IS the application payload; a
+future CRC would live inside the body and would therefore be included in the
+declared length, which is the whole reason for defining it this way before the
+trailer exists rather than after.
+
+**The width is a wire-format property, not a memory one.** It is chosen from
+the LARGER of the two directional limits, so one engine speaks one header
+width in both directions:
+
+```text
+length_size = max(rx_max_size, tx_max_size) <= 255 ? 1 : 2
+```
+
+Choosing it per direction would let an engine with `rx_max_size = 1024` and
+`tx_max_size = 64` expect two bytes and send one — a wire disagreement with
+itself. It does not merge the limits: that engine still refuses to receive
+above 1024 and to send above 64. A complementary pair agrees automatically:
+
+```text
+Peer A: RX 1024, TX 64    -> length_size 2
+Peer B: RX 64,   TX 1024  -> length_size 2
+```
+
+Peers with different `length_size` are wire-incompatible even for a one-byte
+frame. `Cobs<A>::length_size` is constexpr so an integration build can
+static_assert the format it expects.
+
+Below the length field, the framing rules are unchanged:
 
 ```text
 frame ::= code_block+ 0x00
@@ -145,9 +184,16 @@ of delimiters a harmless line flush:
 It also makes a leading delimiter free, so an implementation that prefixes
 frames for robustness interoperates with this one without special handling.
 
-**An empty packet is `01 00`.** An application that deliberately sends a
-zero-length packet has an unambiguous canonical representation, and it is
-distinct from the no-op above.
+**An empty packet declares a length of zero.** Its decoded content is the
+length field and nothing else, so its wire form is the COBS encoding of one or
+two zero bytes plus the delimiter. It remains distinct from the no-op above.
+
+Note the consequence, which is a deliberate break with the pure-COBS layer
+underneath: `01 00` — a structurally valid COBS frame with an EMPTY decoded
+body — is no longer a valid engine frame, because it contains no length field.
+`CobsDecoder` still accepts it as a zero-byte decoded frame; `CobsRx` counts it
+as a length mismatch. The two layers are answering different questions, and
+that is the point of keeping them apart.
 
 **The encoder is canonical/minimal.** It never emits a redundant trailing
 `01` block for payload lengths that are exact multiples of 254. Some COBS
@@ -360,7 +406,7 @@ pendingZero      the current block ended with code != 0xFF, so an implicit
                    |      Decoding      |
                    +---------+----------+
                              |
-        malformed / oversize / allocation failure / transport gap
+        malformed / owner refuses another segment / transport gap
                              v
                    +--------------------+
                    | DropUntilDelimiter |
@@ -372,6 +418,37 @@ pendingZero      the current block ended with code != 0xFF, so an implicit
 ```
 
 In `Synced`, a `0x00` is consumed and ignored (§3).
+
+**Output is segmented.** `NeedOutput` is not a once-per-frame event: the
+decoder raises it when a frame starts, and again whenever the attached segment
+is full and another decoded byte is due. The owner answers with the next
+segment or discards. `decoded_size` on `FrameComplete` is the total across all
+of them.
+
+```text
+NeedOutput  -> attach segment A   (the length field)
+A fills
+NeedOutput  -> attach segment B   (the packet, sized from the declared length)
+B fills or the delimiter arrives
+FrameComplete(total)
+```
+
+Three rules make that safe:
+
+- a `NeedOutput` raised for a full segment does **not** consume the encoded
+  byte that still needs a home, so nothing is lost at a boundary — including
+  an implicit zero owed across one;
+- if the delimiter arrives exactly when the segment is full, the frame
+  completes without asking for a segment nobody would use;
+- `attach_output` is ignored while the current segment still has room, since
+  replacing it would silently strand the bytes already written into it.
+
+There is deliberately **no `Oversize` event**. "Too big" is not a fact this
+class can know: it has no protocol limit, only a segment that happens to be
+full, and a full segment is a request rather than a verdict. The layer that
+knows `rx_max_size` and the declared length decides that — see §6.6. An owner
+that will not grow expresses it by discarding, never by attaching an empty
+segment, which would simply be asked again forever.
 
 ### 5.3 The delimiter invariant
 
@@ -433,21 +510,74 @@ must be counted against the span extent before it is written.
 
 ## 6. RX allocation and delivery
 
-### 6.1 Allocate on the first code byte
+### 6.1 Allocate once the length is known
 
-Nothing is allocated until a frame actually starts:
+Nothing is allocated when a frame starts. The first output segment is the
+length field, which lives in one or two bytes inside `CobsRx` itself:
 
 ```text
 Synced + code != 0x00
-      → allocate
-          success → Decoding
-          failure → stats.allocation_failure++, stats.frames_lost++,
-                    DropUntilDelimiter
+      → NeedOutput  → attach the local length buffer   (no allocation)
+      length buffer fills, more decoded bytes due
+      → parse the declared length N
+          N > rx_max_size  → stats.oversize++,           DropUntilDelimiter
+          N == 0           → stats.length_mismatch++,    DropUntilDelimiter
+          allocate_rx(N)
+              success      → attach exactly N bytes of the packet
+              failure      → stats.allocation_failure++, DropUntilDelimiter
 ```
 
-`01 00` therefore allocates normally and delivers a zero-length packet. A dry
-pool costs exactly one frame and no partial delivery: the decoder does not
-try to salvage half a frame.
+So a frame that lies about its size, or is larger than this instance accepts,
+costs no allocation at all — it is refused from two bytes of evidence rather
+than after filling a buffer.
+
+`01 00`, whose decoded content is empty, therefore delivers nothing: it has no
+length field, and is counted as a length mismatch (§3). A genuinely empty
+application packet declares zero and is delivered as a zero-length packet.
+
+A dry pool costs exactly one frame and no partial delivery: the decoder does
+not try to salvage half a frame.
+
+### 6.1.1 Exactly one copy-free path
+
+The two-stage arrangement exists to keep RX zero-copy while making it
+size-aware, which without a length prefix are mutually exclusive:
+
+```text
+frame starts
+  → decode the header into 1-2 local bytes      the ONLY temporary storage
+  → declared length N
+  → allocate_rx(N)                              exact, once
+  → decode the body straight into the packet    no staging buffer
+  → delimiter
+  → N == actual ? publish : free and drop
+```
+
+No payload byte is ever written twice, and nothing is copied after the
+allocation.
+
+### 6.1.2 Length validation, exhaustively
+
+Every disagreement between a declared length and a frame, and what it costs:
+
+```text
+declared == actual                  publish
+
+no header (decoded frame empty)     length_mismatch, frame lost
+header truncated (1 of 2 bytes)     length_mismatch, frame lost
+declared 0, body bytes follow       length_mismatch, resync
+declared > rx_max_size              oversize,        resync
+actual < declared                   length_mismatch, frame lost
+actual > declared                   length_mismatch, resync
+allocate_rx(N) fails                allocation_failure, resync
+```
+
+The resync column is not decoration. A failure the DELIMITER revealed — a
+missing header, a short body — is already synchronized, so hunting for another
+delimiter would throw away a good frame. A failure found BEFORE the delimiter
+— an over-long body, an oversize declaration, a failed allocation — leaves the
+rest of the frame in the stream, so it must be discarded to the next
+delimiter and counted as a resync.
 
 ### 6.2 Intrusive ready queue
 
@@ -606,13 +736,25 @@ A TX block carries the raw payload at an offset, leaving headroom for the
 COBS expansion in front of it:
 
 ```text
- block_start                     raw_start                        block_end
-      |                              |                                 |
-      +------------------------------+---------------------------------+
-      |   cobs_raw_offset(C)         |   C, the granted capacity       |
-      +------------------------------+---------------------------------+
-      ^                              ^
-      encoder writes from here       the payload area starts here
+ block_start             frame_raw    raw_start                 block_end
+      |                      |            |                         |
+      +----------------------+------------+-------------------------+
+      | cobs_raw_offset(H+C) |     H      |  C, the granted capacity|
+      +----------------------+------------+-------------------------+
+      ^                      ^            ^
+      encoder writes here    length header, written just before encoding
+                                          the payload area starts here
+```
+
+`H` is `length_size` (§3). The header lives INSIDE the block, ahead of the
+payload, and is invisible to `size()` and `capacity()` — those count
+application bytes only. Every piece of geometry below is therefore in
+`H + C`, not `C`:
+
+```text
+block size  = cobs_max_wire_size(H + C)
+frame_raw   = block + cobs_raw_offset(H + C)      where the length goes
+payload     = frame_raw + H                       what write() fills
 ```
 
 Both quantities come from the size functions of §4.2 rather than from a magic
@@ -789,39 +931,50 @@ happens. The hazard exists in the implementation and is confined to it.
 
 ### 8.3.3 Encoding geometry
 
-The payload is physically at `cobs_raw_offset(C)` for the current capacity `C`,
-and moving it at encode time would end the zero-copy story, so encoding a
-payload of size `S` begins further into the block:
+The payload is physically at `cobs_raw_offset(H+C) + H` for the current
+capacity `C`, and moving it at encode time would end the zero-copy story, so
+encoding a payload of size `S` — a decoded region of `H + S` bytes — begins
+further into the block:
 
 ```text
 allocated for C
-|<-- unused -->|<-- R(S) -->|<------ S ------>|
+|<-- unused -->|<-- R(H+S) -->|<- H ->|<------ S ------>|
 ^              ^
 block          encoding begins here, and so does the wire frame
 ```
 
-It fits exactly: `R(S) <= R(C)` because `S <= C`, and the encoded region ends
-at `cobs_raw_offset(C) + S`, at most the end of the block. So a wire frame need
-not start at `block[0]`; the transport is handed the span `encode()` returns,
-while the ALLOCATION remains the whole block and is returned as such. Encoding
-copies nothing, whatever growth history the message had.
+It fits exactly: `R(H+S) <= R(H+C)` because `S <= C`, and the encoded region
+ends at `cobs_raw_offset(H+C) + H + S`, at most the end of the block. So a wire
+frame need not start at `block[0]`; the transport is handed the span `encode()`
+returns, while the ALLOCATION remains the whole block and is returned as such.
+Encoding copies nothing, whatever growth history the message had.
 
-In terms of the granted capacity `C`:
+The declared length is written into `frame_raw` in the last moment it is still
+plain bytes — immediately before the in-place encode. On a RETRY it is not
+rewritten: COBS has already overwritten those bytes, so the stored wire span is
+the only truth about that frame, which is exactly what makes a failed transport
+start retryable byte-for-byte.
+
+In terms of the granted capacity `C` and the header width `H`:
 
 ```text
-wire_capacity = cobs_max_wire_size(C)
-              = cobs_max_encoded_size(C) + 1
+wire_capacity = cobs_max_wire_size(H + C)
+              = cobs_max_encoded_size(H + C) + 1
 
-raw_offset    = wire_capacity - C
-              = ceil(C / 254) + 1                     (for C > 0)
+raw_offset    = wire_capacity - (H + C)
+              = ceil((H + C) / 254) + 1               (for H + C > 0)
 
 block size    = wire_capacity
 ```
 
 The block is exactly `wire_capacity` bytes: the worst-case encoded frame for
-`C` payload bytes plus its delimiter fills it precisely, ending where the raw
-region ended. Every one of these follows from the capacity the policy granted,
-never from `tx_max_size` — that is what makes a short message cheap.
+`H + C` decoded bytes plus its delimiter fills it precisely. Every one of these
+follows from the capacity the policy granted, never from `tx_max_size` — that
+is what makes a short message cheap.
+
+One consequence worth stating for tests: the header shifts every COBS block
+boundary by `H`, so the interesting payload lengths are the ones that put
+`H + S` on a boundary — 252 and 253 for a two-byte header, not 253 and 254.
 
 ### 8.4 The overlap invariant, with its proof
 
@@ -905,7 +1058,7 @@ struct SomeCobsAllocator {
 
     using Packet = RxPacket<SomeCobsAllocator>;
 
-    [[nodiscard]] Packet* allocate_rx() noexcept;
+    [[nodiscard]] Packet* allocate_rx(std::size_t requested_size) noexcept;
     void deallocate_rx(Packet* packet) noexcept;
 
     [[nodiscard]] TxAllocation allocate_tx(std::size_t requested_capacity) noexcept;
@@ -934,7 +1087,14 @@ successful live allocations remain valid, distinct and exclusively the
 caller's until they are deallocated
 deallocation of nullptr is a no-op, not an abuse
 constructing the policy is noexcept
+requested_size <= rx_max_size, and a non-null packet has storage for
+    exactly that many payload bytes
 ```
+
+`deallocate_rx` stays pointer-only. A descriptor was NOT added for symmetry
+with TX: the RX side has nothing the caller could not already know, and a
+future segregated RX policy can keep its size class in its own block header or
+recover it from the pointer, which is a policy-private matter by §9.1.2.
 
 The last one is easy to miss because it is not one of the four functions.
 `Cobs`'s constructors are unconditionally `noexcept` and construct the policy
@@ -1026,18 +1186,27 @@ front. It often does not, which is why `CobsMsg` is a container that grows
 been written to the wire yet, while RX has one chance before the bytes start
 arriving.
 
-So `allocate_tx` takes a size and `allocate_rx` does not. On the heap policy a
-seven-byte CAPACITY REQUEST costs **nine** bytes rather than the worst case of
-the largest frame the policy allows — for `tx_max_size = 1024` that is 9
-against 1030. Note that it is the request, not the message: a seven-byte
-payload written into a message from `make_msg()` sits in the 32-byte reserve
-that default hint asked for (34 physical bytes), which is the trade the
-default makes on purpose. A single-slab pool still spends a whole block, which is that policy
-being simple; a segregated policy picks a size class from the same argument.
+**Both directions are now size-aware, and for the same reason.** TX knows the
+capacity it needs because nothing has reached the wire yet; RX knows the body
+length because the frame declares it in the length prefix (§3) before a single
+body byte arrives. The old asymmetry — RX committing to `rx_max_size` because
+the size was unknowable — was a consequence of having no header, and the header
+exists to remove it.
 
-Making RX size-aware would mean buffering the encoded frame, computing the
-decoded length, allocating, and then decoding a second time. One encoder pass
-and zero copies are worth more than the bytes that would save.
+An earlier revision argued that making RX size-aware would mean buffering the
+encoded frame, computing the decoded length, allocating, and then decoding a
+second time. That is true of a format WITHOUT a length prefix, and it is why
+the prefix was added rather than the second pass. With it, the decoder writes
+the header into a one- or two-byte local buffer, `CobsRx` reads the declared
+length, allocates exactly that, and the body decodes straight into its final
+home — one pass, no staging buffer, no copy.
+
+On the heap policy a 20-byte frame therefore costs 20 payload bytes, and a
+seven-byte TX capacity REQUEST costs ten (`cobs_max_wire_size(1 + 7)`, or
+eleven with a two-byte header) rather than the worst case of the largest frame
+allowed. A single-slab pool still spends a whole block in both directions,
+which is that policy being deterministic — exactly what an STM32 target
+wants.
 
 `deallocate_tx` takes the capacity back for the same reason `operator
 delete(void*, size_t)` exists: the caller knows it, so a segregated policy need
@@ -1058,16 +1227,16 @@ worth it.
 
 On RX, `Cobs` never asks how much memory it actually got. The exchange is:
 
-> You declared `rx_max_size = 1024`. If `allocate_rx()` returns non-null, you
-> are **obliged** to have given valid storage for a packet header plus 1024
-> payload bytes. If you cannot, return null.
+> You declared `rx_max_size = 1024`. If `allocate_rx(n)` returns non-null with
+> `n <= 1024`, you are **obliged** to have given valid storage for a packet
+> header plus `n` payload bytes. If you cannot, return null.
 
 `std::allocator<T>::allocate(n)` works the same way: it hands back a pointer
 or fails, never a pointer paired with "how many I really managed". So the RX
 size is derived, never queried:
 
 ```cpp
-packet->writable_payload()                      // exactly rx_max_size bytes
+packet->writable_payload(n)                     // exactly the n it was allocated for
 ```
 
 The TX capacity report (§9.1.0) is not an exception to this, and it is worth
@@ -1103,11 +1272,13 @@ Packet* packet = std::construct_at(static_cast<Packet*>(memory));
 so heap and pool end up with identical geometry and differ only in where the
 region came from.
 
-Because `writable_payload()` is defined by `rx_max_size` itself, a policy
-cannot hand the decoder more room than the protocol allows even by accident.
-A policy that declares more than it can supply is simply broken, and the place
-to catch that is inside the policy, at compile time — `CobsFixedAllocator`
-asserts its own pool geometry against its own declared limit.
+`CobsRx` passes `writable_payload()` the same number it allocated with, which
+is also the declared body length — so the decoder is given a segment that is
+exactly the frame's size. That is load-bearing twice over: on an exact heap
+allocation a longer span would run off the end of the block, and on any policy
+a longer span would swallow an over-length frame instead of rejecting it. A
+policy that declares more than it can supply is simply broken, and the place to
+catch that is inside the policy, at compile time.
 
 ### 9.1.3 Obligations
 
@@ -1174,7 +1345,7 @@ CobsAllocatorPolicy
 ├── RX capacity / quota
 ├── tx_max_size          largest payload this instance can send
 ├── TX capacity / quota
-├── allocate_rx()   / deallocate_rx()
+├── allocate_rx(n)  / deallocate_rx()
 └── allocate_tx()   / deallocate_tx()
 ```
 
@@ -1186,9 +1357,10 @@ implied (§4.1).
 The default is **`CobsHeapAllocator`**, as `UART_COBS_ARCHITECTURE.md` §1 has
 said from the start, which makes the common spelling `Cobs<>`. It is
 parameterized rather than unbounded, because "no limit" is not available to
-us: the zero-copy RX decoder is handed its final output span at `NeedOutput`,
-before a single payload byte has arrived, so some number must be committed to
-up front.
+us: the length field is itself fixed-width, so the largest frame the format can
+describe has to be decided when the type is instantiated. The PER-FRAME
+allocation is exact (§6.6); `rx_max_size` is the ceiling above which a declared
+length is refused.
 
 ```cpp
 template<std::size_t RxMaxSize = 1024, std::size_t TxMaxSize = 1024>

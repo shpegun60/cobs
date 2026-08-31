@@ -16,7 +16,7 @@
 #include "CobsFixedAllocator.h"
 #include "CobsHeapAllocator.h"
 #include "CobsMsg.h"
-#include "reference_encoder.h"
+#include "reference_frame.h"
 
 #include <cstdio>
 #include <cstring>
@@ -71,8 +71,12 @@ std::vector<uint8_t> fill(M& m, const std::size_t n, const uint8_t tag)
 template<class M>
 bool framesAs(M& m, const std::vector<uint8_t>& expected)
 {
+	// The oracle is the ENGINE frame — COBS([length][body]) — assembled by
+	// hand from the independent reference encoder, so a mistake in
+	// CobsFrameFormat cannot hide inside the thing meant to catch it.
 	const auto wire = m.encode();
-	return std::vector<uint8_t>(wire.begin(), wire.end()) == cobs_test::encode(expected);
+	return std::vector<uint8_t>(wire.begin(), wire.end()) ==
+	       cobs_test::frame(expected, M::length_size);
 }
 
 /* ============================== ownership =============================== */
@@ -189,7 +193,8 @@ public:
 	static constexpr std::size_t tx_max_size = 4096;
 
 	using Packet = RxPacket<SpyPolicy>;
-	[[nodiscard]] Packet* allocate_rx() noexcept { return nullptr; }
+	using Format = CobsFrameFormat<rx_max_size, tx_max_size>;
+	[[nodiscard]] Packet* allocate_rx(std::size_t) noexcept { return nullptr; }
 	void deallocate_rx(Packet*) noexcept {}
 
 	[[nodiscard]] TxAllocation allocate_tx(const std::size_t requested) noexcept
@@ -197,7 +202,7 @@ public:
 		if (requested > tx_max_size || refuse_next) {
 			return {};
 		}
-		void* const memory = ::operator new(cobs_max_wire_size(requested), std::nothrow);
+		void* const memory = ::operator new(Format::tx_storage_size_for_capacity(requested), std::nothrow);
 		if (memory == nullptr) {
 			return {};
 		}
@@ -235,7 +240,8 @@ public:
 	static constexpr std::size_t tx_max_size = 4096;
 
 	using Packet = RxPacket<SizeClassPolicy>;
-	[[nodiscard]] Packet* allocate_rx() noexcept { return nullptr; }
+	using Format = CobsFrameFormat<rx_max_size, tx_max_size>;
+	[[nodiscard]] Packet* allocate_rx(std::size_t) noexcept { return nullptr; }
 	void deallocate_rx(Packet*) noexcept {}
 
 	// Its own rule, obeying nothing but the contract: 2n + 1, capped.
@@ -251,7 +257,7 @@ public:
 			return {};
 		}
 		const std::size_t capacity = class_for(requested);
-		void* const memory = ::operator new(cobs_max_wire_size(capacity), std::nothrow);
+		void* const memory = ::operator new(Format::tx_storage_size_for_capacity(capacity), std::nothrow);
 		if (memory == nullptr) {
 			return {};
 		}
@@ -764,6 +770,116 @@ void testDefaultHintAvoidsTheLadder()
 	}
 }
 
+
+/* ====================== the hidden length prefix ======================== */
+
+// A wide-format policy (limits above 255) so both header widths are exercised
+// by the same test bodies. SpyPolicy is already wide; this one is narrow and
+// heap-exact, for contrast.
+class NarrowHeap final {
+public:
+	static constexpr std::size_t rx_max_size = 200;
+	static constexpr std::size_t tx_max_size = 200;
+	using Packet = RxPacket<NarrowHeap>;
+	using Format = CobsFrameFormat<rx_max_size, tx_max_size>;
+
+	[[nodiscard]] Packet* allocate_rx(std::size_t) noexcept { return nullptr; }
+	void deallocate_rx(Packet*) noexcept {}
+
+	[[nodiscard]] TxAllocation allocate_tx(const std::size_t requested) noexcept
+	{
+		if (requested > tx_max_size) { return {}; }
+		void* const memory =
+			::operator new(Format::tx_storage_size_for_capacity(requested), std::nothrow);
+		if (memory == nullptr) { return {}; }
+		return {static_cast<std::byte*>(memory), requested};
+	}
+	void deallocate_tx(std::byte* const memory, std::size_t) noexcept
+	{
+		::operator delete(static_cast<void*>(memory));
+	}
+};
+
+void testLengthPrefixIsHiddenAndCorrect()
+{
+	static_assert(CobsMsg<NarrowHeap>::length_size == 1, "200/200 fits one byte");
+	static_assert(CobsMsg<SpyPolicy>::length_size == 2, "4096 needs two");
+	check(true, "the two header widths are both under test");
+
+	{	// The prefix is invisible to the container API.
+		NarrowHeap pool;
+		CobsMsg<NarrowHeap> m{pool, 16};
+		check(m.size() == 0 && m.capacity() == 16,
+		      "size() and capacity() count application bytes only");
+		const auto body = std::vector<uint8_t>{0x11, 0x22, 0x33};
+		check(m.write_bytes(std::span<const uint8_t>{body}), "three bytes are written");
+		check(m.size() == 3, "and the header is not one of them");
+		check(framesAs(m, body), "while the wire carries [length][body]");
+	}
+	{	// Same for the two-byte format, including a length above 255 that a
+		// one-byte header could not express.
+		SpyPolicy pool;
+		CobsMsg<SpyPolicy> m{pool};
+		const auto body = [] {
+			std::vector<uint8_t> v(300);
+			for (std::size_t i = 0; i < v.size(); ++i) {
+				v[i] = static_cast<uint8_t>((i % 11 == 4) ? 0 : (0x20 + (i % 200)));
+			}
+			return v;
+		}();
+		check(m.write_bytes(std::span<const uint8_t>{body}), "a 300-byte payload is written");
+		check(m.size() == 300, "counted in application bytes");
+		check(framesAs(m, body), "and framed with a two-byte little-endian length");
+	}
+}
+
+/*
+ * The header shifts every COBS block boundary by H bytes, so the interesting
+ * payload lengths are the ones that put H + S on a boundary rather than S.
+ * Getting this wrong produces a frame that is correct for every length except
+ * a handful — the classic way an encoder passes its tests and fails in the
+ * field.
+ */
+void testHeaderShiftsTheCobsBoundaries()
+{
+	const auto run = [](auto& pool, const char* name, const std::size_t H) {
+		using M = std::decay_t<decltype(*std::declval<CobsMsg<std::decay_t<decltype(pool)>>*>())>;
+		bool ok = true;
+		std::size_t cases = 0;
+		for (const std::size_t decoded : {std::size_t{253}, std::size_t{254},
+		                                  std::size_t{255}, std::size_t{508},
+		                                  std::size_t{509}, std::size_t{510}}) {
+			if (decoded < H) { continue; }
+			const std::size_t S = decoded - H;
+			if (S > M::max_payload_size) { continue; }
+			// Zero-free is the worst case for COBS expansion.
+			std::vector<uint8_t> body(S);
+			for (std::size_t i = 0; i < S; ++i) {
+				body[i] = static_cast<uint8_t>(1 + (i % 255));
+			}
+			M m{pool};
+			ok = ok && m.write_bytes(std::span<const uint8_t>{body}) && framesAs(m, body);
+			++cases;
+
+			// And once with zeros, which move the block boundaries around.
+			std::vector<uint8_t> zeros(S);
+			for (std::size_t i = 0; i < S; ++i) {
+				zeros[i] = static_cast<uint8_t>((i % 3 == 0) ? 0 : (1 + (i % 250)));
+			}
+			M m2{pool};
+			ok = ok && m2.write_bytes(std::span<const uint8_t>{zeros}) && framesAs(m2, zeros);
+			++cases;
+		}
+		check(ok, std::string(name) + ": " + std::to_string(cases) +
+		          " payloads placing header+body on a COBS block boundary");
+	};
+
+	SpyPolicy wide;
+	run(wide, "two-byte header", 2);
+	NarrowHeap narrow;
+	run(narrow, "one-byte header", 1);
+}
+
 } // namespace
 
 int main()
@@ -788,6 +904,10 @@ int main()
 	testSerializers();
 	testSerializerFailuresLeaveTheMessageUsable();
 	testOversizeIsRefusedNotClamped();
+
+	group("FrameFormat");
+	testLengthPrefixIsHiddenAndCorrect();
+	testHeaderShiftsTheCobsBoundaries();
 
 	group("Encode");
 	testEncoding();

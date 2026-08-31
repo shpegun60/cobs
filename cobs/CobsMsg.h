@@ -37,34 +37,41 @@
  * fit do not, and encode() never does.
  * ---------------------------------------------------------------------------
  *
- * Layout (§8.3), with K the capacity of the current block:
+ * Layout (§8.3), with K the capacity of the current block and H the width of
+ * the wire length header (CobsFrameFormat). The header is INSIDE the block,
+ * ahead of the payload, and is invisible to size() and capacity():
  *
- *      block, cobs_max_wire_size(K) bytes
- *      |<-- cobs_raw_offset(K) -->|<------------- K ------------->|
- *      +--------------------------+-------------------------------+
- *      | encoder headroom         | payload area                  |
- *      +--------------------------+---------------+---------------+
- *                                 |<-- size() --->|
+ *      block, cobs_max_wire_size(H + K) bytes
+ *      |<-- cobs_raw_offset(H+K) -->|<- H ->|<------------ K ------------>|
+ *      +----------------------------+-------+-----------------------------+
+ *      | encoder headroom           | length| payload area                |
+ *      +----------------------------+-------+--------------+--------------+
+ *                                                          |<-- size() -->|
+ *                                   ^       ^
+ *                                   |       payload(), what write() fills
+ *                                   the decoded frame starts here
  *
- * The payload is PHYSICALLY at cobs_raw_offset(K), and moving it at encode
- * time would end the zero-copy story, so encoding a payload of size S simply
- * starts further in:
+ * The payload is PHYSICALLY at cobs_raw_offset(H+K) + H, and moving it at
+ * encode time would end the zero-copy story, so encoding a payload of size S
+ * simply starts further in — the decoded region being H + S bytes:
  *
- *      |<-- unused -->|<-- R(S) -->|<------ S ------>|
+ *      |<-- unused -->|<-- R(H+S) -->|<- H ->|<------ S ------>|
  *      ^              ^
  *      block          encoding begins here, and so does the wire frame
  *
- * It fits exactly: R(S) <= R(K) because S <= K, and the encoded region ends at
- * cobs_raw_offset(K) + S, which is at most the end of the block. So the frame
- * need not start at block[0]; the transport is handed the span encode()
+ * It fits exactly: R(H+S) <= R(H+K) because S <= K, and the encoded region
+ * ends at cobs_raw_offset(H+K) + H + S, at most the end of the block. So the
+ * frame need not start at block[0]; the transport is handed the span encode()
  * returns, while the ALLOCATION remains the whole block and is returned as
- * such. Encoding copies nothing.
+ * such. Encoding copies nothing, and the length header is written in place
+ * immediately before it.
  */
 
 #ifndef COBS_MSG_H_
 #define COBS_MSG_H_
 
 #include "CobsEncoder.h"
+#include "CobsFrameFormat.h"
 #include "TxAllocation.h"
 
 #include <cstddef>
@@ -165,7 +172,12 @@ class CobsMsg final {
 	friend class Cobs<Allocator>;
 
 public:
+	using Format = CobsFormatFor<Allocator>;
+
 	static constexpr std::size_t max_payload_size = Allocator::tx_max_size;
+	// Part of the wire format, republished so an integration build can assert
+	// the format it expects (COBS_ENGINE.md §3).
+	static constexpr std::size_t length_size = Format::length_size;
 
 	// What Cobs holds while the transport borrows the frame: the block to
 	// return, and the capacity to return it WITH — the same number the policy
@@ -322,8 +334,9 @@ public:
 		// copy between two different offsets — the one memcpy in the whole TX
 		// vertical, and only on an actual growth.
 		if (m_size != 0u) {
-			std::memcpy(reinterpret_cast<uint8_t*>(fresh.memory) + cobs_raw_offset(fresh.capacity),
-			            raw(), m_size);
+			// Only the application bytes move. The header is regenerated at
+			// encode time, so there is nothing else worth carrying across.
+			std::memcpy(payload_of(fresh.memory, fresh.capacity), raw(), m_size);
 		}
 		m_pool->deallocate_tx(m_block, m_capacity); // returned with its OWN capacity
 		m_block = fresh.memory;
@@ -359,19 +372,29 @@ public:
 		if (m_block == nullptr) {
 			return {};
 		}
-		// The payload sits physically at cobs_raw_offset(m_capacity); a
-		// smaller logical size needs only cobs_raw_offset(m_size) of headroom,
-		// so the frame begins further into the block rather than at its start.
-		// Moving the payload instead would be a copy, which is the one thing
-		// this path refuses to do.
-		const std::size_t enc_offset = cobs_raw_offset(m_size);
-		uint8_t* const begin = raw() - enc_offset;
+		// The decoded frame is [length][payload], so all the geometry below is
+		// in H + size, never size alone. The frame's raw region starts H bytes
+		// before the payload, and a smaller logical size needs only
+		// cobs_raw_offset(H + size) of headroom — so encoding begins further
+		// into the block rather than at its start. Moving the payload instead
+		// would be a copy, which is the one thing this path refuses to do.
+		const std::size_t decoded = Format::decoded_size_for_payload(m_size);
+		const std::size_t enc_offset = cobs_raw_offset(decoded);
+		uint8_t* const frame_raw = raw() - Format::length_size;
+		uint8_t* const begin = frame_raw - enc_offset;
 
 		if (m_state == State::Encoded) {
+			// Not re-encoded, and in particular the header is NOT rewritten:
+			// COBS has already overwritten those bytes in place, so the stored
+			// span is the only truth about this frame. That is what makes a
+			// failed transport start retryable byte-for-byte.
 			return {begin, m_wire};
 		}
+		// The last moment the header is still plain bytes.
+		Format::store_length(frame_raw, m_size);
+
 		const auto frame = cobs_encode_in_place(
-			std::span<uint8_t>{begin, cobs_max_wire_size(m_size)}, enc_offset, m_size);
+			std::span<uint8_t>{begin, cobs_max_wire_size(decoded)}, enc_offset, decoded);
 		if (frame.empty()) {
 			return {}; // the geometry above makes this unreachable
 		}
@@ -475,10 +498,16 @@ private:
 
 	enum class State : uint8_t { Empty, Building, Encoded };
 
-	[[nodiscard]] uint8_t* raw() const noexcept
+	// Where the APPLICATION payload lives: past the encoder headroom and past
+	// the hidden length header.
+	[[nodiscard]] static uint8_t* payload_of(std::byte* const block,
+	                                         const std::size_t capacity) noexcept
 	{
-		return reinterpret_cast<uint8_t*>(m_block) + cobs_raw_offset(m_capacity);
+		return reinterpret_cast<uint8_t*>(block) +
+		       Format::raw_offset_for_capacity(capacity) + Format::length_size;
 	}
+
+	[[nodiscard]] uint8_t* raw() const noexcept { return payload_of(m_block, m_capacity); }
 
 	void release() noexcept
 	{

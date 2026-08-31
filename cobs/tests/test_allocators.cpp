@@ -44,13 +44,13 @@ void runContract(const char* name)
 	Allocator a;
 
 	// --- RX: one contiguous [RxPacket][payload], sized by the declared limit
-	Packet* const p = a.allocate_rx();
+	Packet* const p = a.allocate_rx(Allocator::rx_max_size);
 	check(p != nullptr, "allocate_rx yields a packet");
 	check(p->refs == 1 && p->size == 0 && p->next_ready == nullptr,
 	      "constructed with one reference and no queue link");
 	check(p->owner == &a, "and knows which policy reclaims it");
 
-	const auto payload = p->writable_payload();
+	const auto payload = p->writable_payload(Allocator::rx_max_size);
 	check(payload.size() == Allocator::rx_max_size,
 	      "the payload span is exactly rx_max_size");
 	check(payload.data() == reinterpret_cast<uint8_t*>(p) + sizeof(Packet),
@@ -65,11 +65,11 @@ void runContract(const char* name)
 	}
 	check(intact, "the whole declared payload is writable and reads back");
 
-	Packet* const q = a.allocate_rx();
+	Packet* const q = a.allocate_rx(Allocator::rx_max_size);
 	check(q != nullptr && q != p, "a second packet is a distinct object");
 	{	// Non-overlapping: writing one must not disturb the other.
-		const auto pa = p->writable_payload();
-		const auto qa = q->writable_payload();
+		const auto pa = p->writable_payload(Allocator::rx_max_size);
+		const auto qa = q->writable_payload(Allocator::rx_max_size);
 		pa[0] = 0xAA;
 		qa[0] = 0x55;
 		check(pa[0] == 0xAA && qa[0] == 0x55, "and does not overlap it");
@@ -131,7 +131,7 @@ void runContract(const char* name)
 	{
 		std::vector<Packet*> hoard;
 		for (int i = 0; i < 64; ++i) {
-			Packet* const extra = a.allocate_rx();
+			Packet* const extra = a.allocate_rx(Allocator::rx_max_size);
 			if (extra == nullptr) { break; }
 			hoard.push_back(extra);
 		}
@@ -157,10 +157,10 @@ void runContract(const char* name)
 	// the only number a segregated policy could use to find the block's pool.
 	bool churn_ok = true;
 	for (int i = 0; i < 500; ++i) {
-		Packet* const rx = a.allocate_rx();
+		Packet* const rx = a.allocate_rx(Allocator::rx_max_size);
 		const TxAllocation tx = a.allocate_tx(7);
 		churn_ok = churn_ok && rx != nullptr && tx.memory != nullptr;
-		if (rx != nullptr) { rx->writable_payload()[0] = 0x11; }
+		if (rx != nullptr) { rx->writable_payload(Allocator::rx_max_size)[0] = 0x11; }
 		a.deallocate_rx(rx);
 		a.deallocate_tx(tx.memory, tx.capacity);
 	}
@@ -177,10 +177,10 @@ void testFixedExhaustionAndIndependence()
 
 	check(a.rx_available() == 2 && a.tx_available() == 1, "pools start full");
 
-	auto* const p1 = a.allocate_rx();
-	auto* const p2 = a.allocate_rx();
+	auto* const p1 = a.allocate_rx(Allocator::rx_max_size);
+	auto* const p2 = a.allocate_rx(Allocator::rx_max_size);
 	check(p1 != nullptr && p2 != nullptr, "both RX blocks allocate");
-	check(a.allocate_rx() == nullptr, "a third returns null rather than an error");
+	check(a.allocate_rx(Allocator::rx_max_size) == nullptr, "a third returns null rather than an error");
 	check(a.rx_stats().exhausted == 1, "and the exhaustion is counted");
 
 	const TxAllocation t = a.allocate_tx(Allocator::tx_max_size);
@@ -269,8 +269,8 @@ void testFixedGeometryIsAbiIndependent()
 	static_assert(Allocator::tx_max_size == 256);
 
 	Allocator a;
-	auto* const p = a.allocate_rx();
-	check(p != nullptr && p->writable_payload().size() == 1024,
+	auto* const p = a.allocate_rx(Allocator::rx_max_size);
+	check(p != nullptr && p->writable_payload(Allocator::rx_max_size).size() == 1024,
 	      "a 1024-byte policy hands out exactly 1024 payload bytes");
 	a.deallocate_rx(p);
 }

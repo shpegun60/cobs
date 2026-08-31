@@ -16,6 +16,7 @@
 #define COBS_HEAP_ALLOCATOR_H_
 
 #include "CobsEncoder.h"
+#include "CobsFrameFormat.h"
 #include "RxPacket.h"
 #include "TxAllocation.h"
 
@@ -30,6 +31,7 @@ public:
 	static constexpr std::size_t tx_max_size = TxMaxSize;
 
 	using Packet = RxPacket<CobsHeapAllocator>;
+	using Format = CobsFrameFormat<RxMaxSize, TxMaxSize>;
 
 	// A policy defends its own geometry at compile time (§9.1.2), and that
 	// includes the arithmetic it is built on. Both of these are unreachable
@@ -43,13 +45,22 @@ public:
 	CobsHeapAllocator(const CobsHeapAllocator&) = delete;
 	CobsHeapAllocator& operator=(const CobsHeapAllocator&) = delete;
 
-	// One contiguous [RxPacket][payload] region, as §9.1.2 requires. A heap
-	// policy has no trouble honouring that, so heap and pool end up with
-	// identical geometry and differ only in where the region came from.
-	[[nodiscard]] Packet* allocate_rx() noexcept
+	/*
+	 * One contiguous [RxPacket][payload] region, as §9.1.2 requires, sized for
+	 * EXACTLY the declared body length. That is what the wire length prefix
+	 * buys: a 20-byte frame costs 20 payload bytes here, not rx_max_size.
+	 *
+	 * A heap policy has no trouble honouring contiguity, so heap and pool end
+	 * up with identical geometry and differ only in where the region came from
+	 * and how much of it is spent.
+	 */
+	[[nodiscard]] Packet* allocate_rx(const std::size_t requested_size) noexcept
 	{
+		if (requested_size > rx_max_size) {
+			return nullptr;
+		}
 		void* const memory =
-			::operator new(sizeof(Packet) + rx_max_size, std::nothrow);
+			::operator new(sizeof(Packet) + requested_size, std::nothrow);
 		if (memory == nullptr) {
 			return nullptr;
 		}
@@ -90,8 +101,10 @@ public:
 		if (requested > tx_max_size) {
 			return {};
 		}
+		// The block must hold the encoded [length][payload], not just the
+		// payload: the header is part of the COBS input (§8.3).
 		void* const memory =
-			::operator new(cobs_max_wire_size(requested), std::nothrow);
+			::operator new(Format::tx_storage_size_for_capacity(requested), std::nothrow);
 		if (memory == nullptr) {
 			return {};
 		}

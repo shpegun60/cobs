@@ -31,13 +31,19 @@ struct RxPacket final {
 	RxPacket* next_ready = nullptr; // intrusive ready-queue link (§6.2)
 	Allocator* owner     = nullptr; // who reclaims this block
 
-	// Where the decoder writes: exactly the protocol limit the policy
-	// declared (COBS_ENGINE.md §9.1.2), never the physical region, which may
-	// be larger and is nobody's business. Only the owner of an unpublished
-	// packet may call this.
-	[[nodiscard]] std::span<uint8_t> writable_payload() noexcept
+	/*
+	 * Where the decoder writes, INTERNAL to the RX vertical: exactly the
+	 * declared body length this packet was allocated for, never rx_max_size.
+	 * That distinction is the point of the length prefix — a heap policy
+	 * allocates 20 bytes for a 20-byte frame, so handing out rx_max_size here
+	 * would run straight off the end of the block.
+	 *
+	 * The caller is obliged to pass the same size it allocated with. Only
+	 * CobsRx does, on a packet that is not yet published.
+	 */
+	[[nodiscard]] std::span<uint8_t> writable_payload(const std::size_t allocated) noexcept
 	{
-		return {payload(), Allocator::rx_max_size};
+		return {payload(), allocated};
 	}
 
 	// What the application sees: the decoded bytes, read-only.
