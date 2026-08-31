@@ -46,9 +46,13 @@ void runContract(const char* name)
 	// --- RX: one contiguous [RxPacket][payload], sized by the declared limit
 	Packet* const p = a.allocate_rx(Allocator::rx_max_size);
 	check(p != nullptr, "allocate_rx yields a packet");
-	check(p->refs == 1 && p->size == 0 && p->next_ready == nullptr,
-	      "constructed with one reference and no queue link");
-	check(p->owner == &a, "and knows which policy reclaims it");
+	check(p->data().empty(), "carrying no decoded bytes yet");
+	// refs, size, next_ready and owner are private to the RX vertical (§6.5) —
+	// a public `size` was a one-line out-of-bounds read once allocations
+	// became exact. They are asserted where they can be asserted honestly:
+	// through behaviour, in test_cobs_rx, where a released PacketRef returning
+	// its block to the right pool is the only proof that `owner` is right that
+	// does not consist of reading `owner`.
 
 	// writable_payload() is private to the RX vertical (§6.5), so the contract
 	// test reaches the storage the way the contract DEFINES it: one contiguous
@@ -69,11 +73,6 @@ void runContract(const char* name)
 		intact = intact && payload[i] == static_cast<uint8_t>(i);
 	}
 	check(intact, "the whole declared payload is writable and reads back");
-
-	p->size = 4;
-	check(p->data().data() == payload.data() && p->data().size() == 4,
-	      "and the public view maps onto exactly those bytes");
-	p->size = 0;
 
 	Packet* const q = a.allocate_rx(Allocator::rx_max_size);
 	check(q != nullptr && q != p, "a second packet is a distinct object");
@@ -299,10 +298,11 @@ void testFixedGeometryIsAbiIndependent()
 	check(p != nullptr, "a 1024-byte policy honours a 1024-byte request");
 	auto* const bytes = reinterpret_cast<uint8_t*>(p) + sizeof(*p);
 	for (std::size_t i = 0; i < 1024; ++i) { bytes[i] = static_cast<uint8_t>(i); }
-	p->size = 1024;
-	check(p->data().size() == 1024 && p->data()[1023] == static_cast<uint8_t>(1023),
-	      "with all 1024 payload bytes usable on any ABI");
-	p->size = 0;
+	bool readable = true;
+	for (std::size_t i = 0; i < 1024; ++i) {
+		readable = readable && bytes[i] == static_cast<uint8_t>(i);
+	}
+	check(readable, "with all 1024 payload bytes usable on any ABI");
 	a.deallocate_rx(p);
 }
 

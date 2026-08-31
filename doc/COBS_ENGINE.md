@@ -244,16 +244,28 @@ Both formulas are header-inclusive because the header is part of what gets
 COBS-encoded. `tx_max_size` is the ceiling the builder refuses to grow past,
 not the size of anything.
 
-Each limit is republished by `Cobs` as `max_receive_size` and `max_send_size`,
-and both peers of a link must agree on them the same way they agree on a baud
-rate. Neither is called `max_decoded_size`: that name was one header away from
-the truth, on a layer where being one header out is the easiest mistake there
-is.
+Each limit is republished by `Cobs` as `max_receive_size` and `max_send_size`.
+Peers do NOT have to declare the same numbers — an asymmetric pair is the
+normal case, and §3's example is exactly that. What has to hold is:
+
+```text
+A.tx_max_size <= B.rx_max_size          each side can carry what the other sends
+B.tx_max_size <= A.rx_max_size
+A.length_size == B.length_size          or nothing decodes at all
+```
+
+Only `length_size` is a wire-compatibility requirement; the limits are each
+peer's own statement about what it is willing to send and to accept, and may
+be larger than anything actually used.
+
+Neither republished name is `max_decoded_size`: that name was one header away
+from the truth, on a layer where being one header out is the easiest mistake
+there is.
 
 ```cpp
 template<class Allocator = CobsHeapAllocator<>>
 class Cobs final {
-    static constexpr std::size_t max_decoded_size = Allocator::rx_max_size;
+    static constexpr std::size_t max_receive_size = Allocator::rx_max_size;
     static constexpr std::size_t max_send_size    = Allocator::tx_max_size;
 };
 ```
@@ -297,7 +309,8 @@ because they hold different things:
 ```text
 RX block   sizeof(RxPacket) + rx_max_size      1048 bytes on x86-64,
                                                1036 on Cortex-M, for 1024
-TX block   cobs_max_wire_size(tx_max_size)     1030 bytes anywhere, since
+TX block   cobs_max_wire_size(length_size
+             + tx_max_size)                    1032 bytes anywhere, since
                                                it contains no C++ object
 ```
 
@@ -1189,15 +1202,16 @@ of allocation:
 TX   the container knows the capacity it needs RIGHT NOW — at creation, and
      again at every growth
      -> ask for exactly that, and ask again if the message outgrows it
-RX   only the first COBS code byte has arrived
-     -> the final decoded size is unknowable; commit to rx_max_size
+RX   the frame declares its body length in the header, which arrives before
+     the body does
+     -> ask for exactly that, once
 ```
 
 Note what this does NOT claim: that the application knows the payload size up
 front. It often does not, which is why `CobsMsg` is a container that grows
-(§8.3.1). The asymmetry is that TX can always ask again, because nothing has
-been written to the wire yet, while RX has one chance before the bytes start
-arriving.
+(§8.3.1). What remains asymmetric is only the number of attempts — TX can ask
+again because nothing has reached the wire yet, while RX gets one chance, and
+the length prefix is what makes that one chance exact instead of worst-case.
 
 **Both directions are now size-aware, and for the same reason.** TX knows the
 capacity it needs because nothing has reached the wire yet; RX knows the body
@@ -1355,16 +1369,16 @@ Everything about memory is written down once, in the policy:
 
 ```text
 CobsAllocatorPolicy
-├── rx_max_size          largest decoded frame this instance accepts
+├── rx_max_size          largest BODY this instance accepts
 ├── RX capacity / quota
-├── tx_max_size          largest payload this instance can send
+├── tx_max_size          largest BODY this instance can send
 ├── TX capacity / quota
 ├── allocate_rx(n)  / deallocate_rx()
 └── allocate_tx()   / deallocate_tx()
 ```
 
 `Cobs` reads those numbers and never second-guesses them. It republishes them
-under its own names — `max_decoded_size`, `max_send_size` — so that code above
+under its own names — `max_receive_size`, `max_send_size` — so that code above
 has one place to ask, and so a change of policy is visible rather than
 implied (§4.1).
 

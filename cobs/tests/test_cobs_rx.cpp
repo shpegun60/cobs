@@ -775,6 +775,88 @@ void testEmptyPacketAllocationFailure()
 	check(matches(rx.pop_packet(), body), "with its bytes intact");
 }
 
+
+/* ============ a header that is oversize and has no body at all ========== */
+
+/*
+ * Oversize is a verdict on the HEADER, so it has to be reached the same way
+ * whether or not a body ever started. It is easy for it not to be: a frame
+ * declaring 65 with one body byte takes the beginBody() path, while the same
+ * frame with no body reaches FrameComplete directly and, before this was
+ * fixed, was counted as a plain length mismatch. The classification would then
+ * have depended on the frame's punctuation rather than on its header.
+ *
+ * It is also the symmetric case to a refused empty packet: the delimiter has
+ * already arrived, so it costs no resync.
+ */
+void testOversizeWithNoBody()
+{
+	RecordingHeap pool;
+	RecRx rx(pool);
+
+	rx.consume(std::span<const uint8_t>{
+		cobs_test::frame_declaring(RecordingHeap::rx_max_size + 1, {},
+		                           RecRx::length_size)});
+	check(rx.stats().oversize == 1,
+	      "a declared length above the limit is oversize even with no body");
+	check(rx.stats().length_mismatch == 0, "and is not filed as a length mismatch");
+	check(rx.stats().frames_lost == 1, "the frame is lost");
+	check(rx.stats().resyncs == 0,
+	      "with no resync: the delimiter arrived before the verdict did");
+	check(pool.requests.empty(), "and the allocator was never asked");
+
+	// No resync means the very next frame arrives without a delimiter first.
+	const auto body = payload(0x31, 6);
+	rx.consume(std::span<const uint8_t>{cobs_test::frame(body, RecRx::length_size)});
+	check(rx.stats().frames_delivered == 1, "and the next frame arrives immediately");
+	check(matches(rx.pop_packet(), body), "intact");
+
+	{	// The same header WITH a body must land on the same counter, by the
+		// other path — that is the whole point.
+		RecordingHeap pool2;
+		RecRx rx2(pool2);
+		rx2.consume(std::span<const uint8_t>{
+			cobs_test::frame_declaring(RecordingHeap::rx_max_size + 1,
+			                           payload(0x41, 8), RecRx::length_size)});
+		check(rx2.stats().oversize == 1 && rx2.stats().length_mismatch == 0,
+		      "the same header with a body is the same verdict");
+		check(rx2.stats().resyncs == 1,
+		      "differing only in the resync, since that one is found early");
+	}
+}
+
+/* ================== the packet's internals are unreachable ============== */
+
+// Compile-time, because a runtime test cannot check that something does NOT
+// compile. Each of these was reachable at some point, and each was a way to
+// read or write past an exact allocation, or to corrupt the refcount.
+template<class P>
+concept CanWritePayload = requires(P& p) { p.writable_payload(std::size_t{1}); };
+template<class P>
+concept CanSetSize = requires(P& p) { p.size = uint16_t{1}; };
+template<class P>
+concept CanReadRefs = requires(const P& p) { p.refs; };
+template<class P>
+concept CanRelink = requires(P& p) { p.next_ready = nullptr; };
+template<class P>
+concept CanRetarget = requires(P& p) { p.owner = nullptr; };
+template<class P>
+concept CanReadData = requires(const P& p) { p.data(); };
+
+void testPacketInternalsAreSealed()
+{
+	using P = RxPacket<CobsHeapAllocator<1024, 1024>>;
+	static_assert(!CanWritePayload<P>, "the writable span must not be reachable");
+	static_assert(!CanSetSize<P>,
+	              "a public size is a one-line out-of-bounds read: "
+	              "allocate_rx(20), size = 1024, data()[1000]");
+	static_assert(!CanReadRefs<P>, "the refcount is not public bookkeeping");
+	static_assert(!CanRelink<P>, "nor is the ready-queue link");
+	static_assert(!CanRetarget<P>, "nor the pointer that decides who frees it");
+	static_assert(CanReadData<P>, "while the immutable view stays public");
+	check(true, "RxPacket exposes data() and nothing else");
+}
+
 } // namespace
 
 int main()
@@ -786,6 +868,8 @@ int main()
 	testFixedSlabPublishesDeclaredLength();
 	testRxLengthSweep();
 	testEmptyPacketAllocationFailure();
+	testOversizeWithNoBody();
+	testPacketInternalsAreSealed();
 
 	group("EndToEnd");
 	testRoundTripThroughTheWholeStack();

@@ -7,9 +7,28 @@
  * its final home.
  *
  * Immutability, precisely (§6.5): the decoded payload bytes are immutable
- * after publication; the ownership and queue metadata below stay mutable
- * internally. That is why `refs` and `next_ready` are not const-qualified and
- * why the application only ever sees data() through a const span.
+ * after publication; the ownership and queue metadata stay mutable internally.
+ * That is why `refs` and `next_ready` are not const-qualified and why the
+ * application only ever sees data() through a const span.
+ *
+ * NOTHING here is public but data(). The fields are not hidden for tidiness:
+ * `size` is the length data() reports, and since RX allocations became exact
+ * a packet built for 20 bytes has 20 bytes of block behind it. A public `size`
+ * is therefore a one-line out-of-bounds READ —
+ *
+ *     auto* p = pool.allocate_rx(20);
+ *     p->size = 1024;
+ *     const auto byte = p->data()[1000];   // 980 bytes past the block
+ *
+ * — the exact counterpart of the writable_payload() hole, and closed the same
+ * way. `refs`, `next_ready` and `owner` are the ownership bookkeeping the
+ * whole lifetime model rests on; code that can write them can free a live
+ * packet or leak a dead one. Three friends can, and each has to:
+ *
+ *     CobsRx      builds the packet and threads it onto the ready queue
+ *     PacketRef   is the refcount
+ *     Allocator   stamps `owner` at allocation, and is the thing `owner`
+ *                 names in the first place
  *
  * Allocator is used only as a pointer here, so it may be incomplete at the
  * point this template is instantiated. That is what breaks the cycle between
@@ -30,21 +49,27 @@ template<class Allocator>
 class CobsRx;
 
 template<class Allocator>
+class PacketRef;
+
+template<class Allocator>
 struct RxPacket final {
 	friend class CobsRx<Allocator>;
+	friend class PacketRef<Allocator>;
+	friend Allocator;
 
-	uint16_t  refs       = 1;       // the creator holds the first reference
-	uint16_t  size       = 0;       // decoded bytes; set on FrameComplete
-	RxPacket* next_ready = nullptr; // intrusive ready-queue link (§6.2)
-	Allocator* owner     = nullptr; // who reclaims this block
-
-	// What the application sees: the decoded bytes, read-only.
+	// What the application sees: the decoded bytes, read-only. The only
+	// public member, and reachable in practice through PacketRef.
 	[[nodiscard]] std::span<const uint8_t> data() const noexcept
 	{
 		return {payload(), size};
 	}
 
 private:
+	uint16_t  refs       = 1;       // the creator holds the first reference
+	uint16_t  size       = 0;       // decoded bytes; set on FrameComplete
+	RxPacket* next_ready = nullptr; // intrusive ready-queue link (§6.2)
+	Allocator* owner     = nullptr; // who reclaims this block
+
 	/*
 	 * Where the decoder writes: exactly the declared body length this packet
 	 * was allocated for, never rx_max_size.

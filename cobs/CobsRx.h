@@ -107,10 +107,11 @@ public:
 			const CobsDecoder::Result r = m_decoder.consume(bytes);
 			bytes = bytes.subspan(r.consumed);
 
-			// Progress is guaranteed even when r.consumed is 0: the only such
-			// case is an event that changes the decoder's state (NeedOutput,
-			// which we answer below, or Oversize, which has already switched
-			// to discarding).
+			// Progress is guaranteed even when r.consumed is 0. That happens
+			// only on NeedOutput, where the byte still needing room is left
+			// deliberately unconsumed — and onNeedOutput() either attaches the
+			// next segment or switches the decoder to discarding, so the state
+			// changes either way.
 			switch (r.event) {
 			case CobsDecoder::Event::None:
 				return;
@@ -243,6 +244,16 @@ private:
 				return;
 			}
 			const std::size_t declared = Format::load_length(m_lengthBytes.data());
+			// Oversize is decided by the HEADER, so it has to be decided the
+			// same way whether or not a body ever started. Without this the
+			// classification would depend on the frame's punctuation: a frame
+			// declaring 65 with one body byte is oversize, and the same frame
+			// with no body at all would be a mere length mismatch.
+			if (declared > max_receive_size) {
+				++m_stats.oversize;
+				endFrame(true); // the delimiter is already consumed: no resync
+				return;
+			}
 			if (declared != 0u) {
 				++m_stats.length_mismatch; // declared a body, sent none
 				endFrame(true);

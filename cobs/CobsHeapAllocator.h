@@ -6,10 +6,12 @@
  * example to read before writing your own: two constants, four functions, and
  * no state at all.
  *
- * The limits are template parameters rather than "unbounded" because
- * unbounded is not available to us — the zero-copy RX decoder is handed its
- * final output span at NeedOutput, before a single payload byte has arrived,
- * so a number has to be committed to up front (§9.2).
+ * The limits are template parameters rather than "unbounded" for two reasons,
+ * neither of them the old one. The wire length field is fixed-width, so the
+ * largest frame the format can describe is settled when the type is
+ * instantiated; and a protocol needs a configured ceiling above which a
+ * declared length is refused rather than believed. The PER-FRAME allocation is
+ * exact — allocate_rx(N) for a frame that declared N (§9.1.1).
  */
 
 #ifndef COBS_HEAP_ALLOCATOR_H_
