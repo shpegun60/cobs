@@ -2,7 +2,12 @@
  * StaticBlockPool — BlockCount fixed blocks in static storage, and nothing
  * else. No heap, no virtuals, no mutex, O(1) allocate and release.
  *
- * INTERNAL. This is an implementation primitive, not a settled contract for a
+ * INTERNAL. Named cobs_detail rather than cobs::detail on purpose: a namespace
+ * called `cobs` would collide with the most natural name for the engine
+ * object itself, and `Cobs<> cobs;` is exactly how the documentation spells
+ * it. The library identifies itself by prefix, not by namespace.
+ *
+ * This is an implementation primitive, not a settled contract for a
  * user-supplied allocator: it lives in detail/ so that nobody discovers it,
  * builds on it, and turns yesterday's idea into an international treaty. The
  * public shape of custom memory is decided once both real use cases exist
@@ -38,7 +43,7 @@
 #	endif
 #endif
 
-namespace cobs::detail {
+namespace cobs_detail {
 
 // Outside the template on purpose: the numbers do not depend on the geometry,
 // so two pools of different shapes report the same TYPE. Nested, every
@@ -206,6 +211,6 @@ private:
 	Stats  m_stats{};
 };
 
-} // namespace cobs::detail
+} // namespace cobs_detail
 
 #endif /* COBS_DETAIL_STATIC_BLOCK_POOL_H_ */

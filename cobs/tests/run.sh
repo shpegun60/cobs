@@ -12,6 +12,7 @@
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 COBS="$(cd "$HERE/.." && pwd)"
+PROJ="$(cd "$COBS/.." && pwd)"
 CXX="${CXX:-g++}"
 OUT="$HERE/out"
 mkdir -p "$OUT"
@@ -34,11 +35,12 @@ rm -f "$OUT/.sancheck" "$OUT/.sancheck.exe"
 #   test_cobs_rx         the assembled RX vertical, end to end
 #   test_encoder         canonical in-place encoding over its own payload
 #   test_cobs_msg        TX block ownership and geometry, no transport
+#   test_cobs            the assembled engine over a fake transport, both policies
 build() {
 	name="$1"
 	shift
 	# shellcheck disable=SC2086
-	"$CXX" -std=gnu++20 -O1 -g $WARN $SAN -I"$COBS" -I"$HERE" "$@" -o "$OUT/$name.exe"
+	"$CXX" -std=gnu++20 -O1 -g $WARN $SAN -I"$COBS" -I"$HERE" -I"$PROJ/libs/delegate" "$@" -o "$OUT/$name.exe"
 }
 
 build test_decoder         "$COBS/CobsDecoder.cpp" "$HERE/test_decoder.cpp"
@@ -47,6 +49,7 @@ build test_allocators      "$HERE/test_allocators.cpp"
 build test_cobs_rx         "$COBS/CobsDecoder.cpp" "$HERE/test_cobs_rx.cpp"
 build test_encoder         "$COBS/CobsDecoder.cpp" "$COBS/CobsEncoder.cpp" "$HERE/test_encoder.cpp"
 build test_cobs_msg        "$COBS/CobsEncoder.cpp" "$HERE/test_cobs_msg.cpp"
+build test_cobs            "$COBS/CobsDecoder.cpp" "$COBS/CobsEncoder.cpp" "$HERE/test_cobs.cpp"
 
 "$OUT/test_decoder.exe"
 "$OUT/test_block_pool.exe"
@@ -54,3 +57,4 @@ build test_cobs_msg        "$COBS/CobsEncoder.cpp" "$HERE/test_cobs_msg.cpp"
 "$OUT/test_cobs_rx.exe"
 "$OUT/test_encoder.exe"
 "$OUT/test_cobs_msg.exe"
+"$OUT/test_cobs.exe"

@@ -38,10 +38,19 @@
 #include <cstdint>
 #include <span>
 
+// The only legitimate destination for a surrendered block.
+template<class Allocator>
+class Cobs;
+
 // One template parameter, like everything else in this layer: the policy
 // states tx_max_size, so the geometry follows from it (COBS_ENGINE.md §9.2).
 template<class Allocator>
 class CobsMsg final {
+	// surrender_block() is private for the same reason PacketRef::adopt() is:
+	// it hands out ownership without freeing it, so exactly one type may call
+	// it — the one that will keep the block alive until the transport is done.
+	friend class Cobs<Allocator>;
+
 public:
 	static constexpr std::size_t max_payload_size = Allocator::tx_max_size;
 	// The block holds the worst-case wire frame; the payload starts far
@@ -104,6 +113,14 @@ public:
 	[[nodiscard]] std::size_t payload_size() const noexcept { return m_size; }
 	[[nodiscard]] bool encoded() const noexcept { return m_state == State::Encoded; }
 
+	// Guards against pushing a message into a DIFFERENT engine of the same
+	// type, which would return the block to the wrong pool. The types cannot
+	// catch that: two Cobs<CobsFixedAllocator<...>> objects are one type.
+	[[nodiscard]] bool belongs_to(const Allocator& allocator) const noexcept
+	{
+		return m_pool == &allocator;
+	}
+
 	/*
 	 * Encodes the reserved payload in place and returns the wire frame.
 	 *
@@ -134,6 +151,18 @@ public:
 	}
 
 private:
+	// Hands the block to the layer above WITHOUT freeing it: the transport is
+	// about to borrow it, and the message must stop owning it at the same
+	// instant. Leaves the message Empty. Only called after the transport has
+	// already accepted the frame (§8.2).
+	[[nodiscard]] std::byte* surrender_block() noexcept
+	{
+		std::byte* const block = m_block;
+		m_block = nullptr; // so disown() cannot free what the transport holds
+		disown();
+		return block;
+	}
+
 	enum class State : uint8_t { Empty, Building, Encoded };
 
 	[[nodiscard]] uint8_t* raw() const noexcept

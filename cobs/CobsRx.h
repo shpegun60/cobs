@@ -37,21 +37,18 @@
 
 // One template parameter, per the frozen contract (COBS_ENGINE.md §4.3): the
 // policy is the single source of truth for the limits, so there is nothing
-// else for a parameter to carry. The default is the heap policy.
+// else for a parameter to carry.
 //
-//     CobsRx<> rx;                              // heap, 1024-byte frames
-//     CobsRx<CobsFixedAllocator<...>> rx;       // static storage
-//
-// The allocator is still passed by reference here; the assembled Cobs owns
-// its policy by value (§9.4). That is the remaining difference between this
-// stepping stone and the final glue.
+// This is the RX half on its own, taking the policy by reference. The
+// assembled Cobs owns its policy by value (§9.4) and wraps this; an
+// application normally uses Cobs rather than instantiating CobsRx directly.
 template<class Allocator = CobsHeapAllocator<>>
 class CobsRx final {
 public:
-	// Exposed so that a user who takes the default can still name the pool
-	// they must construct — without it the default would save nothing:
-	//     CobsRx<256>::AllocatorType pool;
-	//     CobsRx<256> rx(pool);
+	// Exposed so a user taking the default can still name the policy they must
+	// construct — without it the default would save nothing:
+	//     CobsRx<>::AllocatorType allocator;
+	//     CobsRx<> rx(allocator);
 	using AllocatorType = Allocator;
 	using Packet = typename Allocator::Packet;
 	using Ref = PacketRef<Allocator>;

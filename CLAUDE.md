@@ -57,14 +57,15 @@ The COBS layer owns no HAL, so its suites are ordinary host programs — no fake
 PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH" sh cobs/tests/run.sh
 ```
 
-It builds and runs six independent binaries, so a failure names the layer without needing a stack trace:
+It builds and runs seven independent binaries, so a failure names the layer without needing a stack trace:
 
 - `test_decoder` — framing only; mostly property tests (every length × pattern × span-boundary combination, ~20k checks).
-- `test_block_pool` — `detail::StaticBlockPool`, the raw memory primitive both policies are built on.
+- `test_block_pool` — `cobs_detail::StaticBlockPool`, the raw memory primitive both policies are built on.
 - `test_allocators` — the allocator policy contract (`COBS_ENGINE.md` §9), one shared test body run against **both** `CobsHeapAllocator` and `CobsFixedAllocator`. It uses nothing but the contract, so if it ever needed to know which policy it was talking to, the abstraction would have leaked.
 - `test_cobs_rx` — the assembled RX vertical end to end, plus `PacketRef` semantics. Those live here rather than beside the pool because `PacketRef::adopt()` is private to `CobsRx`, its only legitimate source; refcounts are therefore asserted behaviourally, through pool occupancy.
 - `test_encoder` — canonical in-place encoding, checked against two independent oracles (the reference encoder byte-for-byte, and a round trip through `CobsDecoder`) at the minimum legal headroom.
 - `test_cobs_msg` — `CobsMsg`: TX block ownership, move semantics, payload geometry and encoding. No transport.
+- `test_cobs` — the assembled `Cobs` engine over a fake transport bound through delegates, the whole body run against **both** policies: RX end to end, the `push()` outcomes (`Sent`/`Busy`/`Error`/`NotBound`/`Invalid`), retry of the identical frame after a failed start, `proceed()` reclaiming the block only once the transport lets go, and rebinding refused while a transfer is in flight.
 
 The script builds with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` and adds `-fsanitize=address,undefined` when the toolchain provides the runtime. MinGW does not, so for a sanitized run use WSL (the exact command is in the script header). `COBS_POOL_CHECKS` (on by default in debug builds) compiles in the pool's double-free and foreign-pointer detection; a rejected free is counted and ignored rather than corrupting the free list.
 
@@ -81,7 +82,7 @@ The script builds with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` and adds
 
 Section 33 of the doc ("Key invariants") lists the invariants any implementation must preserve.
 
-**`doc/COBS_ENGINE.md` supersedes it for the COBS layer.** The architecture document is a design sketch and its UART sections are now partly historical (the implemented driver is a template with an internal chunk pool, not the external-storage engine it describes); `COBS_ENGINE.md` is the reviewed contract the COBS implementation must satisfy — decision table, decoder state machine, size arithmetic, the in-place TX overlap invariant with its proof, and the test plan. Where the two disagree, `COBS_ENGINE.md` wins. Notably it splits a non-template `CobsDecoder` out of `Cobs<MaxDecodedSize, Allocator>`, binds the transport with delegates rather than a template parameter, and defines memory as a single allocator policy (§9).
+**`doc/COBS_ENGINE.md` supersedes it for the COBS layer.** The architecture document is a design sketch and its UART sections are now partly historical (the implemented driver is a template with an internal chunk pool, not the external-storage engine it describes); `COBS_ENGINE.md` is the reviewed contract the COBS implementation must satisfy — decision table, decoder state machine, size arithmetic, the in-place TX overlap invariant with its proof, and the test plan. Where the two disagree, `COBS_ENGINE.md` wins. Notably it splits a non-template `CobsDecoder` out of `Cobs<Allocator>`, binds the transport with delegates rather than a template parameter, and defines memory as a single allocator policy (§9).
 
 ## Reference material
 

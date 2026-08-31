@@ -44,7 +44,7 @@ void testRawPoolHandlesTinyBlocks()
 {
 	// A two-byte block with byte alignment — the shape a minimal TX frame
 	// (01 00) would ask for, and one that cannot physically hold a pointer.
-	using Tiny = cobs::detail::StaticBlockPool<2, 4, 1>;
+	using Tiny = cobs_detail::StaticBlockPool<2, 4, 1>;
 	Tiny pool;
 
 	check(Tiny::block_size == 2, "the client-visible block size is what was asked for");
@@ -76,7 +76,7 @@ void testRawPoolHandlesTinyBlocks()
 // run on memory the pool is about to refuse.
 void testCleanupRunsOnlyAfterValidation()
 {
-	using Small = cobs::detail::StaticBlockPool<32, 2, 1>;
+	using Small = cobs_detail::StaticBlockPool<32, 2, 1>;
 	Small pool;
 	Small other;
 

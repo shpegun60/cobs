@@ -42,11 +42,11 @@ public:
 	static constexpr std::size_t tx_blocks = TxBlocks;
 
 private:
-	using RxPool = cobs::detail::StaticBlockPool<
+	using RxPool = cobs_detail::StaticBlockPool<
 		sizeof(Packet) + RxMaxSize, RxBlocks, alignof(Packet)>;
 	// TX blocks are plain bytes: the payload needs no alignment beyond 1, and
 	// the pool raises that on its own behalf for the free-list link.
-	using TxPool = cobs::detail::StaticBlockPool<
+	using TxPool = cobs_detail::StaticBlockPool<
 		cobs_max_wire_size(TxMaxSize), TxBlocks, 1>;
 
 public:
@@ -57,7 +57,7 @@ public:
 	static_assert(TxPool::block_size >= cobs_max_wire_size(tx_max_size),
 		"the TX pool cannot hold the worst-case wire frame of tx_max_size bytes");
 
-	using Stats = cobs::detail::PoolStats;
+	using Stats = cobs_detail::PoolStats;
 
 	CobsFixedAllocator() noexcept = default;
 	CobsFixedAllocator(const CobsFixedAllocator&) = delete;
