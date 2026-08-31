@@ -29,20 +29,20 @@ only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 | RX allocation size | `allocate_rx(declared_length)`; a 20-byte frame costs 20 payload bytes on a heap policy |
 | Transport gap | `DropUntilDelimiter`, absorbed entirely by COBS |
 | Bare `0x00` | synchronization / no-op, never a packet |
-| Empty packet | a frame whose declared length is 0; `01 00` (an empty decoded frame) is now MALFORMED at the engine layer, since it carries no length field |
+| Empty packet | a frame whose declared length is 0. `01 00` — a valid COBS frame with an empty decoded body — is an INVALID ENGINE FRAME, since it carries no length field: it is counted as `length_mismatch`, NOT as `malformed`, which stays reserved for structural COBS errors |
 | Delimiter inside a block | frame discarded, decoder is immediately synchronized |
-| Oversize / allocation failure | `DropUntilDelimiter`; oversize is now decided by CobsRx from the DECLARED length against `rx_max_size`, not by the decoder |
+| Oversize / allocation failure | decided by CobsRx from the DECLARED length against `rx_max_size`, never by the decoder. `DropUntilDelimiter` only when the failure is found mid-frame; the two that are found AT the delimiter — an oversize header with no body, and a refused `allocate_rx(0)` — cost a frame and no resync (§6.1.2) |
 | Ready queue | intrusive, threaded through the packets themselves |
 | RX lifetime | intrusive refcount, `PacketRef`, payload immutable after publication |
 | Refcount | plain (single execution domain); no atomic policy in v1 |
 | Allocator | a compile-time **policy** (§9) and the single source of truth for memory: geometry, limits and quotas. `Cobs<Allocator>` is the whole signature. Defaults to `CobsHeapAllocator<>`; embedded targets opt into a fixed pool |
-| `MaxDecodedSize` | `Allocator::rx_max_size`; the whole decoded frame, including any future integrity trailer |
+| Protocol limits | `Allocator::rx_max_size` / `tx_max_size`, both BODY limits — the decoded frame is `length_size` bytes longer. Republished as `Cobs::max_receive_size` / `max_send_size` |
 | TX ownership | move-only `CobsMsg`, exclusive until the transport accepts it |
 | Transport busy before encoding | message stays `Building` |
 | `send()` failure after encoding | message stays `Encoded`, the same wire frame is retryable |
 | TX queue | none |
 | TX completion | `proceed()` polls `tx_busy()` |
-| CRC | not in v1, and free to add later **because** of the `MaxDecodedSize` definition |
+| CRC | not in v1, and free to add later **because** the declared length counts the whole body, trailer included |
 | Observability | counters only; no hot-path instrumentation unless a probe is enabled |
 
 ---
@@ -284,7 +284,7 @@ class Cobs final {
 ```
 
 An earlier draft of this document put it the other way round — a
-`MaxDecodedSize` parameter on `Cobs`, with the allocator merely asserted to be
+a protocol-limit parameter on `Cobs`, with the allocator merely asserted to be
 big enough — on the principle that a memory backend must never decide protocol
 semantics. That principle is right about a *generic* allocator. It does not
 apply here, because this is not one: `CobsAllocatorPolicy` is a purpose-built
@@ -1571,8 +1571,12 @@ a host binary with no HAL, no pool and no transport.
 ### 11.1 Lengths
 
 ```text
-0, 1, 253, 254, 255, 508, 509, MaxDecodedSize
+0, 1, 253, 254, 255, 508, 509, rx_max_size (RX) / tx_max_size (TX)
 ```
+
+and, because the length header shifts every COBS block boundary by
+`length_size`, the lengths that put `length_size + n` on those boundaries as
+well — 252 and 253 for a two-byte header, not only 253 and 254.
 
 ### 11.2 Patterns, for every length above
 
@@ -1632,8 +1636,12 @@ leading delimiter         → harmless
 
 ## 12. Explicitly not in v1
 
-- CRC / integrity trailer. Reserved by the `MaxDecodedSize` definition (§4.1);
-  the decoder and the block layout do not change when it is added.
+- CRC / integrity trailer. Reserved by the definition of the declared length
+  (§3): it counts the whole BODY, so a trailer is already inside the number
+  every frame carries. What changes when it arrives is how much of the body
+  the application may use — `rx_max_size - CRC` instead of `rx_max_size` —
+  and nothing else. The decoder, the block layout and the size arithmetic all
+  stay as they are.
 - Atomic refcount policy for cross-task packet sharing (§6.4).
 - Any TX queue. Busy policy belongs to the layer above, exactly as it does
   for the byte transport.
