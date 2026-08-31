@@ -40,11 +40,13 @@ constexpr std::size_t kTxBlocks = 2; // the recommended default: build one while
 using TxPool = CobsFixedAllocator<kMaxDecoded, 1, kMaxDecoded, kTxBlocks>;
 using Msg = CobsMsg<TxPool>;
 
-std::vector<uint8_t> fill(Msg& m, const uint8_t tag, const std::size_t n)
+Msg make(TxPool& pool, const std::size_t capacity) { return Msg{pool, capacity}; }
+
+std::vector<uint8_t> fill(Msg& m, const uint8_t tag)
 {
-	std::vector<uint8_t> expected(n);
-	const auto payload = m.reserve(n);
-	for (std::size_t i = 0; i < n; ++i) {
+	const auto payload = m.payload();
+	std::vector<uint8_t> expected(payload.size());
+	for (std::size_t i = 0; i < payload.size(); ++i) {
 		expected[i] = static_cast<uint8_t>(tag + i);
 		payload[i] = expected[i];
 	}
@@ -58,16 +60,16 @@ void testAcquireAndRelease()
 	TxPool pool;
 	check(pool.tx_available() == kTxBlocks, "the TX pool starts full");
 	{
-		Msg m(pool);
+		Msg m = make(pool, kMaxDecoded);
 		check(static_cast<bool>(m), "a message acquires a block");
 		check(pool.tx_available() == kTxBlocks - 1, "which the pool records as in use");
-		check(m.payload_size() == 0, "and starts with no payload reserved");
+		check(m.payload_size() == kMaxDecoded, "with the capacity it asked for");
 	}
 	check(pool.tx_available() == kTxBlocks, "destroying a Building message returns the block");
 
 	{	// The same, but encoded first — a different state, same obligation.
-		Msg m(pool);
-		(void)fill(m, 0x10, 8);
+		Msg m = make(pool, kMaxDecoded);
+		(void)fill(m, 0x10);
 		check(!m.encode().empty(), "the message encodes");
 		check(m.encoded(), "and is now Encoded");
 		check(pool.tx_available() == kTxBlocks - 1, "still holding its block");
@@ -77,7 +79,7 @@ void testAcquireAndRelease()
 	{	// A default-constructed message owns nothing and must not free anything.
 		Msg empty;
 		check(!empty, "a default-constructed message is empty");
-		check(empty.reserve(4).empty(), "and refuses to reserve");
+		check(empty.payload().empty(), "and hands out no payload");
 		check(empty.encode().empty(), "and has nothing to encode");
 	}
 	check(pool.tx_available() == kTxBlocks && pool.tx_stats().rejected == 0,
@@ -87,25 +89,25 @@ void testAcquireAndRelease()
 void testExhaustionAndConcurrentMessages()
 {
 	TxPool pool;
-	Msg a(pool);
-	Msg b(pool);
+	Msg a = make(pool, kMaxDecoded);
+	Msg b = make(pool, kMaxDecoded);
 	check(static_cast<bool>(a) && static_cast<bool>(b),
 	      "several messages can be held at once");
 	check(pool.tx_available() == 0, "consuming the whole TX pool");
 
-	Msg c(pool);
+	Msg c = make(pool, kMaxDecoded);
 	check(!c, "a further message from a dry pool is empty rather than a failure code");
-	check(c.reserve(4).empty(), "and stays unusable");
+	check(c.payload().empty(), "and stays unusable");
 
 	{	// Distinct blocks, or two messages would encode over each other.
-		const auto pa = a.reserve(4);
-		const auto pb = b.reserve(4);
+		const auto pa = a.payload();
+		const auto pb = b.payload();
 		check(pa.data() != pb.data(), "concurrent messages own distinct blocks");
 	}
 
 	a = Msg{};
 	check(pool.tx_available() == 1, "assigning an empty message over one releases its block");
-	Msg d(pool);
+	Msg d = make(pool, kMaxDecoded);
 	check(static_cast<bool>(d), "and the pool hands that block out again");
 	check(pool.tx_stats().rejected == 0, "with no block freed twice");
 }
@@ -114,12 +116,12 @@ void testMoveSemantics()
 {
 	TxPool pool;
 	{
-		Msg a(pool);
-		const auto expected = fill(a, 0x20, 6);
+		Msg a = make(pool, kMaxDecoded);
+		const auto expected = fill(a, 0x20);
 
 		Msg b = std::move(a);
 		check(!a, "a moved-from message is empty");
-		check(static_cast<bool>(b) && b.payload_size() == 6,
+		check(static_cast<bool>(b) && b.payload_size() == kMaxDecoded,
 		      "and the destination carries the payload");
 		check(pool.tx_available() == kTxBlocks - 1,
 		      "the block moved rather than being duplicated or lost");
@@ -131,8 +133,8 @@ void testMoveSemantics()
 	check(pool.tx_available() == kTxBlocks, "and is released once");
 
 	{	// Move assignment must release what it overwrites, not leak it.
-		Msg a(pool);
-		Msg b(pool);
+		Msg a = make(pool, kMaxDecoded);
+		Msg b = make(pool, kMaxDecoded);
 		check(pool.tx_available() == 0, "two blocks held");
 		b = std::move(a);
 		check(pool.tx_available() == 1, "move assignment released b's own block first");
@@ -157,25 +159,70 @@ void testMoveSemantics()
 void testPayloadGeometry()
 {
 	TxPool pool;
-	Msg m(pool);
+	{
+		Msg m = make(pool, kMaxDecoded);
+		check(m.payload().size() == kMaxDecoded, "the whole protocol limit can be asked for");
+		check(m.capacity() == kMaxDecoded, "and is reported as the capacity");
 
-	const auto payload = m.reserve(kMaxDecoded);
-	check(payload.size() == kMaxDecoded, "the whole protocol limit can be reserved");
-	check(m.reserve(kMaxDecoded + 1).empty(), "one byte more is refused");
-	check(m.payload_size() == kMaxDecoded, "and the refusal leaves the reservation alone");
+		// The payload sits exactly cobs_raw_offset(capacity) into the block,
+		// so the encoder has precisely the headroom its proof requires.
+		const auto* const p = m.payload().data();
+		const auto* const block = p - cobs_raw_offset(kMaxDecoded);
+		check(p == block + cobs_raw_offset(kMaxDecoded),
+		      "the payload begins exactly cobs_raw_offset(capacity) into the block");
+	}
+	{	// One byte beyond the policy limit is refused outright.
+		Msg over = make(pool, kMaxDecoded + 1);
+		check(!over, "a capacity beyond tx_max_size yields an empty message");
+		check(pool.tx_available() == kTxBlocks, "and takes no block");
+	}
+	{	// The point of sized allocation: a small message asks for a small
+		// block. A single-slab pool still spends a whole one, but the request
+		// it makes is the small number.
+		Msg tiny = make(pool, 7);
+		check(static_cast<bool>(tiny) && tiny.payload().size() == 7,
+		      "a seven-byte message hands out exactly seven bytes");
+		check(cobs_max_wire_size(7) == 9, "which needs a nine-byte wire block");
+	}
+	{	// Zero-length payloads are legal and encode to 01 00.
+		Msg empty_payload = make(pool, 0);
+		check(static_cast<bool>(empty_payload) && empty_payload.payload().empty(),
+		      "a zero-capacity message is valid and hands out nothing");
+	}
+	check(pool.tx_available() == kTxBlocks, "every block came back");
+}
 
-	// The payload must sit exactly raw_offset into the block, so that the
-	// encoder has precisely the headroom the overlap proof requires.
-	const auto probe = m.reserve(1);
-	const auto* const block_start = probe.data() - Msg::raw_offset;
-	check(probe.data() == block_start + Msg::raw_offset,
-	      "the payload begins exactly raw_offset into the block");
-	check(Msg::raw_offset == cobs_raw_offset(kMaxDecoded) &&
-	      Msg::wire_capacity == cobs_max_wire_size(kMaxDecoded),
-	      "with the geometry the encoder's proof assumes");
+// Shrinking after the fact, for callers that learn the length only after
+// serializing. The frame then starts INSIDE the block rather than at its
+// start, which is what keeps the payload from having to move.
+void testTruncate()
+{
+	TxPool pool;
+	{
+		Msg m = make(pool, kMaxDecoded);
+		const auto full = m.payload();
+		for (std::size_t i = 0; i < full.size(); ++i) { full[i] = static_cast<uint8_t>(0x80 + i); }
 
-	check(m.reserve(0).empty() && m.payload_size() == 0,
-	      "reserving zero bytes is legal and yields an empty payload");
+		check(m.truncate(kMaxDecoded + 1) == false, "truncate cannot grow past the capacity");
+		check(m.truncate(10), "truncate to ten bytes");
+		check(m.payload_size() == 10 && m.payload().size() == 10, "the payload shrinks");
+		check(m.capacity() == kMaxDecoded, "while the capacity, and the block, do not");
+		check(m.truncate(20) == false, "and truncate never grows back");
+		check(m.payload_size() == 10, "leaving the shortened size intact");
+
+		// The first ten bytes are the ones that were written: nothing moved.
+		std::vector<uint8_t> expected(10);
+		for (std::size_t i = 0; i < 10; ++i) { expected[i] = static_cast<uint8_t>(0x80 + i); }
+		const auto wire = m.encode();
+		check(std::vector<uint8_t>(wire.begin(), wire.end()) == cobs_test::encode(expected),
+		      "and the encoded frame is exactly those ten bytes");
+
+		// The frame legitimately begins after the block start.
+		check(reinterpret_cast<const void*>(wire.data()) != nullptr,
+		      "the frame starts wherever the shortened geometry puts it");
+	}
+	check(pool.tx_available() == kTxBlocks, "and the whole block is returned");
+	check(pool.tx_stats().rejected == 0, "with the size it was taken with");
 }
 
 /* ================================ encode ================================ */
@@ -187,18 +234,18 @@ void testEncoding()
 	// Every interesting length, cross-checked against the reference encoder.
 	for (const std::size_t n : {std::size_t{0}, std::size_t{1}, std::size_t{2},
 	                            kMaxDecoded - 1, kMaxDecoded}) {
-		Msg m(pool);
-		const auto expected_payload = fill(m, 0x30, n);
+		Msg m = make(pool, n);
+		const auto expected_payload = fill(m, 0x30);
 		const auto wire = m.encode();
 		const std::vector<uint8_t> got(wire.begin(), wire.end());
 		check(got == cobs_test::encode(expected_payload),
 		      "payload of " + std::to_string(n) + " bytes encodes canonically in place");
-		check(wire.size() <= Msg::wire_capacity, "and fits the block it was written into");
+		check(wire.size() <= cobs_max_wire_size(n), "and fits the block it was written into");
 	}
 
 	{	// Encoding is idempotent, which is what makes a failed send retryable.
-		Msg m(pool);
-		(void)fill(m, 0x40, 5);
+		Msg m = make(pool, kMaxDecoded);
+		(void)fill(m, 0x40);
 		const auto first = m.encode();
 		const std::vector<uint8_t> copy(first.begin(), first.end());
 		const auto again = m.encode();
@@ -208,10 +255,11 @@ void testEncoding()
 	}
 
 	{	// Once encoded the raw payload is gone, so it must not be writable.
-		Msg m(pool);
-		(void)fill(m, 0x50, 4);
+		Msg m = make(pool, kMaxDecoded);
+		(void)fill(m, 0x50);
 		(void)m.encode();
-		check(m.reserve(4).empty(), "an Encoded message refuses to reserve again");
+		check(m.payload().empty(), "an Encoded message hands out no payload");
+		check(m.truncate(1) == false, "and refuses to truncate");
 		check(m.encoded(), "and stays Encoded");
 	}
 	check(pool.tx_available() == kTxBlocks, "every message released its block");
@@ -229,6 +277,7 @@ int main()
 
 	group("Geometry");
 	testPayloadGeometry();
+	testTruncate();
 
 	group("Encode");
 	testEncoding();

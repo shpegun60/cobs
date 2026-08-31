@@ -6,7 +6,7 @@
  * real test of the abstraction: if `Cobs` ever has to know which of the two it
  * is talking to, the abstraction has leaked.
  *
- * Two independent pools, because §9.1.2 requires RX and TX quotas to be
+ * Two independent pools, because §9.1.3 requires RX and TX quotas to be
  * independent — a link that cannot transmit because the application is
  * holding received packets is a deadlock, not back-pressure.
  *
@@ -51,7 +51,7 @@ private:
 
 public:
 	// The defence against a policy declaring more than it can supply belongs
-	// here, at compile time, inside the policy itself (§9.1.1).
+	// here, at compile time, inside the policy itself (§9.1.2).
 	static_assert(RxPool::block_size >= sizeof(Packet) + rx_max_size,
 		"the RX pool cannot hold a packet header plus rx_max_size bytes");
 	static_assert(TxPool::block_size >= cobs_max_wire_size(tx_max_size),
@@ -87,10 +87,20 @@ public:
 		                   });
 	}
 
-	[[nodiscard]] std::byte* allocate_tx() noexcept { return m_tx.allocate(); }
-	void deallocate_tx(std::byte* const memory) noexcept { m_tx.deallocate(memory); }
+	// One slab: the request is honoured from the same block whatever its size,
+	// so a short frame still costs a full block here. That is this policy
+	// being simple, not the contract being wasteful — a segregated policy
+	// picks a size class from the very same argument.
+	[[nodiscard]] std::byte* allocate_tx(const std::size_t wire_size) noexcept
+	{
+		return (wire_size <= TxPool::block_size) ? m_tx.allocate() : nullptr;
+	}
+	void deallocate_tx(std::byte* const memory, std::size_t /*wire_size*/) noexcept
+	{
+		m_tx.deallocate(memory);
+	}
 
-	/* Introspection below is NOT part of the policy contract (§9.1.3) — Cobs
+	/* Introspection below is NOT part of the policy contract (§9.1.4) — Cobs
 	 * never asks any of this. It exists for applications sizing their pools
 	 * and for tests. */
 	[[nodiscard]] std::size_t rx_available() const noexcept { return m_rx.available(); }

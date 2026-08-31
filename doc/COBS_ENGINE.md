@@ -577,7 +577,26 @@ COBS expansion in front of it:
 ```
 
 Both quantities come from the size functions of §4.2 rather than from a magic
-constant:
+constant, and both are **per message**: the block is sized for the payload the
+caller asked for (§9.1.0), not for the largest the policy allows.
+
+`truncate()` then splits two geometries that used to be one. The payload is
+already physically at `cobs_raw_offset(C)` for the requested capacity `C`, and
+moving it would end the zero-copy story, so encoding a shortened payload `S`
+begins further into the block:
+
+```text
+allocated for C
+|<-- unused -->|<-- R(S) -->|<------ S ------>|
+^              ^
+block          encoding begins here, and so does the wire frame
+```
+
+It fits exactly: `R(S) <= R(C)` because `S <= C`, and the encoded region ends
+at `cobs_raw_offset(C) + S`, at most the end of the block. So a wire frame need
+not start at `block[0]`; the transport is handed the span `encode()` returns,
+while the ALLOCATION remains the whole block and is returned as such.
+
 
 ```text
 wire_capacity = cobs_max_wire_size(MaxDecodedSize)
@@ -677,8 +696,8 @@ struct SomeCobsAllocator {
     [[nodiscard]] Packet* allocate_rx() noexcept;
     void deallocate_rx(Packet* packet) noexcept;
 
-    [[nodiscard]] std::byte* allocate_tx() noexcept;
-    void deallocate_tx(std::byte* memory) noexcept;
+    [[nodiscard]] std::byte* allocate_tx(std::size_t wire_size) noexcept;
+    void deallocate_tx(std::byte* memory, std::size_t wire_size) noexcept;
 };
 ```
 
@@ -686,7 +705,41 @@ Nothing else is in the contract — no allocation descriptors, no reported
 capacity, no payload span, no block count, no alignment, no physical block
 size. Every one of those is a detail of some particular policy.
 
-### 9.1.1 The policy is taken at its word
+### 9.1.1 TX is size-aware; RX cannot be
+
+The asymmetry is deliberate, and it follows from what is known at the moment
+of allocation:
+
+```text
+TX   the application already knows the payload size
+     -> allocate exactly what this frame needs
+RX   only the first COBS code byte has arrived
+     -> the final decoded size is unknowable; commit to rx_max_size
+```
+
+So `allocate_tx` takes the size and `allocate_rx` does not. On a heap policy a
+seven-byte message costs **nine** bytes rather than the worst case of the
+largest frame the policy allows — for `tx_max_size = 1024` that is 9 against
+1030. A single-slab pool still spends a whole block, which is that policy
+being simple; a segregated policy picks a size class from the same argument.
+
+Making RX size-aware would mean buffering the encoded frame, computing the
+decoded length, allocating, and then decoding a second time. One encoder pass
+and zero copies are worth more than the bytes that would save.
+
+`deallocate_tx` takes the size back for the same reason `operator delete(void*,
+size_t)` exists: the caller knows it, so a segregated policy need not search
+its pools for the pointer's owner. The size passed is the **allocation** size,
+not the possibly-truncated frame length. A policy is free to ignore it —
+`CobsHeapAllocator` does, since sized `operator delete` is an ABI- and
+runtime-dependent optimisation whose value belongs in a benchmark rather than
+in a contract argument.
+
+The size requested is `cobs_max_wire_size(payload_size)`: the tight worst case
+for that length, not the exact encoding of those particular bytes. Knowing the
+latter would need a pre-scan of the payload, i.e. another pass. Not worth it.
+
+### 9.1.2 The policy is taken at its word
 
 `Cobs` never asks how much memory it actually got. The exchange is:
 
@@ -732,7 +785,7 @@ A policy that declares more than it can supply is simply broken, and the place
 to catch that is inside the policy, at compile time — `CobsFixedAllocator`
 asserts its own pool geometry against its own declared limit.
 
-### 9.1.2 Obligations
+### 9.1.3 Obligations
 
 Exhaustion is a null return, never an error code: `if (packet == nullptr)` is
 the check either way.
@@ -751,7 +804,7 @@ Three obligations that are easy to get wrong:
   allocator.** Losing a block is recoverable and countable. A corrupted free
   list is neither.
 
-### 9.1.3 Block counts are not part of the contract
+### 9.1.4 Block counts are not part of the contract
 
 `Cobs` never asks how many blocks exist, so the generic contract does not
 mention them. How much memory a policy is willing to hand out, and by what
@@ -764,6 +817,28 @@ some SDRAM policy     a bitmap, a TLSF arena, or something stranger
 ```
 
 Keeping counts out is what lets those live side by side under one contract.
+
+That said, a policy that HAS counts has to be sized, and this is the rule for
+`CobsFixedAllocator`:
+
+> `TxBlocks` must cover the maximum number of TX blocks simultaneously owned
+> anywhere in the pipeline: non-empty `CobsMsg` objects held by the application
+> plus the one block that may be held by `Cobs::activeTx`. If the application
+> keeps a pending queue filled while one frame is in flight, this is
+> `pending_depth + 1`. If sending removes the head and the queue is not
+> replenished until that transfer completes, the active block merely replaces
+> the former head and no extra block is required.
+
+The second case matters because "queue depth plus one" over-states the need:
+ownership of the same block simply moves from the queued `CobsMsg` to
+`Cobs::activeTx`.
+
+> An empty result from `get_msg()` is the back-pressure signal that the
+> configured TX storage has been exhausted; callers must handle it.
+
+It is not a silent failure — `get_msg()` returns an honest empty message — but
+an upper layer is perfectly capable of ignoring the result and inventing its
+own mystery.
 
 ### 9.2 The policy is the single source of truth
 

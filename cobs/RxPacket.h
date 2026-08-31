@@ -32,7 +32,7 @@ struct RxPacket final {
 	Allocator* owner     = nullptr; // who reclaims this block
 
 	// Where the decoder writes: exactly the protocol limit the policy
-	// declared (COBS_ENGINE.md §9.1.1), never the physical region, which may
+	// declared (COBS_ENGINE.md §9.1.2), never the physical region, which may
 	// be larger and is nobody's business. Only the owner of an unpublished
 	// packet may call this.
 	[[nodiscard]] std::span<uint8_t> writable_payload() noexcept

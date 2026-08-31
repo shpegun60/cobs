@@ -92,9 +92,9 @@ public:
 		// still reading. If a block is here at all, the pool is about to be
 		// destroyed with it, so returning it only keeps the pool's own
 		// accounting honest for anything watching.
-		if (m_activeTx != nullptr) {
-			m_allocator.deallocate_tx(m_activeTx);
-			m_activeTx = nullptr;
+		if (m_activeTx.memory != nullptr) {
+			m_allocator.deallocate_tx(m_activeTx.memory, m_activeTx.wire_size);
+			m_activeTx = {};
 		}
 	}
 
@@ -123,7 +123,7 @@ public:
 	 */
 	[[nodiscard]] bool set_transport(Sender sender, TxBusy tx_busy) noexcept
 	{
-		if (m_activeTx != nullptr) {
+		if (m_activeTx.memory != nullptr) {
 			return false;
 		}
 		if (static_cast<bool>(sender) != static_cast<bool>(tx_busy)) {
@@ -144,9 +144,32 @@ public:
 
 	/* --------------------------------- TX -------------------------------- */
 
-	// An empty message when the TX pool is dry — CobsMsg is already a nullable
-	// owner, so there is nothing for an optional to add.
-	[[nodiscard]] Msg get_msg() noexcept { return Msg{m_allocator}; }
+	/*
+	 * A message whose block is sized for exactly this payload — the point of
+	 * the sized TX contract (§9.1): a seven-byte frame costs nine bytes on a
+	 * heap policy rather than the worst case of the largest frame allowed.
+	 *
+	 * Callers who cannot know the length until they have serialized it ask for
+	 * an upper bound and then truncate():
+	 *
+	 *     auto msg = cobs.get_msg(known_size);
+	 *     auto data = msg.payload();
+	 *
+	 *     auto msg = cobs.get_msg(upper_bound);
+	 *     const auto actual = serialize(msg.payload());
+	 *     (void)msg.truncate(actual);
+	 *
+	 * An EMPTY result is the back-pressure signal that the configured TX
+	 * storage is exhausted, and callers must handle it; CobsMsg is already a
+	 * nullable owner, so there is nothing for an optional to add.
+	 */
+	[[nodiscard]] Msg get_msg(const std::size_t payload_size) noexcept
+	{
+		if (payload_size > max_send_size) {
+			return {};
+		}
+		return Msg{m_allocator, payload_size};
+	}
 
 	/*
 	 * Takes the message by REFERENCE, not by value or rvalue, because on
@@ -164,7 +187,7 @@ public:
 		if (!m_sender || !m_txBusy) {
 			return SendResult::NotBound;
 		}
-		if (m_activeTx != nullptr || m_txBusy()) {
+		if (m_activeTx.memory != nullptr || m_txBusy()) {
 			++m_txStats.send_refused_busy;
 			return SendResult::Busy;
 		}
@@ -185,7 +208,7 @@ public:
 		return SendResult::Sent;
 	}
 
-	[[nodiscard]] bool tx_active() const noexcept { return m_activeTx != nullptr; }
+	[[nodiscard]] bool tx_active() const noexcept { return m_activeTx.memory != nullptr; }
 
 	/* ------------------------------ main loop ---------------------------- */
 
@@ -198,9 +221,12 @@ public:
 	// the transport's business, reported through its own counters.
 	void proceed() noexcept
 	{
-		if (m_activeTx != nullptr && !m_txBusy()) {
-			m_allocator.deallocate_tx(m_activeTx);
-			m_activeTx = nullptr;
+		if (m_activeTx.memory != nullptr && !m_txBusy()) {
+			// The ALLOCATION size travels with the pointer, so a policy that
+			// segregates by size class knows where it belongs without
+			// searching (§9.1).
+			m_allocator.deallocate_tx(m_activeTx.memory, m_activeTx.wire_size);
+			m_activeTx = {};
 		}
 	}
 
@@ -220,7 +246,7 @@ private:
 	Sender m_sender{};
 	TxBusy m_txBusy{};
 
-	std::byte* m_activeTx = nullptr;
+	typename Msg::TxBlock m_activeTx{};
 	TxStats m_txStats{};
 };
 

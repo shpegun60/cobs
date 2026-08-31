@@ -76,17 +76,26 @@ void runContract(const char* name)
 	}
 
 	// --- TX: raw bytes big enough for the worst-case frame
-	std::byte* const t = a.allocate_tx();
+	const std::size_t big = cobs_max_wire_size(Allocator::tx_max_size);
+	std::byte* const t = a.allocate_tx(big);
 	check(t != nullptr, "allocate_tx yields a block");
 	{
 		auto* const bytes = reinterpret_cast<uint8_t*>(t);
-		const std::size_t need = cobs_max_wire_size(Allocator::tx_max_size);
-		for (std::size_t i = 0; i < need; ++i) { bytes[i] = static_cast<uint8_t>(i); }
-		check(bytes[0] == 0 && bytes[need - 1] == static_cast<uint8_t>(need - 1),
-		      "with at least cobs_max_wire_size(tx_max_size) usable bytes");
+		for (std::size_t i = 0; i < big; ++i) { bytes[i] = static_cast<uint8_t>(i); }
+		check(bytes[0] == 0 && bytes[big - 1] == static_cast<uint8_t>(big - 1),
+		      "with at least the requested bytes usable");
 	}
-	std::byte* const u = a.allocate_tx();
+	std::byte* const u = a.allocate_tx(big);
 	check(u != nullptr && u != t, "a second TX block is distinct");
+
+	{	// A small request must be honoured too, whatever the policy does with
+		// it physically: exact on a heap, a whole slab on a single-class pool.
+		std::byte* const small = a.allocate_tx(cobs_max_wire_size(7));
+		check(small != nullptr, "a small request is honoured");
+		auto* const bytes = reinterpret_cast<uint8_t*>(small);
+		for (std::size_t i = 0; i < cobs_max_wire_size(7); ++i) { bytes[i] = 0x5A; }
+		a.deallocate_tx(small, cobs_max_wire_size(7));
+	}
 
 	// --- §9.1.2: RX exhaustion must never starve TX
 	{
@@ -96,32 +105,32 @@ void runContract(const char* name)
 			if (extra == nullptr) { break; }
 			hoard.push_back(extra);
 		}
-		std::byte* const still = a.allocate_tx();
+		std::byte* const still = a.allocate_tx(big);
 		check(still != nullptr,
 		      "TX still allocates while RX is held to exhaustion (independent quotas)");
-		a.deallocate_tx(still);
+		a.deallocate_tx(still, big);
 		for (Packet* const h : hoard) { a.deallocate_rx(h); }
 	}
 
 	a.deallocate_rx(p);
 	a.deallocate_rx(q);
-	a.deallocate_tx(t);
-	a.deallocate_tx(u);
+	a.deallocate_tx(t, big);
+	a.deallocate_tx(u, big);
 
 	// --- null is a no-op, not an abuse
 	a.deallocate_rx(nullptr);
-	a.deallocate_tx(nullptr);
+	a.deallocate_tx(nullptr, big);
 	check(true, "deallocating nullptr is harmless");
 
 	// --- churn far beyond any plausible capacity: a leak would run it dry
 	bool churn_ok = true;
 	for (int i = 0; i < 500; ++i) {
 		Packet* const rx = a.allocate_rx();
-		std::byte* const tx = a.allocate_tx();
+		std::byte* const tx = a.allocate_tx(big);
 		churn_ok = churn_ok && rx != nullptr && tx != nullptr;
 		if (rx != nullptr) { rx->writable_payload()[0] = 0x11; }
 		a.deallocate_rx(rx);
-		a.deallocate_tx(tx);
+		a.deallocate_tx(tx, big);
 	}
 	check(churn_ok, "500 allocate/free cycles never run dry");
 }
@@ -142,9 +151,10 @@ void testFixedExhaustionAndIndependence()
 	check(a.allocate_rx() == nullptr, "a third returns null rather than an error");
 	check(a.rx_stats().exhausted == 1, "and the exhaustion is counted");
 
-	std::byte* const t = a.allocate_tx();
+	const std::size_t w = cobs_max_wire_size(Allocator::tx_max_size);
+	std::byte* const t = a.allocate_tx(w);
 	check(t != nullptr, "TX is untouched by RX exhaustion");
-	check(a.allocate_tx() == nullptr, "and exhausts independently");
+	check(a.allocate_tx(w) == nullptr, "and exhausts independently");
 
 	a.deallocate_rx(p1);
 	a.deallocate_rx(p1); // double free
@@ -152,7 +162,7 @@ void testFixedExhaustionAndIndependence()
 	check(a.rx_available() == 1, "and the pool is not corrupted");
 
 	a.deallocate_rx(p2);
-	a.deallocate_tx(t);
+	a.deallocate_tx(t, w);
 	check(a.rx_available() == 2 && a.tx_available() == 1, "everything comes back");
 }
 

@@ -36,6 +36,8 @@ void check(const bool ok, const std::string& what)
 	}
 }
 
+constexpr std::size_t kPayload = 6; // a convenient non-trivial frame size
+
 // What a UART looks like from up here: two questions and one answer.
 struct FakeTransport {
 	std::vector<std::vector<uint8_t>> sent;
@@ -118,10 +120,10 @@ void runEngine(const char* name)
 		FakeTransport t;
 		bind(cobs, t);
 
-		auto msg = cobs.get_msg();
+		auto msg = cobs.get_msg(kPayload);
 		check(static_cast<bool>(msg), "get_msg yields a message");
 		const auto payload = pattern(0x20, 6);
-		const auto room = msg.reserve(payload.size());
+		const auto room = msg.payload();
 		for (std::size_t i = 0; i < payload.size(); ++i) { room[i] = payload[i]; }
 
 		check(cobs.push(msg) == SendResult::Sent, "push sends it");
@@ -155,13 +157,13 @@ void runEngine(const char* name)
 		FakeTransport t;
 		bind(cobs, t);
 
-		auto first = cobs.get_msg();
-		(void)first.reserve(1);
+		auto first = cobs.get_msg(1);
+		
 		check(cobs.push(first) == SendResult::Sent, "the first frame goes out");
 
-		auto second = cobs.get_msg();
+		auto second = cobs.get_msg(4);
 		const auto payload = pattern(0x30, 4);
-		const auto room = second.reserve(payload.size());
+		const auto room = second.payload();
 		for (std::size_t i = 0; i < payload.size(); ++i) { room[i] = payload[i]; }
 
 		check(cobs.push(second) == SendResult::Busy, "a second push while busy is refused");
@@ -169,9 +171,13 @@ void runEngine(const char* name)
 		      "leaving the message Building, not encoded");
 		check(cobs.tx_stats().send_refused_busy == 1, "and counted");
 
-		// Still writable: the raw payload was never touched.
-		const auto again = second.reserve(2);
-		check(again.size() == 2, "and its payload is still writable");
+		// Still writable: the raw payload was never touched, and truncating
+		// after a refused push is still allowed because nothing was encoded.
+		const auto again = second.payload();
+		check(again.size() == payload.size() && again.data() == room.data(),
+		      "its payload is still the same writable region");
+		check(second.truncate(2), "and can still be shortened");
+		check(second.truncate(payload.size()) == false, "but never grown back");
 
 		t.finish();
 		cobs.proceed();
@@ -184,9 +190,9 @@ void runEngine(const char* name)
 		FakeTransport t;
 		bind(cobs, t);
 
-		auto msg = cobs.get_msg();
+		auto msg = cobs.get_msg(7);
 		const auto payload = pattern(0x40, 7);
-		const auto room = msg.reserve(payload.size());
+		const auto room = msg.payload();
 		for (std::size_t i = 0; i < payload.size(); ++i) { room[i] = payload[i]; }
 
 		t.refuse = true;
@@ -205,8 +211,8 @@ void runEngine(const char* name)
 	/* --- refusals that are not failures --------------------------------- */
 	{
 		Engine cobs;                       // nothing bound
-		auto msg = cobs.get_msg();
-		(void)msg.reserve(2);
+		auto msg = cobs.get_msg(kPayload);
+		
 		check(cobs.push(msg) == SendResult::NotBound, "pushing with no transport bound is NotBound");
 		check(static_cast<bool>(msg), "and the message is untouched");
 
@@ -214,8 +220,8 @@ void runEngine(const char* name)
 		check(cobs.push(empty) == SendResult::Invalid, "an empty message is Invalid");
 
 		Engine other;
-		auto foreign = other.get_msg();
-		(void)foreign.reserve(2);
+		auto foreign = other.get_msg(2);
+		
 		check(cobs.push(foreign) == SendResult::Invalid,
 		      "so is a message belonging to another engine of the same type");
 	}
@@ -233,15 +239,15 @@ void runEngine(const char* name)
 		check(!cobs.set_transport(typename Engine::Sender{}, busy_for<Engine>(t)),
 		      "and a tx_busy with no sender likewise");
 		{
-			auto msg = cobs.get_msg();
-			(void)msg.reserve(1);
+			auto msg = cobs.get_msg(kPayload);
+			
 			check(cobs.push(msg) == SendResult::NotBound,
 			      "so neither half leaked into the engine");
 		}
 
 		bind(cobs, t);
-		auto msg = cobs.get_msg();
-		(void)msg.reserve(3);
+		auto msg = cobs.get_msg(kPayload);
+		
 		check(cobs.push(msg) == SendResult::Sent, "a frame is in flight");
 
 		check(!cobs.set_transport(sender_for<Engine>(other), busy_for<Engine>(other)),
@@ -263,8 +269,8 @@ void runEngine(const char* name)
 		bind(cobs, t);
 
 		const auto out = pattern(0x60, 5);
-		auto msg = cobs.get_msg();
-		const auto room = msg.reserve(out.size());
+		auto msg = cobs.get_msg(5);
+		const auto room = msg.payload();
 		for (std::size_t i = 0; i < out.size(); ++i) { room[i] = out[i]; }
 		check(cobs.push(msg) == SendResult::Sent, "a frame goes out");
 
@@ -290,21 +296,21 @@ void testFixedExhaustion()
 	FakeTransport t;
 	bind(cobs, t);
 
-	auto a = cobs.get_msg();
+	auto a = cobs.get_msg(4);
 	check(static_cast<bool>(a), "the single TX block is handed out");
-	auto b = cobs.get_msg();
+	auto b = cobs.get_msg(4);
 	check(!b, "a second message from a one-block pool is empty");
 	check(cobs.push(b) == SendResult::Invalid, "and pushing it is Invalid, not a crash");
 
-	(void)a.reserve(4);
+	
 	check(cobs.push(a) == SendResult::Sent, "the real one still sends");
 
 	// The block is with the transport, so the pool is dry until it returns.
-	auto c = cobs.get_msg();
+	auto c = cobs.get_msg(4);
 	check(!c, "the pool stays dry while the transport holds the block");
 	t.finish();
 	cobs.proceed();
-	auto d = cobs.get_msg();
+	auto d = cobs.get_msg(4);
 	check(static_cast<bool>(d), "and refills once proceed reclaims it");
 }
 
@@ -318,8 +324,8 @@ void testDestructorReclaimsActiveTx()
 	{
 		Cobs<Allocator> cobs;
 		bind(cobs, t);
-		auto msg = cobs.get_msg();
-		(void)msg.reserve(3);
+		auto msg = cobs.get_msg(kPayload);
+		
 		check(cobs.push(msg) == SendResult::Sent, "a frame is in flight at destruction");
 		check(cobs.allocator().tx_available() == 1, "one TX block is out");
 		// The transport is finished with it — precondition 2 is satisfied.

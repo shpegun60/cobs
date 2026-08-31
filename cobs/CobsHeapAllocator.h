@@ -34,7 +34,7 @@ public:
 	CobsHeapAllocator(const CobsHeapAllocator&) = delete;
 	CobsHeapAllocator& operator=(const CobsHeapAllocator&) = delete;
 
-	// One contiguous [RxPacket][payload] region, as §9.1.1 requires. A heap
+	// One contiguous [RxPacket][payload] region, as §9.1.2 requires. A heap
 	// policy has no trouble honouring that, so heap and pool end up with
 	// identical geometry and differ only in where the region came from.
 	[[nodiscard]] Packet* allocate_rx() noexcept
@@ -58,16 +58,19 @@ public:
 		::operator delete(static_cast<void*>(packet));
 	}
 
-	// Raw bytes, large enough for the worst-case wire frame of a maximum
-	// payload. Nothing here reports how much was really allocated: the policy
-	// promised this size by declaring tx_max_size (§9.1.1).
-	[[nodiscard]] std::byte* allocate_tx() noexcept
+	// Exactly the bytes asked for. This is where the sized TX contract pays:
+	// a seven-byte message costs nine bytes here, not cobs_max_wire_size of
+	// the largest frame the policy could ever carry.
+	[[nodiscard]] std::byte* allocate_tx(const std::size_t wire_size) noexcept
 	{
-		return static_cast<std::byte*>(
-			::operator new(cobs_max_wire_size(tx_max_size), std::nothrow));
+		return static_cast<std::byte*>(::operator new(wire_size, std::nothrow));
 	}
 
-	void deallocate_tx(std::byte* const memory) noexcept
+	// The size is part of the contract for the benefit of policies that
+	// segregate by size class; this one deliberately ignores it. Sized
+	// operator delete would be an ABI- and runtime-dependent optimisation,
+	// and measuring it belongs in a benchmark, not in a contract argument.
+	void deallocate_tx(std::byte* const memory, std::size_t /*wire_size*/) noexcept
 	{
 		::operator delete(static_cast<void*>(memory));
 	}

@@ -171,7 +171,7 @@ private:
 			return;
 		}
 		// No clamp: writable_payload() is defined by the policy's declared
-		// rx_max_size, so it already IS the protocol limit (§9.1.1). A policy
+		// rx_max_size, so it already IS the protocol limit (§9.1.2). A policy
 		// whose storage is smaller than it declares is simply broken, and the
 		// place that catches it is the policy's own static_assert.
 		m_decoder.attach_output(m_building->writable_payload());
