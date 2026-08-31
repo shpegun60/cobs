@@ -653,6 +653,8 @@ thing wrong.
 
 ### 9.1 The contract
 
+Two constants and four functions. That is all of it.
+
 ```cpp
 struct SomeCobsAllocator {
     // The declared limits of this COBS instance (§9.2). These ARE what the
@@ -660,46 +662,43 @@ struct SomeCobsAllocator {
     static constexpr std::size_t rx_max_size = ...;
     static constexpr std::size_t tx_max_size = ...;
 
-    [[nodiscard]] RxAllocation allocate_rx() noexcept;
-    void deallocate_rx(RxPacket<SomeCobsAllocator>* packet) noexcept;
+    using Packet = RxPacket<SomeCobsAllocator>;
 
-    [[nodiscard]] TxAllocation allocate_tx() noexcept;
+    [[nodiscard]] Packet* allocate_rx() noexcept;
+    void deallocate_rx(Packet* packet) noexcept;
+
+    [[nodiscard]] std::byte* allocate_tx() noexcept;
     void deallocate_tx(std::byte* memory) noexcept;
 };
-
-struct RxAllocation {
-    RxPacket<...>*     packet  = nullptr; // constructed, refs == 1
-    std::span<uint8_t> payload{};         // >= rx_max_size bytes
-};
-
-struct TxAllocation {
-    std::byte*  memory   = nullptr;
-    std::size_t capacity = 0;             // >= cobs_max_wire_size(tx_max_size)
-};
 ```
 
-### 9.1.1 Declared limit and physical region are different numbers
+Nothing else is in the contract — no allocation descriptors, no reported
+capacity, no payload span, no block count, no alignment, no physical block
+size. Every one of those is a detail of some particular policy.
 
-This is the distinction the whole section rests on, and the two must never be
-conflated:
+### 9.1.1 The policy is taken at its word
 
-```text
-rx_max_size / tx_max_size    what this COBS instance accepts and sends
-payload.size() / capacity    the physical memory of one allocation
+`Cobs` never asks how much memory it actually got. The exchange is:
+
+> You declared `rx_max_size = 1024`. If `allocate_rx()` returns non-null, you
+> are **obliged** to have given valid storage for a packet header plus 1024
+> payload bytes. If you cannot, return null.
+
+`std::allocator<T>::allocate(n)` works the same way: it hands back a pointer
+or fails, never a pointer paired with "how many I really managed". A contract
+that reports actual capacity invites the caller to use it, and then the
+declared limit and the reported one are two facts that can disagree.
+
+So the sizes are derived, never queried:
+
+```cpp
+packet->writable_payload()                      // exactly rx_max_size bytes
+cobs_max_wire_size(Allocator::tx_max_size)      // what a TX block must hold
 ```
 
-A pool may hand back 1040 bytes for a policy that declares `rx_max_size =
-1024`; block geometry rounds, and that is its business. The protocol limit
-stays 1024 **because the policy said so**, and `Cobs` therefore hands the
-decoder only `payload.first(rx_max_size)` — a generous allocation can never
-quietly widen what is accepted. An allocation smaller than the declared limit
-is a broken policy, which is why the guarantees above are `>=` and are
-asserted at compile time where the type allows.
-
-### 9.1.2 Obligations
-
-Exhaustion is a null `packet` / `memory`, never an error code:
-`if (!allocation.packet)` is the check either way.
+A pool that physically rounds a 1024-byte packet up to 1040, or a TX block to
+the next alignment boundary, keeps that entirely to itself. The spare bytes
+are nobody's business.
 
 **An RX allocation is always ONE contiguous region, `[RxPacket][payload]`.**
 An earlier draft of this section allowed a policy to allocate the header and
@@ -715,9 +714,18 @@ Packet* packet = std::construct_at(static_cast<Packet*>(memory));
 ```
 
 so heap and pool end up with identical geometry and differ only in where the
-region came from. The packet's own geometry is therefore authoritative:
-`Cobs` reads `packet->writable_payload().first(rx_max_size)` and never
-consults `RxAllocation::payload` for the address.
+region came from.
+
+Because `writable_payload()` is defined by `rx_max_size` itself, a policy
+cannot hand the decoder more room than the protocol allows even by accident.
+A policy that declares more than it can supply is simply broken, and the place
+to catch that is inside the policy, at compile time — `CobsFixedAllocator`
+asserts its own pool geometry against its own declared limit.
+
+### 9.1.2 Obligations
+
+Exhaustion is a null return, never an error code: `if (packet == nullptr)` is
+the check either way.
 
 Three obligations that are easy to get wrong:
 
