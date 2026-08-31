@@ -43,7 +43,10 @@ void check(const bool ok, const std::string& what)
 void testRawPoolHandlesTinyBlocks()
 {
 	// A two-byte block with byte alignment — the shape a minimal TX frame
-	// (01 00) would ask for, and one that cannot physically hold a pointer.
+	// would ask for — a COBS frame is at least two bytes on the wire — and one
+	// that cannot physically hold a pointer. (An ENGINE frame is larger still,
+	// since it carries a length header; this pool knows nothing about either,
+	// which is the point of testing it at sizes no protocol would use.)
 	using Tiny = cobs_detail::StaticBlockPool<2, 4, 1>;
 	Tiny pool;
 

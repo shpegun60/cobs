@@ -935,6 +935,110 @@ void testContractIsSelfSufficient()
 	check(pool.frees == 2 && pool.live == 0, "and is reclaimed the same way");
 }
 
+
+/* ========================= the refcount's width ========================= */
+
+/*
+ * PacketRef's copy constructor does `++refs` with no check, so the counter's
+ * WIDTH is the only thing preventing a wrap — and a wrap is a
+ * use-after-free, not a leak:
+ *
+ *     N copies of one reference   stored refs = (1 + N) mod 2^bits
+ *     at N == 2^bits              stored refs is 1 again
+ *     destroy any ONE of them     refs 1 -> 0, the packet is freed
+ *     the other 2^bits handles are still alive and still pointing at it
+ *
+ * With a 16-bit counter that took 65536 copies of one packet, reachable
+ * through nothing but the public API, and ASan called it exactly what it was.
+ * The loop below is 70000 — comfortably past where the old width broke, and
+ * nowhere near where the current one does.
+ */
+void testRefcountDoesNotWrap()
+{
+	using Ref = typename RecRx::Ref;
+	RecordingHeap pool;
+	RecRx rx(pool);
+
+	const auto body = payload(0x61, 4);
+	rx.consume(std::span<const uint8_t>{cobs_test::frame(body, RecRx::length_size)});
+	Ref original = rx.pop_packet();
+	check(static_cast<bool>(original), "one packet, one reference");
+
+	constexpr std::size_t kCopies = 70000; // > 65536, the old wrap point
+	{
+		std::vector<Ref> copies;
+		copies.reserve(kCopies);
+		for (std::size_t i = 0; i < kCopies; ++i) {
+			copies.emplace_back(original);
+		}
+		check(pool.frees == 0, "70000 copies free nothing");
+
+		// The old bug fired here: dropping one reference out of 70001 freed
+		// the packet, because the stored count had wrapped back to a small
+		// number on the way up.
+		copies.pop_back();
+		check(pool.frees == 0, "and dropping one of them frees nothing either");
+
+		const auto d = original.data();
+		check(d.size() == body.size() &&
+		      std::vector<uint8_t>(d.begin(), d.end()) == body,
+		      "the original still reads its own bytes, not freed memory");
+	}
+	check(pool.frees == 0, "the packet outlives every copy but the original");
+	original = Ref{};
+	check(pool.frees == 1, "and is freed exactly once when the last one goes");
+}
+
+/* ==================== the widest frames the format allows =============== */
+
+/*
+ * The edges of the length field itself. The last case is the interesting one:
+ *
+ *     body          = 65535   fits RxPacket::size, a uint16_t, exactly
+ *     decoded frame = 65537   does NOT
+ *
+ * so any code that casts the DECODED size rather than the body would truncate
+ * to 1 here and deliver a one-byte packet. CobsRx subtracts the header before
+ * the cast; this is the frame that proves it.
+ */
+template<std::size_t Max>
+void checkWidestFrame(const char* name)
+{
+	using Pool = CobsHeapAllocator<Max, Max>;
+	Pool pool;
+	CobsRx<Pool> rx(pool);
+
+	std::vector<uint8_t> body(Max);
+	for (std::size_t i = 0; i < Max; ++i) {
+		// Zeros at irregular intervals, so the COBS blocks are not all 0xFF.
+		body[i] = static_cast<uint8_t>((i % 251 == 7) ? 0 : (1 + (i % 254)));
+	}
+	rx.consume(std::span<const uint8_t>{cobs_test::frame(body, CobsRx<Pool>::length_size)});
+
+	const auto r = rx.pop_packet();
+	const bool ok = r.size() == Max &&
+	                std::vector<uint8_t>(r.data().begin(), r.data().end()) == body;
+	check(ok, std::string(name) + ": a body of " + std::to_string(Max) +
+	          " bytes round-trips whole (decoded frame " +
+	          std::to_string(Max + CobsRx<Pool>::length_size) + ")");
+	check(rx.stats().frames_delivered == 1 && rx.stats().frames_lost == 0,
+	      std::string(name) + ": with nothing lost");
+}
+
+void testWidestFrames()
+{
+	static_assert(CobsRx<CobsHeapAllocator<255, 255>>::length_size == 1,
+	              "255 is the last body a one-byte header can describe");
+	static_assert(CobsRx<CobsHeapAllocator<256, 256>>::length_size == 2,
+	              "256 needs two");
+	static_assert(CobsRx<CobsHeapAllocator<65535, 65535>>::length_size == 2,
+	              "and two is enough to the very end");
+
+	checkWidestFrame<255>("H=1 max");
+	checkWidestFrame<256>("H=2 just over");
+	checkWidestFrame<65535>("H=2 max");
+}
+
 } // namespace
 
 int main()
@@ -949,6 +1053,8 @@ int main()
 	testOversizeWithNoBody();
 	testPacketInternalsAreSealed();
 	testContractIsSelfSufficient();
+	testRefcountDoesNotWrap();
+	testWidestFrames();
 
 	group("EndToEnd");
 	testRoundTripThroughTheWholeStack();

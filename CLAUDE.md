@@ -57,7 +57,7 @@ The COBS layer owns no HAL, so its suites are ordinary host programs — no fake
 PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH" sh cobs/tests/run.sh
 ```
 
-It builds and runs seven independent binaries, so a failure names the layer without needing a stack trace:
+It builds and runs seven independent binaries, so a failure names the layer without needing a stack trace (plus two of them a second time under `-DNDEBUG`, because the pool's double-free rejection is a guarantee and a guarantee that only holds in debug builds is not one):
 
 - `test_decoder` — pure COBS framing only, with no length prefix anywhere; mostly property tests (every length × pattern × span-boundary combination, ~20k checks), plus the segmented-output battery: the same wire decoded under many segmentation plans must give identical bytes.
 - `test_block_pool` — `cobs_detail::StaticBlockPool`, the raw memory primitive both policies are built on.
@@ -67,7 +67,7 @@ It builds and runs seven independent binaries, so a failure names the layer with
 - `test_cobs_msg` — `CobsMsg`: TX block ownership, move semantics, the container semantics (`size`/`capacity`, the ~1.5x growth sequence, the strong no-change guarantee on a failed growth), the `write<T>`/`write_bytes`/`write_array` serializers, and encoding. No transport. Payload contents are asserted only through `encode()` and the reference encoder, because the public API hands out no writable payload span.
 - `test_cobs` — the assembled `Cobs` engine over a fake transport bound through delegates, the whole body run against **both** policies: RX end to end, the `push()` outcomes (`Sent`/`Busy`/`Error`/`NotBound`/`Invalid`), retry of the identical frame after a failed start, `proceed()` reclaiming the block only once the transport lets go, and `set_transport()` refusing both a half-bound pair and any rebinding while a transfer is in flight.
 
-The script builds with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` and adds `-fsanitize=address,undefined` when the toolchain provides the runtime. MinGW does not, so for a sanitized run use WSL (the exact command is in the script header). `COBS_POOL_CHECKS` (on by default in debug builds) compiles in the pool's double-free and foreign-pointer detection; a rejected free is counted and ignored rather than corrupting the free list.
+The script builds with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` and adds `-fsanitize=address,undefined` when the toolchain provides the runtime. MinGW does not, so for a sanitized run use WSL (the exact command is in the script header). `COBS_POOL_CHECKS` (on by default in EVERY build, `NDEBUG` included) compiles in the pool's double-free and foreign-pointer detection; a rejected free is counted and ignored rather than corrupting the free list. Set it to 0 explicitly to opt out.
 
 ## Architecture
 

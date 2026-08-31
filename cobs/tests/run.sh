@@ -51,6 +51,15 @@ build test_encoder         "$COBS/CobsDecoder.cpp" "$COBS/CobsEncoder.cpp" "$HER
 build test_cobs_msg        "$COBS/CobsEncoder.cpp" "$HERE/test_cobs_msg.cpp"
 build test_cobs            "$COBS/CobsDecoder.cpp" "$COBS/CobsEncoder.cpp" "$HERE/test_cobs.cpp"
 
+# The release build is a DIFFERENT build, so it is tested as one. The pool's
+# double-free and foreign-pointer rejection used to be compiled out by NDEBUG,
+# which meant the shipped configuration had weaker safety semantics than the
+# one every test ran against — a guarantee that evaporates under -DNDEBUG is a
+# debugging aid with good manners. COBS_POOL_CHECKS now defaults to on
+# regardless, and these two prove it rather than assuming it.
+build test_block_pool_ndebug -DNDEBUG "$HERE/test_block_pool.cpp"
+build test_allocators_ndebug -DNDEBUG "$HERE/test_allocators.cpp"
+
 "$OUT/test_decoder.exe"
 "$OUT/test_block_pool.exe"
 "$OUT/test_allocators.exe"
@@ -58,3 +67,7 @@ build test_cobs            "$COBS/CobsDecoder.cpp" "$COBS/CobsEncoder.cpp" "$HER
 "$OUT/test_encoder.exe"
 "$OUT/test_cobs_msg.exe"
 "$OUT/test_cobs.exe"
+
+echo "=== the same guarantees, built with -DNDEBUG ==="
+"$OUT/test_block_pool_ndebug.exe"
+"$OUT/test_allocators_ndebug.exe"

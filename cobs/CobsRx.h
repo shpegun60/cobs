@@ -57,9 +57,10 @@ public:
 
 	/*
 	 * The largest BODY this instance accepts, from the policy (§9.2). Not the
-	 * largest decoded frame — that is length_size bytes more, and calling this
-	 * max_receive_size (as an earlier revision did) invited exactly the
-	 * off-by-a-header the length prefix makes so easy to write.
+	 * largest decoded frame — that is length_size bytes more, which is why
+	 * this is no longer called max_decoded_size: that name was one header away
+	 * from the truth, on a layer where being one header out is the easiest
+	 * mistake there is.
 	 */
 	static constexpr std::size_t max_receive_size = Allocator::rx_max_size;
 	static_assert(max_receive_size <= UINT16_MAX, "RxPacket::size is a uint16_t");

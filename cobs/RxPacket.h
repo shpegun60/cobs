@@ -23,7 +23,7 @@
  * — the exact counterpart of the writable_payload() hole, and closed the same
  * way. `refs`, `next_ready` and `owner` are the ownership bookkeeping the
  * whole lifetime model rests on; code that can write them can free a live
- * packet or leak a dead one. Three friends can, and each has to:
+ * packet or leak a dead one. Two friends can, and each has to:
  *
  *     CobsRx      builds the packet, stamps `owner`, and threads it onto
  *                 the ready queue
@@ -67,7 +67,26 @@ struct RxPacket final {
 	}
 
 private:
-	uint16_t  refs       = 1;       // the creator holds the first reference
+	/*
+	 * 32 bits, not 16, and that is a bug fix rather than a preference.
+	 *
+	 * PacketRef's copy constructor does `++refs` with no check, so a 16-bit
+	 * counter wraps after 65536 copies — reachable through nothing but the
+	 * public API, and fatal:
+	 *
+	 *     65536 copies      stored refs = (1 + 65536) mod 65536 = 1
+	 *     destroy ONE       stored refs 1 -> 0, the packet is freed
+	 *     the other 65536 handles are still alive
+	 *
+	 * ASan calls it a heap-use-after-free, correctly. Saturating instead would
+	 * leak by design and hide the mistake; a wider counter simply puts the
+	 * wrap beyond anything a single frame's handles can reach, since 2^32
+	 * live PacketRefs would need 32 GiB of them.
+	 *
+	 * The cost is four bytes per RX block on a 32-bit target (12 -> 16), and
+	 * nothing at all on x86-64, where the padding already existed.
+	 */
+	uint32_t  refs       = 1;       // the creator holds the first reference
 	uint16_t  size       = 0;       // decoded bytes; set on FrameComplete
 	RxPacket* next_ready = nullptr; // intrusive ready-queue link (§6.2)
 	Allocator* owner     = nullptr; // who reclaims this block

@@ -35,12 +35,23 @@
 #include <new>
 #include <utility>
 
+/*
+ * Double-free and foreign-pointer detection. ON unless explicitly switched
+ * off, and deliberately NOT tied to NDEBUG.
+ *
+ * It used to default to off in release builds, which meant the shipped
+ * configuration had different safety semantics from the tested one: the
+ * comments and the suite both promise that a rejected free is counted and
+ * ignored, while a release build would have threaded the same block onto the
+ * free list twice and corrupted it. A guarantee that evaporates under -DNDEBUG
+ * is not a guarantee, it is a debugging aid with good manners.
+ *
+ * The cost is a walk of the free list on deallocate — O(blocks), where blocks
+ * is typically 2 to 8, on a path that is never in an ISR. Anyone who has
+ * measured it and wants the bytes back sets COBS_POOL_CHECKS=0 on purpose.
+ */
 #ifndef COBS_POOL_CHECKS
-#	ifdef NDEBUG
-#		define COBS_POOL_CHECKS 0
-#	else
-#		define COBS_POOL_CHECKS 1
-#	endif
+#	define COBS_POOL_CHECKS 1
 #endif
 
 namespace cobs_detail {
