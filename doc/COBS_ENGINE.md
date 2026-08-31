@@ -31,8 +31,8 @@ only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 | Ready queue | intrusive, threaded through the packets themselves |
 | RX lifetime | intrusive refcount, `PacketRef`, payload immutable after publication |
 | Refcount | plain (single execution domain); no atomic policy in v1 |
-| Allocator | a compile-time **policy** (§9): one type, one template parameter, any backing memory. **Must satisfy** the protocol limit, never define it. Defaults to `CobsHeapAllocator`; embedded targets opt into a fixed pool |
-| `MaxDecodedSize` | COBS/protocol configuration, includes any future integrity trailer |
+| Allocator | a compile-time **policy** (§9) and the single source of truth for memory: geometry, limits and quotas. `Cobs<Allocator>` is the whole signature. Defaults to `CobsHeapAllocator`; embedded targets opt into a fixed pool |
+| `MaxDecodedSize` | `Allocator::rx_max_size`; the whole decoded frame, including any future integrity trailer |
 | TX ownership | move-only `CobsMsg`, exclusive until the transport accepts it |
 | Transport busy before encoding | message stays `Building` |
 | `send()` failure after encoding | message stays `Encoded`, the same wire frame is retryable |
@@ -92,10 +92,12 @@ if (m_activeTx != nullptr && !tx_busy()) { release(m_activeTx); }
 
 An idle link short-circuits on the null pointer and never calls it at all. On
 the measured H7S build a 256-byte frame at 10 Mbaud occupies the line for
-about 256 µs, so a 1 kHz main loop asks the question a handful of times per
-frame — against a delegate call of two or three instructions. The transport
-being a template parameter would buy nothing measurable and cost an
-instantiation of the whole COBS layer per transport type.
+about 256 µs, so a 1 kHz main loop — period 1 ms — usually sees the transfer
+already finished: zero or one poll while it is in flight, plus the one that
+observes completion. Two or three would need a loop running at roughly 10 kHz.
+Against that, a delegate call of two or three instructions is not a cost worth
+a template parameter, let alone an instantiation of the whole COBS layer per
+transport type.
 
 `send()` was never the issue: it costs a measured 362 cycles, in which an
 indirect call disappears entirely.
@@ -148,8 +150,8 @@ in §4 a tight bound rather than a loose capacity estimate.
 
 ### 4.1 `MaxDecodedSize`
 
-`MaxDecodedSize` is a **COBS/protocol configuration constant**. It is the
-maximum size of a fully decoded frame — that is, everything that comes out of
+`MaxDecodedSize` is the protocol-level quantity that governs every buffer in
+this layer. It is the maximum size of a fully decoded frame — that is, everything that comes out of
 the decoder, **including any future integrity trailer**, not just the payload
 the application sees.
 
@@ -167,40 +169,50 @@ sees and nothing else. Had `MaxDecodedSize` been defined as "application
 payload", every buffer in the system would have needed re-sizing the day a
 CRC arrived.
 
-The allocator does **not** define this limit. It must satisfy it:
+`MaxDecodedSize` is stated by the **allocator policy** (§9), as
+`Allocator::rx_max_size`:
 
 ```cpp
-static_assert(Allocator::payload_capacity >= MaxDecodedSize);
+template<class Allocator = CobsHeapAllocator>
+class Cobs final {
+    static constexpr std::size_t max_decoded_size = Allocator::rx_max_size;
+};
 ```
 
-The direction of that dependency is the point. If the limit came from the
-allocator's block size, then swapping a fixed pool for a heap — or one pool
-for another — would silently change which wire frames the protocol accepts.
-The protocol states its requirement; the allocator either meets it or fails
-to compile.
+An earlier draft of this document put it the other way round — a
+`MaxDecodedSize` parameter on `Cobs`, with the allocator merely asserted to be
+big enough — on the principle that a memory backend must never decide protocol
+semantics. That principle is right about a *generic* allocator. It does not
+apply here, because this is not one: `CobsAllocatorPolicy` is a purpose-built
+type whose entire job is to state the memory configuration of a COBS instance,
+and the largest frame that configuration can hold is part of that job, not a
+side effect of it.
 
-The same rule applies one level down, to how an allocator is configured. A
-pool is parameterized by the **payload capacity it offers**, never by its raw
-block size:
+The consequence is deliberate and must be understood before choosing a policy:
+**replacing the policy can change which wire frames are accepted.** That is
+the policy doing its work, not leaking an implementation detail. What would be
+wrong is a *silent* change, so `Cobs` republishes the number under its own
+name, `Cobs<A>::max_decoded_size`, and both peers of a link must agree on it
+the same way they agree on a baud rate.
+
+The rule that survives unchanged is the one a level down, about how a pool is
+configured. A pool is parameterized by the **payload capacity it offers**,
+never by its raw block size:
 
 ```cpp
 template<std::size_t PayloadCapacity, std::size_t BlockCount>
 class FixedPoolAllocator;
-
-using RxPool = FixedPoolAllocator<MaxDecodedSize, 8>;
 ```
 
 A block is a packet header followed by its payload, and the header's size is
 an ABI property — 24 bytes on x86-64, 12 on Cortex-M. Parameterizing by block
 size would make the same configuration accept different wire frames on
-different platforms, which is the ABI deciding protocol semantics. Configured
-this way, `payload_capacity` is exactly the number requested everywhere, and
-the ABI only moves the RAM cost (`storage_size` = 1048 bytes per block on
-x86-64 against 1036 on Cortex-M, for a 1024-byte capacity).
-
-`storage_size` is the logical content of a block and is deliberately **not**
-promised to equal the physical `sizeof(Block)`: alignment may add tail
-padding.
+different platforms, which really would be the ABI deciding protocol
+semantics — a machine property leaking into the protocol, as opposed to a
+choice the author made on purpose. Configured this way, `payload_capacity` is
+exactly the number requested everywhere, and the ABI only moves the RAM cost
+(`storage_size` = 1048 bytes per block on x86-64 against 1036 on Cortex-M, for
+a 1024-byte capacity).
 
 ### 4.2 Encoded size
 
@@ -248,17 +260,26 @@ Worked values, all verified against the canonical encoder:
 
 ---
 
-### 4.3 Template parameter order
+### 4.3 One template parameter
 
-`Cobs<MaxDecodedSize, Allocator>`, in that order. It reads in protocol order
-and matches the rest of the codebase (`Uart<ChunkSize, ChunkCount>`,
-`FixedPoolAllocator<PayloadCapacity, BlockCount>` — the shape before the
-mechanism), but the binding reason is that it is the only order that can carry
-a default: a template parameter with a default may not precede one without,
-and `MaxDecodedSize` has no sensible default while the allocator does.
+```cpp
+template<class Allocator = CobsHeapAllocator>
+class Cobs;
+```
 
-The default is `CobsHeapAllocator` (§9.2), so the common spelling stays one
-argument, `Cobs<1024>`, and the embedded fixed pool is a deliberate opt-in.
+That is the whole signature. The transport arrives by delegate (§2.1) and the
+sizes come from the policy (§9), so there is nothing else for a template
+parameter to carry:
+
+```cpp
+Cobs<> cobs;                        // heap policy
+Cobs<MyAllocator> cobs{allocator};  // anybody else's memory and geometry
+```
+
+The components underneath still take their own geometry explicitly —
+`FixedPoolAllocator<PayloadCapacity, BlockCount>`, `CobsMsg<Allocator>` — but
+the assembled object an application names has one knob, and that knob is the
+single place every memory decision is written down.
 
 ---
 
@@ -676,56 +697,47 @@ Three obligations that are easy to get wrong:
   allocator.** Losing a block is recoverable and countable. A corrupted free
   list is neither.
 
-### 9.2 The policy advertises capacity; it does not define the limit
+### 9.2 The policy is the single source of truth
 
-This is the rule of §4.1 restated where it is most tempting to break. It would
-be natural to let `rx_capacity` be the maximum frame the protocol accepts, and
-drop `MaxDecodedSize` entirely. That must not happen: swapping a policy with
-4096-byte blocks for one with 1024-byte blocks would then silently change
-**which wire frames are legal**, making the memory backend a protocol
-decision.
+Everything about memory is written down once, in the policy:
 
-So the protocol limit stays a parameter of `Cobs`, and the policy is checked
-against it:
-
-```cpp
-template<std::size_t MaxDecodedSize, class Allocator = CobsFixedAllocator<MaxDecodedSize>>
-class Cobs final {
-    static_assert(Allocator::rx_capacity >= MaxDecodedSize);
-    static_assert(Allocator::tx_capacity >= cobs_max_wire_size(MaxDecodedSize));
-};
+```text
+CobsAllocatorPolicy
+├── rx_max_size          largest decoded frame this instance accepts
+├── RX capacity / quota
+├── tx_max_size          largest payload this instance can send
+├── TX capacity / quota
+├── allocate_rx()   / deallocate_rx()
+└── allocate_tx()   / deallocate_tx()
 ```
 
-A default that names the earlier parameter is legal, so the common spelling
-stays one argument:
+`Cobs` reads those numbers and never second-guesses them. It republishes them
+under its own names — `max_decoded_size`, `max_send_size` — so that code above
+has one place to ask, and so a change of policy is visible rather than
+implied (§4.1).
 
-```cpp
-Cobs<1024> cobs{allocator};                       // default policy
-Cobs<1024, SdramCobsAllocator> cobs{allocator};   // somebody else's memory
-```
-
-The default policy is **`CobsHeapAllocator`**, as
-`UART_COBS_ARCHITECTURE.md` §1 has said from the start. A pool default would
-look more embedded-minded and be worse in practice: it would plant static RAM
-in every translation unit that merely names `Cobs<N>`, and it would force the
-library to invent a block count on the user's behalf. A target where `malloc`
-is unwelcome is exactly a target whose author chooses the allocator
+The default is **`CobsHeapAllocator`**, as `UART_COBS_ARCHITECTURE.md` §1 has
+said from the start, which makes the common spelling `Cobs<>`. A fixed pool
+default would look more embedded-minded and be worse: it would force the
+library to invent a block count on the user's behalf, and every `Cobs` object
+would then carry that fixed quota whatever its workload. A target where
+`malloc` is unwelcome is exactly a target whose author chooses the policy
 deliberately:
 
 ```cpp
 using Allocator = CobsFixedAllocator</* RX */ 1024, 8, /* TX */ 1024, 2>;
 Allocator allocator;
-Cobs<1024, Allocator> cobs{allocator};
+Cobs<Allocator> cobs{allocator};
 ```
 
-`Cobs` also clamps what it hands the decoder to `MaxDecodedSize` even when the
-policy returns a larger payload span, so a generous allocator cannot widen the
-protocol by accident.
+RX and TX limits are separate on purpose. A device that receives 1 KB commands
+and replies with 64-byte acknowledgements should be able to say so, rather
+than paying for the larger number twice.
 
 ### 9.3 What the policy must not contain
 
 ```text
-Cobs<MaxDecodedSize, Allocator>
+Cobs<Allocator>
         |                    |
      protocol             memory
         |                    |

@@ -49,12 +49,14 @@
 // default may not precede one without, and MaxDecodedSize has no sensible
 // default while the allocator does.
 //
-// PLACEHOLDER default. The settled contract (COBS_ENGINE.md §9.2) is that the
-// default policy is CobsHeapAllocator; a fixed pool stands in only until that
-// policy exists, and it is what the assembled Cobs will replace. Do not read
-// this as an argument against the heap default — a pool default would plant
-// static RAM in every translation unit that merely names the type, and would
-// force the library to invent a block count for the user.
+// PLACEHOLDER shape. The settled contract (COBS_ENGINE.md §4.3, §9.2) is
+// Cobs<Allocator>: one template parameter, with the sizes coming FROM the
+// policy as Allocator::rx_max_size, and CobsHeapAllocator as the default.
+// This two-parameter form and its fixed-pool default stand in only until
+// those policies exist, and the assembled Cobs replaces both. Do not read the
+// pool default as an argument against the heap one — a pool default would
+// force the library to invent a block count for the user, and every object
+// would carry that quota whatever its workload.
 //
 //     FixedPoolAllocator<256, 4> pool;
 //     CobsRx<256> rx(pool);
