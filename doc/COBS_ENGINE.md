@@ -31,7 +31,7 @@ only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 | Ready queue | intrusive, threaded through the packets themselves |
 | RX lifetime | intrusive refcount, `PacketRef`, payload immutable after publication |
 | Refcount | plain (single execution domain); no atomic policy in v1 |
-| Allocator | a compile-time **policy** (§9) and the single source of truth for memory: geometry, limits and quotas. `Cobs<Allocator>` is the whole signature. Defaults to `CobsHeapAllocator`; embedded targets opt into a fixed pool |
+| Allocator | a compile-time **policy** (§9) and the single source of truth for memory: geometry, limits and quotas. `Cobs<Allocator>` is the whole signature. Defaults to `CobsHeapAllocator<>`; embedded targets opt into a fixed pool |
 | `MaxDecodedSize` | `Allocator::rx_max_size`; the whole decoded frame, including any future integrity trailer |
 | TX ownership | move-only `CobsMsg`, exclusive until the transport accepts it |
 | Transport busy before encoding | message stays `Building` |
@@ -173,7 +173,7 @@ CRC arrived.
 `Allocator::rx_max_size`:
 
 ```cpp
-template<class Allocator = CobsHeapAllocator>
+template<class Allocator = CobsHeapAllocator<>>
 class Cobs final {
     static constexpr std::size_t max_decoded_size = Allocator::rx_max_size;
 };
@@ -263,7 +263,7 @@ Worked values, all verified against the canonical encoder:
 ### 4.3 One template parameter
 
 ```cpp
-template<class Allocator = CobsHeapAllocator>
+template<class Allocator = CobsHeapAllocator<>>
 class Cobs;
 ```
 
@@ -655,9 +655,10 @@ thing wrong.
 
 ```cpp
 struct SomeCobsAllocator {
-    // What this policy can hold. NOT what the protocol accepts — see 9.2.
-    static constexpr std::size_t rx_capacity = ...;
-    static constexpr std::size_t tx_capacity = ...;
+    // The declared limits of this COBS instance (§9.2). These ARE what the
+    // protocol accepts and sends.
+    static constexpr std::size_t rx_max_size = ...;
+    static constexpr std::size_t tx_max_size = ...;
 
     [[nodiscard]] RxAllocation allocate_rx() noexcept;
     void deallocate_rx(RxPacket<SomeCobsAllocator>* packet) noexcept;
@@ -668,14 +669,34 @@ struct SomeCobsAllocator {
 
 struct RxAllocation {
     RxPacket<...>*     packet  = nullptr; // constructed, refs == 1
-    std::span<uint8_t> payload{};         // where the decoder may write
+    std::span<uint8_t> payload{};         // >= rx_max_size bytes
 };
 
 struct TxAllocation {
     std::byte*  memory   = nullptr;
-    std::size_t capacity = 0;
+    std::size_t capacity = 0;             // >= cobs_max_wire_size(tx_max_size)
 };
 ```
+
+### 9.1.1 Declared limit and physical region are different numbers
+
+This is the distinction the whole section rests on, and the two must never be
+conflated:
+
+```text
+rx_max_size / tx_max_size    what this COBS instance accepts and sends
+payload.size() / capacity    the physical memory of one allocation
+```
+
+A pool may hand back 1040 bytes for a policy that declares `rx_max_size =
+1024`; block geometry rounds, and that is its business. The protocol limit
+stays 1024 **because the policy said so**, and `Cobs` therefore hands the
+decoder only `payload.first(rx_max_size)` — a generous allocation can never
+quietly widen what is accepted. An allocation smaller than the declared limit
+is a broken policy, which is why the guarantees above are `>=` and are
+asserted at compile time where the type allows.
+
+### 9.1.2 Obligations
 
 Both allocations report their region rather than letting the caller compute
 it, so a policy is free to place the payload somewhere other than immediately
@@ -697,6 +718,20 @@ Three obligations that are easy to get wrong:
   allocator.** Losing a block is recoverable and countable. A corrupted free
   list is neither.
 
+### 9.1.3 Block counts are not part of the contract
+
+`Cobs` never asks how many blocks exist, so the generic contract does not
+mention them. How much memory a policy is willing to hand out, and by what
+scheme, is entirely its own business:
+
+```text
+CobsHeapAllocator     no counts at all — whatever the heap allows
+CobsFixedAllocator    RxBlockCount and TxBlockCount, its own parameters
+some SDRAM policy     a bitmap, a TLSF arena, or something stranger
+```
+
+Keeping counts out is what lets those live side by side under one contract.
+
 ### 9.2 The policy is the single source of truth
 
 Everything about memory is written down once, in the policy:
@@ -717,7 +752,27 @@ has one place to ask, and so a change of policy is visible rather than
 implied (§4.1).
 
 The default is **`CobsHeapAllocator`**, as `UART_COBS_ARCHITECTURE.md` §1 has
-said from the start, which makes the common spelling `Cobs<>`. A fixed pool
+said from the start, which makes the common spelling `Cobs<>`. It is
+parameterized rather than unbounded, because "no limit" is not available to
+us: the zero-copy RX decoder is handed its final output span at `NeedOutput`,
+before a single payload byte has arrived, so some number must be committed to
+up front.
+
+```cpp
+template<std::size_t RxMaxSize = 1024, std::size_t TxMaxSize = 1024>
+class CobsHeapAllocator;
+
+template<class Allocator = CobsHeapAllocator<>>
+class Cobs;
+```
+
+so `Cobs<>` gets workable defaults and a bigger heap-backed link is still one
+line:
+
+```cpp
+Cobs<CobsHeapAllocator<4096, 512>> cobs;
+```
+ A fixed pool
 default would look more embedded-minded and be worse: it would force the
 library to invent a block count on the user's behalf, and every `Cobs` object
 would then carry that fixed quota whatever its workload. A target where
