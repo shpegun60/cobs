@@ -416,9 +416,7 @@ public:
 		if (requested_size > rx_max_size) { return nullptr; }
 		void* const memory = ::operator new(sizeof(Packet) + requested_size, std::nothrow);
 		if (memory == nullptr) { return nullptr; }
-		Packet* const p = std::construct_at(static_cast<Packet*>(memory));
-		p->owner = this;
-		return p;
+		return std::construct_at(static_cast<Packet*>(memory));
 	}
 	void deallocate_rx(Packet* const p) noexcept
 	{

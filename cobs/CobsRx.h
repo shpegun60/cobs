@@ -200,6 +200,30 @@ private:
 		abandonFrame();
 	}
 
+	/*
+	 * The only place a packet is allocated, and the only place `owner` is set.
+	 *
+	 * The policy does NOT stamp it, deliberately. §9 says a policy is two
+	 * constants and four functions; if it also had to write a private field of
+	 * a type it merely allocates storage for, that would be a hidden fifth
+	 * obligation, invisible in the signatures and impossible for the contract
+	 * test to check now that the field is private. A policy written to the
+	 * letter of the contract would then hand back a packet whose owner is
+	 * null, and the first PacketRef release would dereference it.
+	 *
+	 * So the RX vertical establishes ownership, which is also where it
+	 * belongs: the allocator supplies memory and takes it back, and nothing
+	 * else.
+	 */
+	[[nodiscard]] Packet* allocate_packet(const std::size_t size) noexcept
+	{
+		Packet* const packet = m_allocator.allocate_rx(size);
+		if (packet != nullptr) {
+			packet->owner = &m_allocator;
+		}
+		return packet;
+	}
+
 	// Turns a complete header into an allocated packet, or refuses the frame.
 	void beginBody() noexcept
 	{
@@ -218,7 +242,7 @@ private:
 			return;
 		}
 
-		Packet* const packet = m_allocator.allocate_rx(declared);
+		Packet* const packet = allocate_packet(declared);
 		if (packet == nullptr) {
 			++m_stats.allocation_failure;
 			abandonFrame();
@@ -260,7 +284,7 @@ private:
 				return;
 			}
 			// A legitimately empty application packet.
-			Packet* const packet = m_allocator.allocate_rx(0);
+			Packet* const packet = allocate_packet(0);
 			if (packet == nullptr) {
 				++m_stats.allocation_failure;
 				endFrame(true);

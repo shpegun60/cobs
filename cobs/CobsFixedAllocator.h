@@ -90,10 +90,9 @@ public:
 		if (memory == nullptr) {
 			return nullptr;
 		}
-		Packet* const packet = std::construct_at(
-			reinterpret_cast<Packet*>(memory));
-		packet->owner = this;
-		return packet;
+		// Storage and construction, and nothing else: `owner` is CobsRx's to
+		// set (§9.1.3).
+		return std::construct_at(reinterpret_cast<Packet*>(memory));
 	}
 
 	void deallocate_rx(Packet* const packet) noexcept

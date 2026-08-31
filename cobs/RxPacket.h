@@ -25,10 +25,13 @@
  * whole lifetime model rests on; code that can write them can free a live
  * packet or leak a dead one. Three friends can, and each has to:
  *
- *     CobsRx      builds the packet and threads it onto the ready queue
+ *     CobsRx      builds the packet, stamps `owner`, and threads it onto
+ *                 the ready queue
  *     PacketRef   is the refcount
- *     Allocator   stamps `owner` at allocation, and is the thing `owner`
- *                 names in the first place
+ *
+ * The ALLOCATOR is deliberately not among them. It supplies memory and takes
+ * it back; establishing ownership is the RX vertical's job. That is not a
+ * stylistic preference — see CobsRx::allocate_packet().
  *
  * Allocator is used only as a pointer here, so it may be incomplete at the
  * point this template is instantiated. That is what breaks the cycle between
@@ -55,7 +58,6 @@ template<class Allocator>
 struct RxPacket final {
 	friend class CobsRx<Allocator>;
 	friend class PacketRef<Allocator>;
-	friend Allocator;
 
 	// What the application sees: the decoded bytes, read-only. The only
 	// public member, and reachable in practice through PacketRef.

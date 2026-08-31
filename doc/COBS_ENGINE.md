@@ -246,17 +246,30 @@ not the size of anything.
 
 Each limit is republished by `Cobs` as `max_receive_size` and `max_send_size`.
 Peers do NOT have to declare the same numbers — an asymmetric pair is the
-normal case, and §3's example is exactly that. What has to hold is:
+normal case, and §3's example is exactly that. Three different conditions are
+worth keeping apart, because only the first is about the wire:
 
 ```text
-A.tx_max_size <= B.rx_max_size          each side can carry what the other sends
-B.tx_max_size <= A.rx_max_size
-A.length_size == B.length_size          or nothing decodes at all
+WIRE COMPATIBILITY      A.length_size == B.length_size
+                        without this nothing decodes at all, in either
+                        direction, not even a one-byte frame
+
+PER-FRAME ACCEPTANCE    declared_length <= receiver.rx_max_size
+                        decided per frame, from the header, by the receiver
+
+FULL-RANGE COMPATIBILITY  A.tx_max_size <= B.rx_max_size
+                          B.tx_max_size <= A.rx_max_size
+                          only needed to guarantee that EVERY frame one side
+                          is allowed to build is one the other will accept
 ```
 
-Only `length_size` is a wire-compatibility requirement; the limits are each
-peer's own statement about what it is willing to send and to accept, and may
-be larger than anything actually used.
+The last is a design property, not a requirement. A peer with
+`tx_max_size = 1024` talking to one with `rx_max_size = 64` is perfectly
+functional as long as it keeps its frames under 64; the mismatch only means
+the protocol has no static guarantee of that, and oversize frames will be
+counted rather than delivered. The limits are each peer's own statement about
+what it is willing to send and to accept, and may be larger than anything
+actually used.
 
 Neither republished name is `max_decoded_size`: that name was one header away
 from the truth, on a layer where being one header out is the easiest mistake
@@ -465,7 +478,7 @@ Three rules make that safe:
 There is deliberately **no `Oversize` event**. "Too big" is not a fact this
 class can know: it has no protocol limit, only a segment that happens to be
 full, and a full segment is a request rather than a verdict. The layer that
-knows `rx_max_size` and the declared length decides that — see §6.6. An owner
+knows `rx_max_size` and the declared length decides that — see §6.1.1. An owner
 that will not grow expresses it by discarding, never by attaching an empty
 segment, which would simply be asked again forever.
 
@@ -585,11 +598,23 @@ declared == actual                  publish
 no header (decoded frame empty)     length_mismatch, frame lost
 header truncated (1 of 2 bytes)     length_mismatch, frame lost
 declared 0, body bytes follow       length_mismatch, resync
-declared > rx_max_size              oversize,        resync
+declared > rx_max_size, body began  oversize,        resync
+declared > rx_max_size, no body     oversize,        frame lost
 actual < declared                   length_mismatch, frame lost
 actual > declared                   length_mismatch, resync
-allocate_rx(N) fails                allocation_failure, resync
+allocate_rx(N) fails, N > 0         allocation_failure, resync
+allocate_rx(0) fails                allocation_failure, frame lost
 ```
+
+Two of those pairs are the same verdict reached at different moments, and the
+difference is only ever the resync. An oversize header is oversize whether or
+not a body followed — the decision is made from the header both times, so a
+frame declaring 65 against a limit of 64 lands on the same counter with one
+body byte or with none. What changes is that a body means the rest of the
+frame is still in the stream and must be skipped, while a delimiter arriving
+first has already synchronized us. The same is true of a refused allocation:
+for a non-empty body it happens mid-frame, while the empty packet is allocated
+at FrameComplete, after the delimiter.
 
 The resync column is not decoration. A failure the DELIMITER revealed — a
 missing header, a short body — is already synchronized, so hunting for another
@@ -1313,7 +1338,21 @@ catch that is inside the policy, at compile time.
 Exhaustion is a null return, never an error code: `if (packet == nullptr)` is
 the check either way.
 
-Three obligations that are easy to get wrong:
+**A policy never touches the packet's fields.** `refs`, `size`, `next_ready`
+and `owner` are private to the RX vertical, and `owner` in particular is set by
+`CobsRx`, not by the allocator. An earlier revision had both shipped policies
+stamp it themselves, which made it a hidden FIFTH obligation — absent from the
+signatures, absent from this list, and unverifiable by the contract test once
+the field became private. A policy written to the letter of §9 therefore
+returned a packet whose owner was null, and the first `PacketRef` release
+dereferenced it. There is now a test policy that is exactly the two constants
+and four functions and nothing else, precisely so that this cannot come back.
+
+So the policy's whole job on RX is: produce storage for
+`sizeof(Packet) + requested_size`, construct the packet in it, and hand it
+back; later, destroy and reclaim. Ownership is established one layer up.
+
+Three further obligations that are easy to get wrong:
 
 - **`deallocate_rx` runs the packet's destructor.** The policy owns that,
   because only the policy knows whether the pointer is valid at all. A
@@ -1387,7 +1426,7 @@ said from the start, which makes the common spelling `Cobs<>`. It is
 parameterized rather than unbounded, because "no limit" is not available to
 us: the length field is itself fixed-width, so the largest frame the format can
 describe has to be decided when the type is instantiated. The PER-FRAME
-allocation is exact (§6.6); `rx_max_size` is the ceiling above which a declared
+allocation is exact (§6.1.1); `rx_max_size` is the ceiling above which a declared
 length is refused.
 
 ```cpp

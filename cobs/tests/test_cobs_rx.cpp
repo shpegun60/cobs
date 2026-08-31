@@ -479,9 +479,7 @@ public:
 			::operator new(sizeof(Packet) + requested_size, std::nothrow);
 		if (memory == nullptr) { return nullptr; }
 		requests.push_back(requested_size);
-		Packet* const packet = std::construct_at(static_cast<Packet*>(memory));
-		packet->owner = this;
-		return packet;
+		return std::construct_at(static_cast<Packet*>(memory));
 	}
 	void deallocate_rx(Packet* const packet) noexcept
 	{
@@ -738,9 +736,7 @@ public:
 		void* const memory =
 			::operator new(sizeof(Packet) + requested_size, std::nothrow);
 		if (memory == nullptr) { return nullptr; }
-		Packet* const packet = std::construct_at(static_cast<Packet*>(memory));
-		packet->owner = this;
-		return packet;
+		return std::construct_at(static_cast<Packet*>(memory));
 	}
 	void deallocate_rx(Packet* const packet) noexcept
 	{
@@ -857,6 +853,88 @@ void testPacketInternalsAreSealed()
 	check(true, "RxPacket exposes data() and nothing else");
 }
 
+
+/* ============ a policy written to the letter of the contract ============ */
+
+/*
+ * §9 says an allocator policy is two constants and four functions. This one
+ * is exactly that and not a byte more — in particular it never touches
+ * packet->owner, because nothing in the contract says to.
+ *
+ * It used to segfault. The shipped policies both stamped `owner` themselves,
+ * so the obligation was real but written down nowhere, invisible in the
+ * signatures, and — once the field became private — impossible for the
+ * contract test to check. A policy that read the contract and believed it
+ * handed back a packet whose owner was null, and the first PacketRef release
+ * dereferenced it.
+ *
+ * CobsRx sets `owner` now, which is where establishing ownership belongs
+ * anyway: the allocator supplies memory and takes it back.
+ */
+class ByTheBookPolicy final {
+public:
+	static constexpr std::size_t rx_max_size = 64;
+	static constexpr std::size_t tx_max_size = 64;
+
+	using Packet = RxPacket<ByTheBookPolicy>;
+	using Format = CobsFrameFormat<rx_max_size, tx_max_size>;
+
+	[[nodiscard]] Packet* allocate_rx(const std::size_t requested_size) noexcept
+	{
+		if (requested_size > rx_max_size) { return nullptr; }
+		void* const memory =
+			::operator new(sizeof(Packet) + requested_size, std::nothrow);
+		if (memory == nullptr) { return nullptr; }
+		++live;
+		return std::construct_at(static_cast<Packet*>(memory));
+	}
+	void deallocate_rx(Packet* const packet) noexcept
+	{
+		if (packet == nullptr) { return; }
+		--live;
+		++frees;
+		std::destroy_at(packet);
+		::operator delete(static_cast<void*>(packet));
+	}
+	[[nodiscard]] TxAllocation allocate_tx(std::size_t) noexcept { return {}; }
+	void deallocate_tx(std::byte*, std::size_t) noexcept {}
+
+	int live = 0;
+	int frees = 0;
+};
+
+void testContractIsSelfSufficient()
+{
+	ByTheBookPolicy pool;
+	CobsRx<ByTheBookPolicy> rx(pool);
+
+	const auto body = payload(0x51, 3);
+	rx.consume(std::span<const uint8_t>{
+		cobs_test::frame(body, CobsRx<ByTheBookPolicy>::length_size)});
+	check(rx.stats().frames_delivered == 1,
+	      "a policy that is only the four contract functions receives a frame");
+	check(pool.live == 1, "holding one packet");
+
+	{
+		const auto r = rx.pop_packet();
+		check(matches(r, body), "which pops with the right bytes");
+		check(pool.frees == 0, "and is not freed while the reference lives");
+	}
+	// The release path goes through owner->deallocate_rx(). If nothing had
+	// stamped owner, this is where it would have dereferenced null.
+	check(pool.frees == 1 && pool.live == 0,
+	      "and goes back to the policy when the last reference drops");
+
+	{	// The empty-packet path allocates from a different place, so it needs
+		// its own proof that ownership was established there too.
+		rx.consume(std::span<const uint8_t>{
+			cobs_test::frame({}, CobsRx<ByTheBookPolicy>::length_size)});
+		const auto r = rx.pop_packet();
+		check(static_cast<bool>(r) && r.size() == 0, "an empty packet arrives too");
+	}
+	check(pool.frees == 2 && pool.live == 0, "and is reclaimed the same way");
+}
+
 } // namespace
 
 int main()
@@ -870,6 +948,7 @@ int main()
 	testEmptyPacketAllocationFailure();
 	testOversizeWithNoBody();
 	testPacketInternalsAreSealed();
+	testContractIsSelfSufficient();
 
 	group("EndToEnd");
 	testRoundTripThroughTheWholeStack();
