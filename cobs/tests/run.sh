@@ -29,7 +29,8 @@ rm -f "$OUT/.sancheck" "$OUT/.sancheck.exe"
 
 # One binary per layer, so a failure names the layer without a stack trace:
 #   test_decoder         framing only
-#   test_packet_lifetime the pool and the block geometry it lays out
+#   test_block_pool      detail::StaticBlockPool, the raw memory primitive
+#   test_allocators      the policy contract, run against BOTH policies
 #   test_cobs_rx         the assembled RX vertical, end to end
 #   test_encoder         canonical in-place encoding over its own payload
 #   test_cobs_msg        TX block ownership and geometry, no transport
@@ -41,13 +42,15 @@ build() {
 }
 
 build test_decoder         "$COBS/CobsDecoder.cpp" "$HERE/test_decoder.cpp"
-build test_packet_lifetime "$HERE/test_packet_lifetime.cpp"
+build test_block_pool      "$HERE/test_block_pool.cpp"
+build test_allocators      "$HERE/test_allocators.cpp"
 build test_cobs_rx         "$COBS/CobsDecoder.cpp" "$HERE/test_cobs_rx.cpp"
 build test_encoder         "$COBS/CobsDecoder.cpp" "$COBS/CobsEncoder.cpp" "$HERE/test_encoder.cpp"
 build test_cobs_msg        "$COBS/CobsEncoder.cpp" "$HERE/test_cobs_msg.cpp"
 
 "$OUT/test_decoder.exe"
-"$OUT/test_packet_lifetime.exe"
+"$OUT/test_block_pool.exe"
+"$OUT/test_allocators.exe"
 "$OUT/test_cobs_rx.exe"
 "$OUT/test_encoder.exe"
 "$OUT/test_cobs_msg.exe"

@@ -6,8 +6,8 @@
  * that leaks a block or frees one twice shows up as the wrong number of
  * available blocks, not as a field read out of the object.
  */
+#include "CobsFixedAllocator.h"
 #include "CobsMsg.h"
-#include "detail/StaticBlockPool.h"
 #include "reference_encoder.h"
 
 #include <cstdio>
@@ -37,8 +37,8 @@ void check(const bool ok, const std::string& what)
 constexpr std::size_t kMaxDecoded = 64;
 constexpr std::size_t kTxBlocks = 2; // the recommended default: build one while one flies
 
-using TxPool = cobs::detail::StaticBlockPool<cobs_max_wire_size(kMaxDecoded), kTxBlocks, 1>;
-using Msg = CobsMsg<kMaxDecoded, TxPool>;
+using TxPool = CobsFixedAllocator<kMaxDecoded, 1, kMaxDecoded, kTxBlocks>;
+using Msg = CobsMsg<TxPool>;
 
 std::vector<uint8_t> fill(Msg& m, const uint8_t tag, const std::size_t n)
 {
@@ -56,23 +56,23 @@ std::vector<uint8_t> fill(Msg& m, const uint8_t tag, const std::size_t n)
 void testAcquireAndRelease()
 {
 	TxPool pool;
-	check(pool.available() == kTxBlocks, "the TX pool starts full");
+	check(pool.tx_available() == kTxBlocks, "the TX pool starts full");
 	{
 		Msg m(pool);
 		check(static_cast<bool>(m), "a message acquires a block");
-		check(pool.available() == kTxBlocks - 1, "which the pool records as in use");
+		check(pool.tx_available() == kTxBlocks - 1, "which the pool records as in use");
 		check(m.payload_size() == 0, "and starts with no payload reserved");
 	}
-	check(pool.available() == kTxBlocks, "destroying a Building message returns the block");
+	check(pool.tx_available() == kTxBlocks, "destroying a Building message returns the block");
 
 	{	// The same, but encoded first — a different state, same obligation.
 		Msg m(pool);
 		(void)fill(m, 0x10, 8);
 		check(!m.encode().empty(), "the message encodes");
 		check(m.encoded(), "and is now Encoded");
-		check(pool.available() == kTxBlocks - 1, "still holding its block");
+		check(pool.tx_available() == kTxBlocks - 1, "still holding its block");
 	}
-	check(pool.available() == kTxBlocks, "destroying an Encoded message returns it too");
+	check(pool.tx_available() == kTxBlocks, "destroying an Encoded message returns it too");
 
 	{	// A default-constructed message owns nothing and must not free anything.
 		Msg empty;
@@ -80,7 +80,7 @@ void testAcquireAndRelease()
 		check(empty.reserve(4).empty(), "and refuses to reserve");
 		check(empty.encode().empty(), "and has nothing to encode");
 	}
-	check(pool.available() == kTxBlocks && pool.stats().rejected == 0,
+	check(pool.tx_available() == kTxBlocks && pool.tx_stats().rejected == 0,
 	      "an empty message frees nothing on destruction");
 }
 
@@ -91,7 +91,7 @@ void testExhaustionAndConcurrentMessages()
 	Msg b(pool);
 	check(static_cast<bool>(a) && static_cast<bool>(b),
 	      "several messages can be held at once");
-	check(pool.available() == 0, "consuming the whole TX pool");
+	check(pool.tx_available() == 0, "consuming the whole TX pool");
 
 	Msg c(pool);
 	check(!c, "a further message from a dry pool is empty rather than a failure code");
@@ -104,10 +104,10 @@ void testExhaustionAndConcurrentMessages()
 	}
 
 	a = Msg{};
-	check(pool.available() == 1, "assigning an empty message over one releases its block");
+	check(pool.tx_available() == 1, "assigning an empty message over one releases its block");
 	Msg d(pool);
 	check(static_cast<bool>(d), "and the pool hands that block out again");
-	check(pool.stats().rejected == 0, "with no block freed twice");
+	check(pool.tx_stats().rejected == 0, "with no block freed twice");
 }
 
 void testMoveSemantics()
@@ -121,21 +121,21 @@ void testMoveSemantics()
 		check(!a, "a moved-from message is empty");
 		check(static_cast<bool>(b) && b.payload_size() == 6,
 		      "and the destination carries the payload");
-		check(pool.available() == kTxBlocks - 1,
+		check(pool.tx_available() == kTxBlocks - 1,
 		      "the block moved rather than being duplicated or lost");
 
 		const auto wire = b.encode();
 		check(std::vector<uint8_t>(wire.begin(), wire.end()) == cobs_test::encode(expected),
 		      "the moved message still encodes the bytes that were written");
 	}
-	check(pool.available() == kTxBlocks, "and is released once");
+	check(pool.tx_available() == kTxBlocks, "and is released once");
 
 	{	// Move assignment must release what it overwrites, not leak it.
 		Msg a(pool);
 		Msg b(pool);
-		check(pool.available() == 0, "two blocks held");
+		check(pool.tx_available() == 0, "two blocks held");
 		b = std::move(a);
-		check(pool.available() == 1, "move assignment released b's own block first");
+		check(pool.tx_available() == 1, "move assignment released b's own block first");
 		check(!a && static_cast<bool>(b), "and transferred a's");
 
 		// Self-move must not destroy the message.
@@ -143,8 +143,8 @@ void testMoveSemantics()
 		b = std::move(alias);
 		check(static_cast<bool>(b), "self move-assignment leaves the message intact");
 	}
-	check(pool.available() == kTxBlocks, "everything is back");
-	check(pool.stats().rejected == 0, "with nothing double-freed");
+	check(pool.tx_available() == kTxBlocks, "everything is back");
+	check(pool.tx_stats().rejected == 0, "with nothing double-freed");
 
 	// Exclusive ownership is a compile-time property, not a convention.
 	static_assert(!std::is_copy_constructible_v<Msg>, "CobsMsg must not be copyable");
@@ -214,8 +214,8 @@ void testEncoding()
 		check(m.reserve(4).empty(), "an Encoded message refuses to reserve again");
 		check(m.encoded(), "and stays Encoded");
 	}
-	check(pool.available() == kTxBlocks, "every message released its block");
-	check(pool.stats().rejected == 0, "and none was released twice");
+	check(pool.tx_available() == kTxBlocks, "every message released its block");
+	check(pool.tx_stats().rejected == 0, "and none was released twice");
 }
 
 } // namespace

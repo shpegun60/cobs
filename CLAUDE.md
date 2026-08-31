@@ -57,10 +57,11 @@ The COBS layer owns no HAL, so its suites are ordinary host programs — no fake
 PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH" sh cobs/tests/run.sh
 ```
 
-It builds and runs five independent binaries, so a failure names the layer without needing a stack trace:
+It builds and runs six independent binaries, so a failure names the layer without needing a stack trace:
 
 - `test_decoder` — framing only; mostly property tests (every length × pattern × span-boundary combination, ~20k checks).
-- `test_packet_lifetime` — `FixedPoolAllocator` + `RxPacket`: block geometry across capacities, exhaustion, reuse, double free, foreign pointer.
+- `test_block_pool` — `detail::StaticBlockPool`, the raw memory primitive both policies are built on.
+- `test_allocators` — the allocator policy contract (`COBS_ENGINE.md` §9), one shared test body run against **both** `CobsHeapAllocator` and `CobsFixedAllocator`. It uses nothing but the contract, so if it ever needed to know which policy it was talking to, the abstraction would have leaked.
 - `test_cobs_rx` — the assembled RX vertical end to end, plus `PacketRef` semantics. Those live here rather than beside the pool because `PacketRef::adopt()` is private to `CobsRx`, its only legitimate source; refcounts are therefore asserted behaviourally, through pool occupancy.
 - `test_encoder` — canonical in-place encoding, checked against two independent oracles (the reference encoder byte-for-byte, and a round trip through `CobsDecoder`) at the minimum legal headroom.
 - `test_cobs_msg` — `CobsMsg`: TX block ownership, move semantics, payload geometry and encoding. No transport.

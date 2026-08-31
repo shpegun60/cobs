@@ -40,6 +40,17 @@
 
 namespace cobs::detail {
 
+// Outside the template on purpose: the numbers do not depend on the geometry,
+// so two pools of different shapes report the same TYPE. Nested, every
+// instantiation would have its own incompatible Stats and a policy owning an
+// RX and a TX pool could not expose both through one signature.
+struct PoolStats {
+	uint32_t in_use     = 0;
+	uint32_t high_water = 0;
+	uint32_t exhausted  = 0; // allocate() calls that found the pool dry
+	uint32_t rejected   = 0; // release() calls refused by the checks
+};
+
 template<std::size_t BlockSize, std::size_t BlockCount, std::size_t RequestedAlignment>
 class StaticBlockPool final {
 	static_assert(BlockCount >= 1, "a pool needs at least one block");
@@ -64,12 +75,7 @@ public:
 	static constexpr std::size_t block_count = BlockCount;
 	static constexpr std::size_t storage_size = sizeof(Block);
 
-	struct Stats {
-		uint32_t in_use     = 0;
-		uint32_t high_water = 0;
-		uint32_t exhausted  = 0; // allocate() calls that found the pool dry
-		uint32_t rejected   = 0; // release() calls refused by the checks
-	};
+	using Stats = PoolStats;
 
 	StaticBlockPool() noexcept
 	{

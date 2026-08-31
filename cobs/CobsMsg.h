@@ -38,23 +38,23 @@
 #include <cstdint>
 #include <span>
 
-template<std::size_t MaxDecodedSize, class TxPool>
+// One template parameter, like everything else in this layer: the policy
+// states tx_max_size, so the geometry follows from it (COBS_ENGINE.md §9.2).
+template<class Allocator>
 class CobsMsg final {
 public:
+	static constexpr std::size_t max_payload_size = Allocator::tx_max_size;
 	// The block holds the worst-case wire frame; the payload starts far
 	// enough in for the encoder to overlap it safely (§8.4).
-	static constexpr std::size_t wire_capacity = cobs_max_wire_size(MaxDecodedSize);
-	static constexpr std::size_t raw_offset    = cobs_raw_offset(MaxDecodedSize);
-
-	static_assert(TxPool::block_size >= wire_capacity,
-		"the TX pool's blocks are too small for a maximum-size frame");
+	static constexpr std::size_t wire_capacity = cobs_max_wire_size(max_payload_size);
+	static constexpr std::size_t raw_offset    = cobs_raw_offset(max_payload_size);
 
 	CobsMsg() noexcept = default;
 
-	// Takes one block from the pool. A dry pool yields an Empty message
+	// Takes one block from the policy. Exhaustion yields an Empty message
 	// rather than a failure code: `if (!msg)` is the check either way.
-	explicit CobsMsg(TxPool& pool) noexcept
-		: m_pool(&pool), m_block(pool.allocate())
+	explicit CobsMsg(Allocator& allocator) noexcept
+		: m_pool(&allocator), m_block(allocator.allocate_tx())
 	{
 		if (m_block != nullptr) {
 			m_state = State::Building;
@@ -94,7 +94,7 @@ public:
 	// consult payload_size() if the two must be told apart.
 	[[nodiscard]] std::span<uint8_t> reserve(const std::size_t size) noexcept
 	{
-		if (m_state != State::Building || size > MaxDecodedSize) {
+		if (m_state != State::Building || size > max_payload_size) {
 			return {};
 		}
 		m_size = size;
@@ -144,7 +144,7 @@ private:
 	void release() noexcept
 	{
 		if (m_block != nullptr) {
-			m_pool->deallocate(m_block);
+			m_pool->deallocate_tx(m_block);
 		}
 		disown();
 	}
@@ -158,7 +158,7 @@ private:
 		m_state = State::Empty;
 	}
 
-	TxPool*     m_pool  = nullptr;
+	Allocator*  m_pool  = nullptr;
 	std::byte*  m_block = nullptr;
 	std::size_t m_size  = 0; // reserved payload bytes
 	std::size_t m_wire  = 0; // encoded frame length, once Encoded

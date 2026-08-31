@@ -31,11 +31,13 @@ struct RxPacket final {
 	RxPacket* next_ready = nullptr; // intrusive ready-queue link (§6.2)
 	Allocator* owner     = nullptr; // who reclaims this block
 
-	// The whole block behind the header: where the decoder writes.
-	// Only the owner of an unpublished packet may call this.
+	// Where the decoder writes: exactly the protocol limit the policy
+	// declared (COBS_ENGINE.md §9.1.1), never the physical region, which may
+	// be larger and is nobody's business. Only the owner of an unpublished
+	// packet may call this.
 	[[nodiscard]] std::span<uint8_t> writable_payload() noexcept
 	{
-		return {payload(), Allocator::payload_capacity};
+		return {payload(), Allocator::rx_max_size};
 	}
 
 	// What the application sees: the decoded bytes, read-only.

@@ -1,7 +1,7 @@
 /*
  * End-to-end verification of the RX vertical:
  *
- *   encoded bytes -> CobsDecoder -> FixedPoolAllocator -> RxPacket
+ *   encoded bytes -> CobsDecoder -> allocator policy -> RxPacket
  *                 -> intrusive ready queue -> PacketRef -> release -> pool
  *
  * PacketRef's own semantics (copy, move, assignment, self-assignment) are
@@ -13,8 +13,8 @@
  * is a stronger test than reading the field: it asserts the guarantee the
  * application depends on rather than the bookkeeping behind it.
  */
+#include "CobsFixedAllocator.h"
 #include "CobsRx.h"
-#include "FixedPoolAllocator.h"
 #include "reference_encoder.h"
 
 #include <cstdio>
@@ -43,8 +43,8 @@ void check(const bool ok, const std::string& what)
 
 constexpr std::size_t kMaxDecoded = 64;
 constexpr std::size_t kBlocks = 4;
-using Pool = FixedPoolAllocator<kMaxDecoded, kBlocks>;
-using Rx = CobsRx<kMaxDecoded, Pool>;
+using Pool = CobsFixedAllocator<kMaxDecoded, kBlocks, kMaxDecoded, 2>;
+using Rx = CobsRx<Pool>;
 using Ref = Rx::Ref;
 
 std::vector<uint8_t> payload(const uint8_t tag, const std::size_t n)
@@ -93,7 +93,7 @@ void testRoundTripThroughTheWholeStack()
 		feed(rx, wire);
 
 		check(rx.stats().frames_delivered == 3, "three frames decoded through the stack");
-		check(pool.available() == kBlocks - 3, "and each holds a pool block");
+		check(pool.rx_available() == kBlocks - 3, "and each holds a pool block");
 
 		Ref r1 = rx.pop_packet();
 		Ref r2 = rx.pop_packet();
@@ -104,8 +104,8 @@ void testRoundTripThroughTheWholeStack()
 		check(r3.size() == kMaxDecoded, "and a maximum-size one");
 		check(!rx.pop_packet(), "the queue is then empty");
 	}
-	check(pool.available() == kBlocks, "leaving scope releases every packet");
-	check(pool.stats().rejected == 0, "each block was returned exactly once");
+	check(pool.rx_available() == kBlocks, "leaving scope releases every packet");
+	check(pool.rx_stats().rejected == 0, "each block was returned exactly once");
 }
 
 // A frame split across spans at every possible boundary must still arrive.
@@ -127,37 +127,36 @@ void testSpanBoundaries()
 	              std::to_string(wire.size() + 1) + " positions");
 }
 
-// The default allocator: naming only the protocol limit must give a working
-// receiver, which is the entire reason MaxDecodedSize comes first.
+// The default policy: naming nothing at all must give a working receiver.
 void testDefaultAllocator()
 {
-	using DefaultRx = CobsRx<32>;
-	static_assert(std::is_same_v<DefaultRx::AllocatorType,
-	                             FixedPoolAllocator<32, COBS_RX_DEFAULT_BLOCKS>>,
-	              "the default is a fixed pool sized to the protocol limit");
+	using DefaultRx = CobsRx<>;
+	static_assert(std::is_same_v<DefaultRx::AllocatorType, CobsHeapAllocator<>>,
+	              "the default policy is the heap one");
+	static_assert(DefaultRx::max_decoded_size == 1024, "with its default limit");
 
-	DefaultRx::AllocatorType pool;
-	DefaultRx rx(pool);
+	DefaultRx::AllocatorType allocator;
+	DefaultRx rx(allocator);
 
-	const auto p = payload(0x11, 32);
+	const auto p = payload(0x11, 300);
 	rx.consume(std::span<const uint8_t>{cobs_test::encode(p)});
 	const DefaultRx::Ref r = rx.pop_packet();
-	check(r.size() == p.size(), "CobsRx<32> receives a maximum-size frame with no allocator named");
-	check(pool.available() == COBS_RX_DEFAULT_BLOCKS - 1, "using one block of the default pool");
+	check(r.size() == p.size(), "CobsRx<> receives a frame with no policy named");
 }
 
 /* ========================= the protocol limit =========================== */
 
-// The pool has room for MaxDecodedSize and not one byte more here, but the
-// point stands even when it has room to spare: the limit is the protocol's.
-void testProtocolLimitNotPoolCapacity()
+// The declared limit is the protocol limit: a frame one byte over it is
+// rejected. Under the policy contract there is no longer any way for the pool
+// to "have room to spare" — writable_payload() is defined by rx_max_size
+// itself — so this now tests the mechanism that remains: the decoder refuses
+// a frame that does not fit the span it was given.
+void testProtocolLimitIsEnforced()
 {
-	// A pool twice as generous as the protocol allows.
-	using BigPool = FixedPoolAllocator<kMaxDecoded * 2, kBlocks>;
-	using LimitedRx = CobsRx<kMaxDecoded, BigPool>;
-
-	BigPool pool;
-	LimitedRx rx(pool);
+	Pool pool;
+	Rx rx(pool);
+	static_assert(Rx::max_decoded_size == kMaxDecoded,
+	              "Cobs republishes the policy's limit under its own name");
 
 	const auto too_big = payload(0x30, kMaxDecoded + 1);
 	const auto fine    = payload(0x50, kMaxDecoded);
@@ -167,13 +166,11 @@ void testProtocolLimitNotPoolCapacity()
 	for (const uint8_t x : cobs_test::encode(fine))    { wire.push_back(x); }
 	rx.consume(std::span<const uint8_t>{wire});
 
-	check(rx.stats().oversize == 1,
-	      "a frame one byte over the protocol limit is rejected even though "
-	      "the pool had room for it");
+	check(rx.stats().oversize == 1, "a frame one byte over rx_max_size is rejected");
 	check(rx.stats().frames_delivered == 1, "and only the legal frame is delivered");
-	const LimitedRx::Ref r = rx.pop_packet();
+	const Ref r = rx.pop_packet();
 	check(r.size() == fine.size(), "which is the one that fits");
-	check(pool.available() == BigPool::block_count - 1,
+	check(pool.rx_available() == kBlocks - 1,
 	      "the rejected frame's block went back to the pool");
 }
 
@@ -195,7 +192,7 @@ void testMalformedAndRecovery()
 	      "no resync was needed: the delimiter that exposed it already synchronized us");
 	const Ref r = rx.pop_packet();
 	check(matches(r, good), "with the right contents");
-	check(pool.available() == kBlocks - 1, "the malformed frame's block was reclaimed");
+	check(pool.rx_available() == kBlocks - 1, "the malformed frame's block was reclaimed");
 }
 
 void testExhaustionDropsFramesAndRecovers()
@@ -214,7 +211,7 @@ void testExhaustionDropsFramesAndRecovers()
 	check(rx.stats().frames_delivered == kBlocks, "the pool's worth of frames is delivered");
 	check(rx.stats().allocation_failure == 2, "the rest fail to allocate");
 	check(rx.stats().frames_lost == 2, "and are counted as lost");
-	check(pool.available() == 0, "the pool is fully committed to the queued packets");
+	check(pool.rx_available() == 0, "the pool is fully committed to the queued packets");
 
 	// Draining restores capacity and the link keeps working.
 	std::vector<Ref> drained;
@@ -223,12 +220,12 @@ void testExhaustionDropsFramesAndRecovers()
 	}
 	check(drained.size() == kBlocks, "every queued packet is popped");
 	drained.clear();
-	check(pool.available() == kBlocks, "releasing them restores the whole pool");
+	check(pool.rx_available() == kBlocks, "releasing them restores the whole pool");
 
 	rx.consume(std::span<const uint8_t>{one});
 	const Ref again = rx.pop_packet();
 	check(matches(again, p), "and reception continues normally afterwards");
-	check(pool.stats().rejected == 0, "no block was ever double-freed");
+	check(pool.rx_stats().rejected == 0, "no block was ever double-freed");
 }
 
 void testGapDropsOnlyTheFrameInFlight()
@@ -248,7 +245,7 @@ void testGapDropsOnlyTheFrameInFlight()
 
 	rx.gap(); // the transport lost bytes here
 	check(rx.stats().frames_lost == 1, "the gap costs the frame that was in flight");
-	check(pool.available() == kBlocks - 1,
+	check(pool.rx_available() == kBlocks - 1,
 	      "its block is reclaimed; only the queued packet still holds one");
 
 	// Bytes right after a gap must be discarded even if they look like a
@@ -280,16 +277,16 @@ void testHandleSemantics()
 		Rx rx(pool);
 		feed(rx, wire);
 		Ref a = rx.pop_packet();
-		check(pool.available() == kBlocks - 1, "a popped packet holds its block");
+		check(pool.rx_available() == kBlocks - 1, "a popped packet holds its block");
 		{
 			Ref b = a;
 			a.reset();
-			check(pool.available() == kBlocks - 1,
+			check(pool.rx_available() == kBlocks - 1,
 			      "after a copy, releasing the original does not free the packet");
 			check(matches(b, p), "and the copy still reads the payload");
 		}
-		check(pool.available() == kBlocks, "the last handle frees it");
-		check(pool.stats().rejected == 0, "exactly once");
+		check(pool.rx_available() == kBlocks, "the last handle frees it");
+		check(pool.rx_stats().rejected == 0, "exactly once");
 	}
 	{	// move transfers without changing the count
 		Pool pool;
@@ -299,9 +296,9 @@ void testHandleSemantics()
 		Ref b = std::move(a);
 		check(!a, "a moved-from handle is empty");
 		check(matches(b, p), "the moved-to handle owns the packet");
-		check(pool.available() == kBlocks - 1, "and it is still held exactly once");
+		check(pool.rx_available() == kBlocks - 1, "and it is still held exactly once");
 		b.reset();
-		check(pool.available() == kBlocks, "releasing it frees the block");
+		check(pool.rx_available() == kBlocks, "releasing it frees the block");
 	}
 	{	// assignment releases what is overwritten
 		Pool pool;
@@ -310,20 +307,20 @@ void testHandleSemantics()
 		feed(rx, wire);
 		Ref a = rx.pop_packet();
 		Ref b = rx.pop_packet();
-		check(pool.available() == kBlocks - 2, "two packets held");
+		check(pool.rx_available() == kBlocks - 2, "two packets held");
 		b = a;
-		check(pool.available() == kBlocks - 1, "copy assignment released b's packet");
+		check(pool.rx_available() == kBlocks - 1, "copy assignment released b's packet");
 		a.reset();
-		check(pool.available() == kBlocks - 1, "b still holds the shared one");
+		check(pool.rx_available() == kBlocks - 1, "b still holds the shared one");
 		b.reset();
-		check(pool.available() == kBlocks, "and releases it last");
+		check(pool.rx_available() == kBlocks, "and releases it last");
 
 		feed(rx, wire);
 		feed(rx, wire);
 		Ref c = rx.pop_packet();
 		Ref d = rx.pop_packet();
 		d = std::move(c);
-		check(pool.available() == kBlocks - 1, "move assignment released d's packet");
+		check(pool.rx_available() == kBlocks - 1, "move assignment released d's packet");
 		check(matches(d, p) && !c, "and transferred c's");
 	}
 	{	// self-assignment must not free what it is about to keep
@@ -336,15 +333,15 @@ void testHandleSemantics()
 		a = alias;
 		check(static_cast<bool>(a) && matches(a, p),
 		      "self copy-assignment leaves the handle and its payload intact");
-		check(pool.available() == kBlocks - 1, "and the block still held");
+		check(pool.rx_available() == kBlocks - 1, "and the block still held");
 
 		a = std::move(alias);
 		check(static_cast<bool>(a) && matches(a, p),
 		      "self move-assignment leaves the handle and its payload intact");
 
 		a.reset();
-		check(pool.available() == kBlocks, "and it still frees exactly once");
-		check(pool.stats().rejected == 0, "with no double free");
+		check(pool.rx_available() == kBlocks, "and it still frees exactly once");
+		check(pool.rx_stats().rejected == 0, "with no double free");
 	}
 }
 
@@ -359,12 +356,12 @@ void testDestructorReleasesEverything()
 		feed(rx, wire);
 		// A third frame left half-decoded, so a packet is also mid-build.
 		rx.consume(std::span<const uint8_t>{wire.data(), wire.size() - 1});
-		check(pool.available() == kBlocks - 3,
+		check(pool.rx_available() == kBlocks - 3,
 		      "two queued packets and one being built hold three blocks");
 	}
-	check(pool.available() == kBlocks,
+	check(pool.rx_available() == kBlocks,
 	      "destroying CobsRx returns the queued packets and the one in progress");
-	check(pool.stats().rejected == 0, "without freeing anything twice");
+	check(pool.rx_stats().rejected == 0, "without freeing anything twice");
 }
 
 // The application holding packets really does apply back-pressure.
@@ -379,14 +376,14 @@ void testRetentionConsumesCapacity()
 		feed(rx, wire);
 		retained.push_back(rx.pop_packet());
 	}
-	check(pool.available() == 0, "retained packets consume the pool");
+	check(pool.rx_available() == 0, "retained packets consume the pool");
 
 	feed(rx, wire);
 	check(rx.stats().allocation_failure == 1,
 	      "so a further frame cannot be received while they are held");
 
 	retained.clear();
-	check(pool.available() == kBlocks, "releasing them restores capacity");
+	check(pool.rx_available() == kBlocks, "releasing them restores capacity");
 	feed(rx, wire);
 	check(static_cast<bool>(rx.pop_packet()), "and reception resumes");
 }
@@ -401,7 +398,7 @@ int main()
 
 	group("ProtocolLimit");
 	testDefaultAllocator();
-	testProtocolLimitNotPoolCapacity();
+	testProtocolLimitIsEnforced();
 
 	group("ErrorHandling");
 	testMalformedAndRecovery();

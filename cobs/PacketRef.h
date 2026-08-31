@@ -26,7 +26,7 @@
 #include <utility>
 
 // The only legitimate source of packet references.
-template<std::size_t MaxDecodedSize, class Allocator>
+template<class Allocator>
 class CobsRx;
 
 template<class Allocator>
@@ -39,7 +39,7 @@ class PacketRef final {
 	// and end up with two RAII owners of the SAME single reference: the first
 	// destructor frees the block, the second is left holding a dangling
 	// pointer. A hand-operated use-after-free factory in the public API.
-	template<std::size_t, class>
+	template<class>
 	friend class CobsRx;
 
 public:
@@ -114,7 +114,7 @@ private:
 	void release() noexcept
 	{
 		if (m_p != nullptr && --m_p->refs == 0u) {
-			m_p->owner->deallocate(m_p);
+			m_p->owner->deallocate_rx(m_p);
 		}
 	}
 

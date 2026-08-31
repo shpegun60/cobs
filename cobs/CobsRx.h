@@ -28,41 +28,24 @@
 #define COBS_RX_H_
 
 #include "CobsDecoder.h"
-#include "FixedPoolAllocator.h"
+#include "CobsHeapAllocator.h"
 #include "PacketRef.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <span>
 
-// Blocks in the default pool. Four lets the application hold a couple of
-// packets without stalling reception, and is the knob most likely to want
-// raising: every retained packet costs one block (§6, back-pressure).
-#ifndef COBS_RX_DEFAULT_BLOCKS
-#define COBS_RX_DEFAULT_BLOCKS 4u
-#endif
-
-// MaxDecodedSize comes first, and not only because it reads in protocol order
-// ("a receiver for 1024-byte frames, backed by this pool") or because the rest
-// of this codebase puts the shape before the mechanism. It is the only
-// ordering that can carry the default below: a template parameter with a
-// default may not precede one without, and MaxDecodedSize has no sensible
-// default while the allocator does.
+// One template parameter, per the frozen contract (COBS_ENGINE.md §4.3): the
+// policy is the single source of truth for the limits, so there is nothing
+// else for a parameter to carry. The default is the heap policy.
 //
-// PLACEHOLDER shape. The settled contract (COBS_ENGINE.md §4.3, §9.2) is
-// Cobs<Allocator>: one template parameter, with the sizes coming FROM the
-// policy as Allocator::rx_max_size, and CobsHeapAllocator as the default.
-// This two-parameter form and its fixed-pool default stand in only until
-// those policies exist, and the assembled Cobs replaces both. Do not read the
-// pool default as an argument against the heap one — a pool default would
-// force the library to invent a block count for the user, and every object
-// would carry that quota whatever its workload.
+//     CobsRx<> rx;                              // heap, 1024-byte frames
+//     CobsRx<CobsFixedAllocator<...>> rx;       // static storage
 //
-//     FixedPoolAllocator<256, 4> pool;
-//     CobsRx<256> rx(pool);
-//
-template<std::size_t MaxDecodedSize,
-         class Allocator = FixedPoolAllocator<MaxDecodedSize, COBS_RX_DEFAULT_BLOCKS>>
+// The allocator is still passed by reference here; the assembled Cobs owns
+// its policy by value (§9.4). That is the remaining difference between this
+// stepping stone and the final glue.
+template<class Allocator = CobsHeapAllocator<>>
 class CobsRx final {
 public:
 	// Exposed so that a user who takes the default can still name the pool
@@ -73,11 +56,9 @@ public:
 	using Packet = typename Allocator::Packet;
 	using Ref = PacketRef<Allocator>;
 
-	static_assert(Allocator::payload_capacity >= MaxDecodedSize,
-		"the allocator cannot hold a maximum-size frame: the protocol states "
-		"the requirement, the allocator must satisfy it");
-	static_assert(MaxDecodedSize <= UINT16_MAX,
-		"RxPacket::size is a uint16_t");
+	// The protocol limit comes FROM the policy (§9.2).
+	static constexpr std::size_t max_decoded_size = Allocator::rx_max_size;
+	static_assert(max_decoded_size <= UINT16_MAX, "RxPacket::size is a uint16_t");
 
 	struct Stats {
 		uint32_t frames_delivered  = 0;
@@ -97,7 +78,7 @@ public:
 	~CobsRx()
 	{
 		if (m_building != nullptr) {
-			m_allocator.deallocate(m_building);
+			m_allocator.deallocate_rx(m_building);
 		}
 		// Release each queued reference through the same path a PacketRef
 		// uses, rather than duplicating the count logic here.
@@ -151,7 +132,7 @@ public:
 	void gap() noexcept
 	{
 		if (m_building != nullptr) {
-			m_allocator.deallocate(m_building);
+			m_allocator.deallocate_rx(m_building);
 			m_building = nullptr;
 		}
 		// Counted unconditionally: a gap always destroys framing continuity,
@@ -184,7 +165,7 @@ public:
 private:
 	void onNeedOutput() noexcept
 	{
-		m_building = m_allocator.allocate();
+		m_building = m_allocator.allocate_rx();
 		if (m_building == nullptr) {
 			++m_stats.allocation_failure;
 			++m_stats.frames_lost;
@@ -192,10 +173,11 @@ private:
 			m_decoder.discard_until_delimiter();
 			return;
 		}
-		// first(MaxDecodedSize), not the whole payload: a pool with room to
-		// spare must not quietly widen what the protocol accepts. The limit
-		// is the protocol's, and the allocator merely has to be big enough.
-		m_decoder.attach_output(m_building->writable_payload().first(MaxDecodedSize));
+		// No clamp: writable_payload() is defined by the policy's declared
+		// rx_max_size, so it already IS the protocol limit (§9.1.1). A policy
+		// whose storage is smaller than it declares is simply broken, and the
+		// place that catches it is the policy's own static_assert.
+		m_decoder.attach_output(m_building->writable_payload());
 	}
 
 	void onFrameComplete(const std::size_t decoded_size) noexcept
@@ -222,7 +204,7 @@ private:
 	void dropBuilding() noexcept
 	{
 		if (m_building != nullptr) {
-			m_allocator.deallocate(m_building);
+			m_allocator.deallocate_rx(m_building);
 			m_building = nullptr;
 		}
 		++m_stats.frames_lost;

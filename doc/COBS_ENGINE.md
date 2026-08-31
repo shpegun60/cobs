@@ -864,13 +864,6 @@ pointers or spans into external RX/TX regions leaves `Cobs` placeable
 anywhere, and only the **TX region** must be DMA-visible — the transport reads
 it directly, unlike the RX pool, which only the CPU ever writes.
 
-### 9.4.1 Naming still to be applied in code
-
-The contract calls the limits `rx_max_size` / `tx_max_size`. The existing
-`FixedPoolAllocator` and `RxPacket` still say `payload_capacity`, from before
-§9 existed. That rename lands with the two policies; it is noted here so the
-gap is visible rather than discovered.
-
 ### 9.5 Transport is not part of it
 
 The transport is bound separately (§2.1) and never travels through the
