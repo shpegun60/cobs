@@ -58,9 +58,8 @@ The split is not cosmetic. `Cobs` is templated on the allocator, so an
 application using two different allocators instantiates it twice. The decoder
 is where the subtle logic lives, and duplicating it per instantiation would
 mean duplicating the code that most needs to be reviewed and fuzzed exactly
-once. Keeping it non-template also
-means it can be tested with no HAL, no pool and no transport at all — a plain
-host binary that feeds it bytes.
+once. Keeping it non-template also means it can be tested with no HAL, no pool
+and no transport at all — a plain host binary that feeds it bytes.
 
 ### 2.1 Binding the transport
 
@@ -82,10 +81,10 @@ including the half-bound states: a sender with an empty `tx_busy` is refused,
 and two empty delegates are a clean unbind. Rebinding is refused outright
 while a transfer is in flight.
 
-so `Cobs` is templated on the allocator alone. One instantiation then works
-above a UART, a TCP socket or a test double without being recompiled per
-transport, and the binding matches the house style: `Uart` already delivers
-everything through `tiny::delegate`.
+Because the transport is not a template parameter, `Cobs` is templated on the
+allocator alone, and one instantiation works above a UART, a TCP socket or a
+test double without being recompiled per transport. The binding also matches
+the house style: `Uart` already delivers everything through `tiny::delegate`.
 
 An earlier draft of this document argued for a compile-time `ByteTransport`
 concept on the grounds that `tx_busy()` is "polled every loop iteration", so
@@ -162,9 +161,9 @@ in §4 a tight bound rather than a loose capacity estimate.
 ### 4.1 `MaxDecodedSize`
 
 `MaxDecodedSize` is the protocol-level quantity that governs every buffer in
-this layer. It is the maximum size of a fully decoded frame — that is, everything that comes out of
-the decoder, **including any future integrity trailer**, not just the payload
-the application sees.
+this layer. It is the maximum size of a fully decoded frame — everything that
+comes out of the decoder, **including any future integrity trailer**, not just
+the payload the application sees.
 
 This wording is what makes deferring CRC free. When a CRC is added later, it
 occupies decoded bytes:
