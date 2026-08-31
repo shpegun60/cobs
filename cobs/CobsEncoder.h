@@ -56,6 +56,32 @@
 }
 
 /*
+ * Whether the functions above are meaningful for `n` at all.
+ *
+ * They add COBS overhead to a std::size_t, so a pathological limit wraps: at
+ * n = SIZE_MAX, cobs_max_wire_size() returns 0 and cobs_raw_offset() returns
+ * 1, which is below the minimum headroom the encoder needs. A policy built on
+ * that would ask its allocator for a block SMALLER than the payload it
+ * intends to put in it — silently, and only for a configuration nobody would
+ * write on purpose.
+ *
+ * Rather than leave a correctness hole priced at "surely nobody would", the
+ * policies static_assert this, so such a configuration does not compile.
+ *
+ * The arithmetic is deliberately different from the functions it guards: it
+ * must not itself overflow, so the overhead is computed without ever forming
+ * n + 253.
+ */
+[[nodiscard]] constexpr bool cobs_size_arithmetic_fits(const std::size_t n) noexcept
+{
+	if (n == 0u) {
+		return true;
+	}
+	const std::size_t overhead = n / 254u + ((n % 254u != 0u) ? 1u : 0u) + 1u;
+	return n <= static_cast<std::size_t>(-1) - overhead;
+}
+
+/*
  * Encodes storage[raw_offset .. raw_offset + raw_size) in place and returns
  * the finished wire frame, starting at storage[0] and including the trailing
  * delimiter.

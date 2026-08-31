@@ -42,6 +42,13 @@ public:
 	static constexpr std::size_t rx_blocks = RxBlocks;
 	static constexpr std::size_t tx_blocks = TxBlocks;
 
+	// Checked before the pool types below are even formed, since both derive
+	// their block sizes from exactly this arithmetic.
+	static_assert(cobs_size_arithmetic_fits(tx_max_size),
+		"tx_max_size is too large for the COBS size arithmetic to stay within size_t");
+	static_assert(rx_max_size <= static_cast<std::size_t>(-1) - sizeof(Packet),
+		"rx_max_size plus a packet header overflows size_t");
+
 private:
 	using RxPool = cobs_detail::StaticBlockPool<
 		sizeof(Packet) + RxMaxSize, RxBlocks, alignof(Packet)>;

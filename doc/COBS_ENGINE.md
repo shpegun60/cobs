@@ -158,34 +158,51 @@ in §4 a tight bound rather than a loose capacity estimate.
 
 ## 4. Size arithmetic
 
-### 4.1 `MaxDecodedSize`
+### 4.1 The two protocol limits
 
-`MaxDecodedSize` is the protocol-level quantity that governs every buffer in
-this layer. It is the maximum size of a fully decoded frame — everything that
-comes out of the decoder, **including any future integrity trailer**, not just
-the payload the application sees.
-
-This wording is what makes deferring CRC free. When a CRC is added later, it
-occupies decoded bytes:
+There are two, one per direction, and they are stated by the allocator policy
+(§9):
 
 ```text
-v1:      visible payload = MaxDecodedSize
-later:   visible payload = MaxDecodedSize - CRC overhead
+rx_max_size    the largest fully decoded RX frame this instance accepts
+tx_max_size    the largest payload the TX builder will carry
 ```
 
-Block sizes, headroom and the overlap proof below are all expressed in
-`MaxDecodedSize`, so adding an integrity trailer changes what the application
-sees and nothing else. Had `MaxDecodedSize` been defined as "application
-payload", every buffer in the system would have needed re-sizing the day a
-CRC arrived.
+Both are **decoded/raw sizes, including any future integrity trailer**, not
+just the payload the application sees. That wording is what makes deferring
+CRC free. When a CRC is added later it occupies decoded bytes at both ends:
 
-`MaxDecodedSize` is stated by the **allocator policy** (§9), as
-`Allocator::rx_max_size`:
+```text
+v1:      visible payload = rx_max_size          / tx_max_size
+later:   visible payload = rx_max_size - CRC    / tx_max_size - CRC
+```
+
+The RX side is sized directly from `rx_max_size`, because the decoder is
+handed its output span before a single payload byte has arrived (§9.1.1) and
+some number has to be committed to.
+
+**The TX side is not.** A TX block's geometry — its size, its headroom, the
+overlap proof of §8.4 — is expressed in the **capacity granted for that
+allocation**, `C`, where `C <= tx_max_size`:
+
+```text
+block size  = cobs_max_wire_size(C)
+headroom    = cobs_raw_offset(C)
+```
+
+`tx_max_size` is the ceiling the builder refuses to grow past, not the size of
+anything. So an integrity trailer changes what the application may write and
+nothing else, on either side.
+
+Each is republished by `Cobs` under its own name — `max_decoded_size` and
+`max_send_size` — and both peers of a link must agree on them the same way
+they agree on a baud rate.
 
 ```cpp
 template<class Allocator = CobsHeapAllocator<>>
 class Cobs final {
     static constexpr std::size_t max_decoded_size = Allocator::rx_max_size;
+    static constexpr std::size_t max_send_size    = Allocator::tx_max_size;
 };
 ```
 
@@ -201,9 +218,8 @@ side effect of it.
 The consequence is deliberate and must be understood before choosing a policy:
 **replacing the policy can change which wire frames are accepted.** That is
 the policy doing its work, not leaking an implementation detail. What would be
-wrong is a *silent* change, so `Cobs` republishes the number under its own
-name, `Cobs<A>::max_decoded_size`, and both peers of a link must agree on it
-the same way they agree on a baud rate.
+wrong is a *silent* change, which is why both numbers are republished under
+`Cobs`'s own names.
 
 The rule that survives unchanged is the one a level down, about how a pool is
 configured. A pool is parameterized by the **payload capacity it offers**,
@@ -220,10 +236,22 @@ an ABI property — 24 bytes on x86-64, 12 on Cortex-M. Parameterizing by block
 size would make the same configuration accept different wire frames on
 different platforms, which really would be the ABI deciding protocol
 semantics — a machine property leaking into the protocol, as opposed to a
-choice the author made on purpose. Configured this way, `payload_capacity` is
-exactly the number requested everywhere, and the ABI only moves the RAM cost
-(`storage_size` = 1048 bytes per block on x86-64 against 1036 on Cortex-M, for
-a 1024-byte capacity).
+choice the author made on purpose.
+
+Configured this way, both declared limits mean exactly what they say on every
+ABI, and the ABI moves only the RAM cost. The two pools are sized differently
+because they hold different things:
+
+```text
+RX block   sizeof(RxPacket) + rx_max_size      1048 bytes on x86-64,
+                                               1036 on Cortex-M, for 1024
+TX block   cobs_max_wire_size(tx_max_size)     1030 bytes anywhere, since
+                                               it contains no C++ object
+```
+
+Note that a TX block's size does NOT vary by ABI: it is bytes on a wire plus
+headroom, with no header in it. Only RX carries an object whose size the ABI
+decides.
 
 ### 4.2 Encoded size
 
@@ -641,8 +669,14 @@ target = min(max(required, grown), tx_max_size)
 `capacity >> 1` is written as a shift to make the 1.5x arithmetic obvious at a
 glance, not to dodge a division: an optimizing compiler strength-reduces
 `capacity / 2` to the very same `lsrs`, verified byte-for-byte on Cortex-M0 at
-`-Os` and `-Oz`. The `max(1, ...)` is the part that is load-bearing — `1 >> 1`
-is zero, and a growth of zero would spin forever.
+`-Os` and `-Oz`.
+
+`max(1, ...)` is NOT load-bearing for progress, and an earlier revision of this
+section wrongly said it was. `grow_target` is only reached when
+`required > capacity`, and the final `max(required, ...)` therefore guarantees
+a result above the current capacity whatever delta comes out — a delta of zero
+would still advance. The clause stays because a geometric policy that stops
+being geometric at capacity 1 is a special case waiting to surprise somebody.
 
 A large jump is honoured in ONE allocation rather than by walking the sequence:
 from a capacity of 64, a 500-byte append asks for 500, not 96 then 144 then
@@ -899,7 +933,16 @@ them, and which the shared contract test therefore checks:
 successful live allocations remain valid, distinct and exclusively the
 caller's until they are deallocated
 deallocation of nullptr is a no-op, not an abuse
+constructing the policy is noexcept
 ```
+
+The last one is easy to miss because it is not one of the four functions.
+`Cobs`'s constructors are unconditionally `noexcept` and construct the policy
+in place, so a policy constructor that throws reaches `std::terminate` rather
+than the caller. That is consistent with a layer built entirely on `noexcept`
+plus explicit failure returns — there is nowhere for an exception to go — but
+it has to be written down, because a policy author reading only the four
+function signatures would not guess it.
 
 Nothing else is in the contract — no payload span, no block count, no
 alignment, and above all **no physical block size**. Every one of those is a

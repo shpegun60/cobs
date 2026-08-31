@@ -31,6 +31,14 @@ public:
 
 	using Packet = RxPacket<CobsHeapAllocator>;
 
+	// A policy defends its own geometry at compile time (§9.1.2), and that
+	// includes the arithmetic it is built on. Both of these are unreachable
+	// for any sane limit and both are silent corruption if they ever hold.
+	static_assert(cobs_size_arithmetic_fits(tx_max_size),
+		"tx_max_size is too large for the COBS size arithmetic to stay within size_t");
+	static_assert(rx_max_size <= static_cast<std::size_t>(-1) - sizeof(Packet),
+		"rx_max_size plus a packet header overflows size_t");
+
 	CobsHeapAllocator() noexcept = default;
 	CobsHeapAllocator(const CobsHeapAllocator&) = delete;
 	CobsHeapAllocator& operator=(const CobsHeapAllocator&) = delete;

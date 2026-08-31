@@ -358,12 +358,23 @@ void testDefaultCapacityHint()
 		check(ok && msg.capacity() == 32,
 		      "and 32 bytes go in without a single reallocation");
 
-		// The explicit minimum is still reachable, for a caller that wants the
-		// canonical empty frame and nothing more.
+		// make_msg(0) is a zero capacity REQUEST, not an empty-only message.
+		// Pushed straight away it is the canonical empty frame; written into,
+		// it grows like anything else.
 		auto minimal = cobs.make_msg(0);
 		check(static_cast<bool>(minimal) && minimal.capacity() == 0,
-		      "make_msg(0) is still explicitly minimal");
-		check(!minimal.encode().empty(), "and encodes the canonical empty frame");
+		      "make_msg(0) reserves nothing");
+		{
+			auto empty_frame = cobs.make_msg(0);
+			check(!empty_frame.encode().empty(),
+			      "and pushed straight away it is the canonical empty frame");
+		}
+		check(minimal.write(uint8_t{0x42}), "but it still accepts a write");
+		check(minimal.size() == 1 && minimal.capacity() >= 1,
+		      "growing from zero capacity like any other message");
+		const std::vector<uint8_t> more(40, 0x5A);
+		check(minimal.write_bytes(std::span<const uint8_t>{more}), "and keeps growing");
+		check(minimal.size() == 41, "to whatever it is given");
 	}
 	{	// A policy whose limit is BELOW the default must still work: the
 		// default is clamped, so make_msg() can never fail on its own default.

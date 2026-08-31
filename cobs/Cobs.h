@@ -72,8 +72,9 @@ public:
 	 * a trap with good documentation.
 	 *
 	 * It costs nothing on a single-slab policy, which reports tx_max_size
-	 * whatever it was asked for. A caller who wants the canonical minimum
-	 * says so: make_msg(0).
+	 * whatever it was asked for. A caller who wants no reserve at all says
+	 * make_msg(0) — a zero capacity REQUEST, not an empty-only message: it
+	 * can be written into and grown like any other.
 	 *
 	 * Clamped, because a policy may declare a limit below this default, and
 	 * make_msg() must never fail merely because of its own default.
@@ -191,7 +192,9 @@ public:
 	 * does not have to.
 	 *
 	 *     make_msg()     default_capacity_hint, a practical reserve
-	 *     make_msg(0)    explicitly minimal — the canonical empty frame
+	 *     make_msg(0)    a zero capacity REQUEST; pushed straight away it
+	 *                    sends the canonical empty frame, but it may still
+	 *                    be written into and grown like any other message
 	 *     make_msg(N)    the caller knows a useful number
 	 *
 	 * An EMPTY result is the back-pressure signal that the configured TX

@@ -275,6 +275,67 @@ void testFixedGeometryIsAbiIndependent()
 	a.deallocate_rx(p);
 }
 
+
+/*
+ * The size arithmetic is unsigned, so a pathological limit wraps: at
+ * n = SIZE_MAX, cobs_max_wire_size() returns 0 and cobs_raw_offset() returns
+ * 1 — a block smaller than the payload meant to go in it, and a headroom
+ * below the encoder's minimum. Nobody writes tx_max_size = SIZE_MAX on
+ * purpose, but "surely nobody would" is not a correctness argument, so the
+ * policies static_assert the guard and such a configuration does not compile.
+ */
+void testSizeArithmeticGuard()
+{
+	g_policy = "arithmetic";
+	constexpr std::size_t kMax = static_cast<std::size_t>(-1);
+
+	static_assert(cobs_size_arithmetic_fits(0));
+	static_assert(cobs_size_arithmetic_fits(1));
+	static_assert(cobs_size_arithmetic_fits(1024));
+	static_assert(cobs_size_arithmetic_fits(1u << 20));
+	check(true, "every plausible limit passes the guard");
+
+	static_assert(!cobs_size_arithmetic_fits(kMax));
+	static_assert(!cobs_size_arithmetic_fits(kMax - 1u));
+	static_assert(!cobs_size_arithmetic_fits(kMax / 255u * 254u));
+	// Note that kMax / 2 does NOT wrap and is correctly accepted: half of
+	// size_t plus its own 1/254 still fits. The guard rejects what actually
+	// overflows, not everything that merely looks alarming.
+	static_assert(cobs_size_arithmetic_fits(kMax / 2u));
+	check(true, "the values whose arithmetic wraps are rejected, and only those");
+
+	// The guard must be exactly at the boundary, not conservatively early, so
+	// the boundary is searched for rather than guessed: the largest accepted
+	// value has to survive the real functions, and the next one must not be
+	// accepted at all.
+	constexpr std::size_t kLargest = []() constexpr {
+		std::size_t lo = 0u;
+		std::size_t hi = kMax;
+		while (lo < hi) {
+			// Rounds up WITHOUT forming hi - lo + 1, which wraps to zero on
+			// the very first step of a search over the whole of size_t and
+			// leaves the loop spinning on mid == lo forever.
+			const std::size_t mid = hi - (hi - lo) / 2u;
+			if (cobs_size_arithmetic_fits(mid)) { lo = mid; } else { hi = mid - 1u; }
+		}
+		return lo;
+	}();
+	static_assert(cobs_size_arithmetic_fits(kLargest));
+	static_assert(!cobs_size_arithmetic_fits(kLargest + 1u),
+	              "the guard is tight, not conservative");
+	static_assert(cobs_max_wire_size(kLargest) > kLargest,
+	              "an accepted limit still yields a block larger than its payload");
+	static_assert(cobs_raw_offset(kLargest) >= 2u,
+	              "and headroom at least the encoder's minimum");
+	check(true, "the boundary is exact, and its geometry is still sane");
+
+	// And the policies really do carry the assertion.
+	static_assert(cobs_size_arithmetic_fits(CobsHeapAllocator<64, 1024>::tx_max_size));
+	static_assert(cobs_size_arithmetic_fits(
+		CobsFixedAllocator<64, 2, 1024, 2>::tx_max_size));
+	check(true, "both shipped policies assert it on their own limits");
+}
+
 } // namespace
 
 int main()
@@ -290,6 +351,9 @@ int main()
 	group("ReportedCapacity");
 	testHeapGrantsExactlyWhatWasAsked();
 	testFixedReportsTheWholeSlab();
+
+	group("SizeArithmetic");
+	testSizeArithmeticGuard();
 
 	std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;
