@@ -57,7 +57,7 @@ The COBS layer owns no HAL, so its suites are ordinary host programs — no fake
 PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH" sh cobs/tests/run.sh
 ```
 
-It builds and runs two independent binaries, so a failure names the layer without needing a stack trace:
+It builds and runs five independent binaries, so a failure names the layer without needing a stack trace:
 
 - `test_decoder` — framing only; mostly property tests (every length × pattern × span-boundary combination, ~20k checks).
 - `test_packet_lifetime` — `FixedPoolAllocator` + `RxPacket`: block geometry across capacities, exhaustion, reuse, double free, foreign pointer.
@@ -80,7 +80,7 @@ The script builds with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` and adds
 
 Section 33 of the doc ("Key invariants") lists the invariants any implementation must preserve.
 
-**`doc/COBS_ENGINE.md` supersedes it for the COBS layer.** The architecture document is a design sketch and its UART sections are now partly historical (the implemented driver is a template with an internal chunk pool, not the external-storage engine it describes); `COBS_ENGINE.md` is the reviewed contract the COBS implementation must satisfy — decision table, decoder state machine, size arithmetic, the in-place TX overlap invariant with its proof, and the test plan. Where the two disagree, `COBS_ENGINE.md` wins. Notably it replaces the virtual `IByteTx` with a compile-time `ByteTransport` concept and splits a non-template `CobsDecoder` out of the templated `Cobs`.
+**`doc/COBS_ENGINE.md` supersedes it for the COBS layer.** The architecture document is a design sketch and its UART sections are now partly historical (the implemented driver is a template with an internal chunk pool, not the external-storage engine it describes); `COBS_ENGINE.md` is the reviewed contract the COBS implementation must satisfy — decision table, decoder state machine, size arithmetic, the in-place TX overlap invariant with its proof, and the test plan. Where the two disagree, `COBS_ENGINE.md` wins. Notably it splits a non-template `CobsDecoder` out of `Cobs<MaxDecodedSize, Allocator>`, binds the transport with delegates rather than a template parameter, and defines memory as a single allocator policy (§9).
 
 ## Reference material
 

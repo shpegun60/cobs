@@ -49,11 +49,12 @@
 // default may not precede one without, and MaxDecodedSize has no sensible
 // default while the allocator does.
 //
-// The default is a fixed pool sized exactly to the protocol limit — not a
-// heap allocator, whatever the original architecture sketch said. This stack
-// exists to run on parts where malloc is not welcome, so the out-of-the-box
-// choice must be the one that is always safe there; a heap-backed allocator
-// remains perfectly possible as an explicit argument.
+// PLACEHOLDER default. The settled contract (COBS_ENGINE.md §9.2) is that the
+// default policy is CobsHeapAllocator; a fixed pool stands in only until that
+// policy exists, and it is what the assembled Cobs will replace. Do not read
+// this as an argument against the heap default — a pool default would plant
+// static RAM in every translation unit that merely names the type, and would
+// force the library to invent a block count for the user.
 //
 //     FixedPoolAllocator<256, 4> pool;
 //     CobsRx<256> rx(pool);

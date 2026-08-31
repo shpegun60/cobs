@@ -20,7 +20,7 @@ only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 
 | Question | Decision |
 | --- | --- |
-| Transport binding | compile-time, constrained by a `ByteTransport` concept |
+| Transport binding | delegates (`set_sender` / `set_tx_busy`), so `Cobs` is templated on the allocator alone |
 | Decoder | standalone **non-template** class, no allocator, no transport |
 | RX decode | incremental, directly into the packet — no encoded staging buffer |
 | Transport gap | `DropUntilDelimiter`, absorbed entirely by COBS |
@@ -31,7 +31,7 @@ only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 | Ready queue | intrusive, threaded through the packets themselves |
 | RX lifetime | intrusive refcount, `PacketRef`, payload immutable after publication |
 | Refcount | plain (single execution domain); no atomic policy in v1 |
-| Allocator | a compile-time **policy** (§9): one type, one template parameter, any backing memory. **Must satisfy** the protocol limit, never define it. Defaults to a fixed pool — never a heap allocator |
+| Allocator | a compile-time **policy** (§9): one type, one template parameter, any backing memory. **Must satisfy** the protocol limit, never define it. Defaults to `CobsHeapAllocator`; embedded targets opt into a fixed pool |
 | `MaxDecodedSize` | COBS/protocol configuration, includes any future integrity trailer |
 | TX ownership | move-only `CobsMsg`, exclusive until the transport accepts it |
 | Transport busy before encoding | message stays `Building` |
@@ -50,42 +50,60 @@ CobsDecoder            pure framing state machine
                        no allocator, no transport, no ownership
                        writes into a caller-supplied span
 
-Cobs<Transport, Alloc> ownership, allocation, ready queue, TX state
-                       thin glue over CobsDecoder
+Cobs<Allocator>        ownership, allocation, ready queue, TX state
+                       thin glue over CobsDecoder; transport by delegate
 ```
 
-The split is not cosmetic. `Cobs` is templated on the transport and the
-allocator, so an application with a `Uart<128, 8>` and a `Uart<256, 4>`
-instantiates it twice. The decoder is where the subtle logic lives, and
-duplicating it per instantiation would mean duplicating the code that most
-needs to be reviewed and fuzzed exactly once. Keeping it non-template also
+The split is not cosmetic. `Cobs` is templated on the allocator, so an
+application using two different allocators instantiates it twice. The decoder
+is where the subtle logic lives, and duplicating it per instantiation would
+mean duplicating the code that most needs to be reviewed and fuzzed exactly
+once. Keeping it non-template also
 means it can be tested with no HAL, no pool and no transport at all — a plain
 host binary that feeds it bytes.
 
-### 2.1 The transport concept
+### 2.1 Binding the transport
+
+The transport is attached with delegates, not as a template parameter:
 
 ```cpp
-template<class T>
-concept ByteTransport =
-    requires(T& transport,
-             const T& const_transport,
-             std::span<const uint8_t> bytes)
-{
-    { const_transport.tx_busy() } noexcept -> std::same_as<bool>;
-    { transport.send(bytes) }     noexcept -> std::same_as<bool>;
-};
+cobs.set_sender(tiny::delegate<bool(std::span<const uint8_t>)>{...});   // send()
+cobs.set_tx_busy(tiny::delegate<bool()>{...});                          // tx_busy()
 ```
 
-`tx_busy()` is required on a `const` reference deliberately: it is a query,
-it is polled from `proceed()` on every loop iteration, and a transport that
-needs to mutate itself to answer it is not the transport this design assumes.
+so `Cobs` is templated on the allocator alone. One instantiation then works
+above a UART, a TCP socket or a test double without being recompiled per
+transport, and the binding matches the house style: `Uart` already delivers
+everything through `tiny::delegate`.
 
-Compile-time binding rather than a virtual interface is chosen for
-`tx_busy()`, not for `send()`. On the measured H7S build `send()` costs 362
-cycles, so a virtual call would disappear into the noise there. `tx_busy()`
-is a single `volatile bool` read on the polling path; behind a vtable the
-call would cost more than the operation it performs, and the compiler would
-lose the ability to keep the idle path collapsed.
+An earlier draft of this document argued for a compile-time `ByteTransport`
+concept on the grounds that `tx_busy()` is "polled every loop iteration", so
+an indirect call would cost more than the single `volatile bool` read it
+guards. **That estimate was overstated**, and the correction is worth
+recording because it is the kind of argument that sounds convincing while
+being wrong by an order of magnitude.
+
+`tx_busy()` is not polled every iteration. It is polled only while a transfer
+is in flight:
+
+```cpp
+if (m_activeTx != nullptr && !tx_busy()) { release(m_activeTx); }
+```
+
+An idle link short-circuits on the null pointer and never calls it at all. On
+the measured H7S build a 256-byte frame at 10 Mbaud occupies the line for
+about 256 µs, so a 1 kHz main loop asks the question a handful of times per
+frame — against a delegate call of two or three instructions. The transport
+being a template parameter would buy nothing measurable and cost an
+instantiation of the whole COBS layer per transport type.
+
+`send()` was never the issue: it costs a measured 362 cycles, in which an
+indirect call disappears entirely.
+
+Whatever supplies those delegates must still honour the transport contract:
+`tx_busy()` is a query with no side effects, and `tx_busy() == false` means
+only that the transport has stopped borrowing the buffer — never that a frame
+was delivered (§8.2).
 
 ---
 
@@ -232,22 +250,15 @@ Worked values, all verified against the canonical encoder:
 
 ### 4.3 Template parameter order
 
-`CobsRx<MaxDecodedSize, Allocator>`, in that order. It reads in protocol order
+`Cobs<MaxDecodedSize, Allocator>`, in that order. It reads in protocol order
 and matches the rest of the codebase (`Uart<ChunkSize, ChunkCount>`,
 `FixedPoolAllocator<PayloadCapacity, BlockCount>` — the shape before the
 mechanism), but the binding reason is that it is the only order that can carry
 a default: a template parameter with a default may not precede one without,
 and `MaxDecodedSize` has no sensible default while the allocator does.
 
-That default is a **fixed pool sized exactly to `MaxDecodedSize`**, not the
-heap allocator the original architecture sketch proposed. This stack exists to
-run where `malloc` is unwelcome, so the out-of-the-box choice must be the one
-that is always safe there; a heap-backed allocator remains available as an
-explicit argument. `CobsRx<N>::AllocatorType` names it, so taking the default
-still lets the user construct the pool they own.
-
-The decoder itself knows neither constant. It is handed a
-`std::span<uint8_t>` and the span's own extent is the limit it respects.
+The default is `CobsHeapAllocator` (§9.2), so the common spelling stays one
+argument, `Cobs<1024>`, and the embedded fixed pool is a deliberate opt-in.
 
 ---
 
@@ -693,9 +704,19 @@ Cobs<1024> cobs{allocator};                       // default policy
 Cobs<1024, SdramCobsAllocator> cobs{allocator};   // somebody else's memory
 ```
 
-The default policy is a **fixed pool**, not a heap one (§4.3): this stack
-exists to run where `malloc` is unwelcome, so the out-of-the-box choice must be
-safe there. `CobsHeapAllocator` is a perfectly good explicit argument.
+The default policy is **`CobsHeapAllocator`**, as
+`UART_COBS_ARCHITECTURE.md` §1 has said from the start. A pool default would
+look more embedded-minded and be worse in practice: it would plant static RAM
+in every translation unit that merely names `Cobs<N>`, and it would force the
+library to invent a block count on the user's behalf. A target where `malloc`
+is unwelcome is exactly a target whose author chooses the allocator
+deliberately:
+
+```cpp
+using Allocator = CobsFixedAllocator</* RX */ 1024, 8, /* TX */ 1024, 2>;
+Allocator allocator;
+Cobs<1024, Allocator> cobs{allocator};
+```
 
 `Cobs` also clamps what it hands the decoder to `MaxDecodedSize` even when the
 policy returns a larger payload span, so a generous allocator cannot widen the
