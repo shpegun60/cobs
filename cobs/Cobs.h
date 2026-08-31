@@ -72,10 +72,11 @@ public:
 
 	Cobs() noexcept = default;
 
-	// For a policy that needs runtime arguments — an external memory region,
-	// a handle to somebody else's arena. A policy that is itself a light
-	// copyable handle can simply be passed; not every policy has to be
-	// copyable or movable (§9.4).
+	// For a policy that needs runtime arguments — an external memory region, a
+	// handle to somebody else's arena. The policy is constructed in place from
+	// them, so it need not be copyable or movable (§9.4). There is
+	// deliberately no constructor taking a ready-made policy: it would only
+	// serve copyable ones, and one way in is enough.
 	template<class... Args>
 	explicit Cobs(std::in_place_t, Args&&... args) noexcept
 		: m_allocator(std::forward<Args>(args)...) {}
@@ -99,24 +100,37 @@ public:
 
 	/* ------------------------------- setup ------------------------------- */
 
-	// Refused while a transfer is in flight, and that is not fussiness: the
-	// old transport is still reading the active block, and a new tx_busy()
-	// answering "not busy" would have proceed() free it out from under the
-	// DMA that is reading it.
-	[[nodiscard]] bool set_sender(Sender sender) noexcept
+	/*
+	 * Both delegates, together, or neither. Two independent setters made a
+	 * genuine DMA mine reachable while the link was IDLE, so the previous
+	 * "no rebinding during a transfer" guard was necessary but not enough:
+	 *
+	 *     set_sender(uartB);            // and the tx_busy setter is skipped,
+	 *                                   // fails, or simply comes later
+	 *     -> sender = B, tx_busy = A
+	 *     push()    starts DMA on B
+	 *     proceed() asks A, which is idle
+	 *     -> the block is freed while B is still reading it
+	 *
+	 * A pairing this important is not something to document and hope for.
+	 * Taking both at once makes the mixed states unrepresentable, and the
+	 * half-bound ones too: a set sender with an empty tx_busy is refused.
+	 *
+	 * Two empty delegates are a clean unbind. Refused outright while a
+	 * transfer is in flight — the old transport is still reading the active
+	 * block, and a new tx_busy() answering "idle" would have proceed() free it
+	 * out from under the DMA.
+	 */
+	[[nodiscard]] bool set_transport(Sender sender, TxBusy tx_busy) noexcept
 	{
 		if (m_activeTx != nullptr) {
 			return false;
+		}
+		if (static_cast<bool>(sender) != static_cast<bool>(tx_busy)) {
+			return false; // half a transport is worse than none
 		}
 		m_sender = static_cast<Sender&&>(sender);
-		return true;
-	}
-	[[nodiscard]] bool set_tx_busy(TxBusy busy) noexcept
-	{
-		if (m_activeTx != nullptr) {
-			return false;
-		}
-		m_txBusy = static_cast<TxBusy&&>(busy);
+		m_txBusy = static_cast<TxBusy&&>(tx_busy);
 		return true;
 	}
 
@@ -194,7 +208,10 @@ public:
 
 	[[nodiscard]] const RxStats& rx_stats() const noexcept { return m_rx.stats(); }
 	[[nodiscard]] const TxStats& tx_stats() const noexcept { return m_txStats; }
-	[[nodiscard]] Allocator& allocator() noexcept { return m_allocator; }
+	// Const on purpose: statistics and geometry are worth reading, but a
+	// mutable reference would let a caller allocate behind the engine's back
+	// and hand out blocks it never learns about.
+	[[nodiscard]] const Allocator& allocator() const noexcept { return m_allocator; }
 
 private:
 	[[no_unique_address]] Allocator m_allocator{};

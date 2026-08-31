@@ -64,13 +64,21 @@ std::vector<uint8_t> pattern(const uint8_t tag, const std::size_t n)
 }
 
 template<class C>
+typename C::Sender sender_for(FakeTransport& t)
+{
+	return typename C::Sender{
+		[&t](std::span<const uint8_t> f) noexcept { return t.send(f); }};
+}
+template<class C>
+typename C::TxBusy busy_for(FakeTransport& t)
+{
+	return typename C::TxBusy{[&t]() noexcept { return t.tx_busy(); }};
+}
+
+template<class C>
 void bind(C& cobs, FakeTransport& t)
 {
-	const bool a = cobs.set_sender(
-		typename C::Sender{[&t](std::span<const uint8_t> f) noexcept { return t.send(f); }});
-	const bool b = cobs.set_tx_busy(
-		typename C::TxBusy{[&t]() noexcept { return t.tx_busy(); }});
-	check(a && b, "the transport binds");
+	check(cobs.set_transport(sender_for<C>(t), busy_for<C>(t)), "the transport binds");
 }
 
 /* ==================== the engine, for either policy ===================== */
@@ -212,30 +220,40 @@ void runEngine(const char* name)
 		      "so is a message belonging to another engine of the same type");
 	}
 
-	/* --- rebinding is refused while a transfer is in flight ------------- */
+	/* --- binding is atomic, and refused mid-transfer -------------------- */
 	{
 		Engine cobs;
 		FakeTransport t;
 		FakeTransport other;
-		bind(cobs, t);
 
+		// Half a transport is refused: this is the state that made a mixed
+		// pair (sender on one link, tx_busy on another) reachable at all.
+		check(!cobs.set_transport(sender_for<Engine>(t), typename Engine::TxBusy{}),
+		      "a sender with no tx_busy is refused");
+		check(!cobs.set_transport(typename Engine::Sender{}, busy_for<Engine>(t)),
+		      "and a tx_busy with no sender likewise");
+		{
+			auto msg = cobs.get_msg();
+			(void)msg.reserve(1);
+			check(cobs.push(msg) == SendResult::NotBound,
+			      "so neither half leaked into the engine");
+		}
+
+		bind(cobs, t);
 		auto msg = cobs.get_msg();
 		(void)msg.reserve(3);
 		check(cobs.push(msg) == SendResult::Sent, "a frame is in flight");
 
-		check(!cobs.set_sender(typename Engine::Sender{
-			      [&other](std::span<const uint8_t> f) noexcept { return other.send(f); }}),
-		      "the sender cannot be swapped under a live transfer");
-		check(!cobs.set_tx_busy(typename Engine::TxBusy{
-			      [&other]() noexcept { return other.tx_busy(); }}),
-		      "nor can tx_busy — a new one saying 'idle' would free the block "
-		      "under the DMA still reading it");
+		check(!cobs.set_transport(sender_for<Engine>(other), busy_for<Engine>(other)),
+		      "the transport cannot be swapped under a live transfer — a new "
+		      "tx_busy saying 'idle' would free the block under the DMA");
 
 		t.finish();
 		cobs.proceed();
-		check(cobs.set_tx_busy(typename Engine::TxBusy{
-			      [&other]() noexcept { return other.tx_busy(); }}),
-		      "and both may be rebound once the link is idle again");
+		check(cobs.set_transport(sender_for<Engine>(other), busy_for<Engine>(other)),
+		      "and may be rebound once the link is idle");
+		check(cobs.set_transport(typename Engine::Sender{}, typename Engine::TxBusy{}),
+		      "two empty delegates are a clean unbind");
 	}
 
 	/* --- full duplex over one engine ------------------------------------ */

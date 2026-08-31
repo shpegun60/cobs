@@ -20,7 +20,7 @@ only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 
 | Question | Decision |
 | --- | --- |
-| Transport binding | delegates (`set_sender` / `set_tx_busy`), so `Cobs` is templated on the allocator alone |
+| Transport binding | delegates, bound as a PAIR by `set_transport`, so `Cobs` is templated on the allocator alone |
 | Decoder | standalone **non-template** class, no allocator, no transport |
 | RX decode | incremental, directly into the packet — no encoded staging buffer |
 | Transport gap | `DropUntilDelimiter`, absorbed entirely by COBS |
@@ -64,12 +64,23 @@ host binary that feeds it bytes.
 
 ### 2.1 Binding the transport
 
-The transport is attached with delegates, not as a template parameter:
+The transport is attached with delegates, not as a template parameter — both
+at once, never separately:
 
 ```cpp
-cobs.set_sender(tiny::delegate<bool(std::span<const uint8_t>)>{...});   // send()
-cobs.set_tx_busy(tiny::delegate<bool()>{...});                          // tx_busy()
+cobs.set_transport(
+    tiny::delegate<bool(std::span<const uint8_t>)>{...},   // send()
+    tiny::delegate<bool()>{...});                          // tx_busy()
 ```
+
+Two independent setters would make an inconsistent pair reachable while the
+link is idle — a sender bound to one transport and a `tx_busy` still answering
+for another. A `push()` would then start a transfer on one link while
+`proceed()` asked the other, which reports idle, and the block would be freed
+while it is still being read. Taking both together makes that unrepresentable,
+including the half-bound states: a sender with an empty `tx_busy` is refused,
+and two empty delegates are a clean unbind. Rebinding is refused outright
+while a transfer is in flight.
 
 so `Cobs` is templated on the allocator alone. One instantiation then works
 above a UART, a TCP socket or a test double without being recompiled per
