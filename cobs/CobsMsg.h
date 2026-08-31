@@ -95,16 +95,31 @@ class Cobs;
  * Pointers and member pointers fall out automatically: neither is arithmetic
  * nor an enumeration.
  *
+ * `volatile` is excluded EXPLICITLY, and the reason is worth recording because
+ * the constraint alone would not have caught it. Without this clause
+ * `write(some_volatile_reg)` satisfies the concept and then fails to compile
+ * inside the body, where `const volatile void*` will not convert to
+ * `const void*`. A `requires` expression checks that a call is viable, not
+ * that its body instantiates, so a constraint test written the obvious way
+ * reports such a type as accepted right up until somebody writes one.
+ *
+ * The exclusion is also better embedded practice: reading an MMIO register
+ * should be a visible act, not a side effect of serialization.
+ *
+ *     const uint32_t snapshot = reg;   // the volatile read, in the open
+ *     msg.write(snapshot);
+ *
  * If raw object representation is ever genuinely needed, it belongs behind a
  * deliberately alarming name — write_object_representation() — and not behind
  * the method everybody reaches for first.
  */
 template<class T>
 concept CobsScalar =
-	(std::is_arithmetic_v<std::remove_cv_t<T>> &&
-	 !std::is_same_v<std::remove_cv_t<T>, bool>) ||
-	std::is_enum_v<std::remove_cv_t<T>> ||
-	std::is_same_v<std::remove_cv_t<T>, std::byte>;
+	!std::is_volatile_v<T> &&
+	((std::is_arithmetic_v<std::remove_cv_t<T>> &&
+	  !std::is_same_v<std::remove_cv_t<T>, bool>) ||
+	 std::is_enum_v<std::remove_cv_t<T>> ||
+	 std::is_same_v<std::remove_cv_t<T>, std::byte>);
 
 // One template parameter, like everything else in this layer: the policy
 // states tx_max_size, so the geometry follows from it (COBS_ENGINE.md §9.2).
@@ -199,6 +214,8 @@ public:
 	 *
 	 * Returns false, with the message completely unchanged, if the value does
 	 * not fit the policy's limit or the growth it needs cannot be allocated.
+	 * The message remains usable — but it is now INCOMPLETE, so the result has
+	 * to be acted on before push(), or a truncated frame goes out.
 	 */
 	template<CobsScalar T>
 	[[nodiscard]] bool write(const T& value) noexcept
@@ -331,10 +348,11 @@ private:
 	 *
 	 *      0 -> 1 -> 2 -> 3 -> 4 -> 6 -> 9 -> 13 -> 19 -> ...
 	 *
-	 * A shift and an add, deliberately: 1.5x needs no division, which on a
-	 * Cortex-M0 would be a call to __aeabi_uidiv for the privilege of saving a
-	 * few bytes. The `max(1, ...)` keeps small capacities moving, since 1 >> 1
-	 * is 0 and a growth of zero would loop forever.
+	 * The shift is written explicitly to make the 1.5x arithmetic obvious at a
+	 * glance; an optimizing compiler strength-reduces `capacity / 2` to the
+	 * same `lsrs` anyway, on every target this library cares about. The
+	 * `max(1, ...)` is the part that matters: 1 >> 1 is 0, and a growth of
+	 * zero would loop forever.
 	 *
 	 * A large jump is honoured in ONE allocation rather than by walking the
 	 * sequence: from 64, a request for 500 asks for 500, not 96 then 144 then
@@ -352,7 +370,9 @@ private:
 	}
 
 	// Bounds and growth, shared by every write. Leaves the message untouched
-	// on any failure, which is what makes a false return safe to ignore.
+	// on any failure — which makes a false return safe to RECOVER from, not
+	// safe to ignore: the message is intact, but it is also incomplete, and
+	// pushing it anyway puts a truncated frame on the wire.
 	[[nodiscard]] bool make_room(const std::size_t n) noexcept
 	{
 		if (m_state != State::Building) {

@@ -78,7 +78,7 @@ public:
 	 * Clamped, because a policy may declare a limit below this default, and
 	 * make_msg() must never fail merely because of its own default.
 	 */
-	static constexpr std::size_t default_initial_capacity =
+	static constexpr std::size_t default_capacity_hint =
 		(max_send_size < 32u) ? max_send_size : 32u;
 
 	using Sender = tiny::delegate<bool(std::span<const uint8_t>)>;
@@ -171,10 +171,18 @@ public:
 	 * "get".
 	 *
 	 *     auto msg = cobs.make_msg();
-	 *     if (!msg) { ... TX storage exhausted ... }
-	 *     (void)msg.write<uint16_t>(id);
-	 *     (void)msg.write_bytes(body);
-	 *     (void)cobs.push(msg);
+	 *     if (!msg ||
+	 *         !msg.write<uint16_t>(id) ||
+	 *         !msg.write_bytes(body)) {
+	 *         return;               // exhausted, or the payload will not fit
+	 *     }
+	 *     const SendResult result = cobs.push(msg);
+	 *
+	 * Every write result has to be acted on. A failed write leaves the message
+	 * intact and still usable, but also INCOMPLETE — pushing it anyway sends a
+	 * truncated frame, which is memory-safe and protocol-nonsense. That is why
+	 * they are [[nodiscard]], and why this example does not quietly cast the
+	 * results away.
 	 *
 	 * The argument is a capacity hint, NOT an initial size: size() starts at
 	 * zero either way, and the hint only spares growths for a caller who knows
@@ -182,7 +190,7 @@ public:
 	 * message is written (§8.3.1), so a caller who cannot predict the length
 	 * does not have to.
 	 *
-	 *     make_msg()     default_initial_capacity, a practical reserve
+	 *     make_msg()     default_capacity_hint, a practical reserve
 	 *     make_msg(0)    explicitly minimal — the canonical empty frame
 	 *     make_msg(N)    the caller knows a useful number
 	 *
@@ -190,14 +198,14 @@ public:
 	 * storage is exhausted, and callers must handle it; CobsMsg is already a
 	 * nullable owner, so there is nothing for an optional to add.
 	 */
-	[[nodiscard]] Msg make_msg() noexcept { return make_msg(default_initial_capacity); }
+	[[nodiscard]] Msg make_msg() noexcept { return make_msg(default_capacity_hint); }
 
-	[[nodiscard]] Msg make_msg(const std::size_t initial_capacity) noexcept
+	[[nodiscard]] Msg make_msg(const std::size_t capacity_hint) noexcept
 	{
-		if (initial_capacity > max_send_size) {
+		if (capacity_hint > max_send_size) {
 			return {};
 		}
-		return Msg{m_allocator, initial_capacity};
+		return Msg{m_allocator, capacity_hint};
 	}
 
 	/*

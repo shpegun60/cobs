@@ -123,7 +123,7 @@ void runEngine(const char* name)
 		auto msg = cobs.make_msg();
 		check(static_cast<bool>(msg), "make_msg yields an empty message");
 		check(msg.size() == 0, "with nothing in it yet");
-		check(msg.capacity() >= Engine::default_initial_capacity,
+		check(msg.capacity() >= Engine::default_capacity_hint,
 		      "but with the default reserve already in hand");
 		const auto payload = pattern(0x20, 6);
 		check(msg.write_bytes(std::span<const uint8_t>{payload}), "the payload is written");
@@ -344,12 +344,12 @@ void testDefaultInitialCapacity()
 		// visible directly: a short frame never reallocates.
 		g_policy = "heap";
 		using Engine = Cobs<CobsHeapAllocator<64, 1024>>;
-		static_assert(Engine::default_initial_capacity == 32);
+		static_assert(Engine::default_capacity_hint == 32);
 		Engine cobs;
 
 		auto msg = cobs.make_msg();
 		check(msg.size() == 0 && msg.capacity() == 32,
-		      "make_msg() reserves default_initial_capacity");
+		      "make_msg() reserves default_capacity_hint");
 
 		bool ok = true;
 		for (int i = 0; i < 32; ++i) { ok = ok && msg.write(static_cast<uint8_t>(i)); }
@@ -367,7 +367,7 @@ void testDefaultInitialCapacity()
 		// default is clamped, so make_msg() can never fail on its own default.
 		g_policy = "fixed";
 		using Engine = Cobs<CobsFixedAllocator<32, 2, 16, 1>>;
-		static_assert(Engine::default_initial_capacity == 16,
+		static_assert(Engine::default_capacity_hint == 16,
 		              "the default must clamp to a smaller tx_max_size");
 		Engine cobs;
 		auto msg = cobs.make_msg();

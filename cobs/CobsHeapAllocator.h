@@ -61,9 +61,11 @@ public:
 
 	/*
 	 * Exactly the capacity asked for, and a block sized for exactly that.
-	 * This is where the sized TX contract pays: a seven-byte message costs
-	 * nine bytes here, not cobs_max_wire_size of the largest frame the policy
-	 * allows — for tx_max_size = 1024 that is 9 against 1030.
+	 * This is where the sized TX contract pays: a seven-byte CAPACITY REQUEST
+	 * costs nine bytes here, not cobs_max_wire_size of the largest frame the
+	 * policy allows — for tx_max_size = 1024 that is 9 against 1030. The
+	 * request, not the message: a seven-byte payload built through make_msg()
+	 * lives in whatever reserve its capacity hint asked for.
 	 *
 	 * No rounding up, no size classes, no growth rule. Deciding how much to
 	 * ask for is the CONTAINER's job (§9.1.0): CobsMsg knows its current

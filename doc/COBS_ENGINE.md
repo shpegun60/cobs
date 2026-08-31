@@ -598,12 +598,12 @@ through `write<T>()`, `write_bytes()` and `write_array()`, each of which grows
 the block when it has to.
 
 ```text
-make_msg()     Cobs::default_initial_capacity — a practical reserve
+make_msg()     Cobs::default_capacity_hint — a practical reserve
 make_msg(0)    explicitly minimal: the canonical empty frame and no more
 make_msg(N)    the caller knows a useful number
 ```
 
-`default_initial_capacity` is **32**, and not zero, for a measured reason. A
+`default_capacity_hint` is **32**, and not zero, for a measured reason. A
 message built field by field from a capacity of zero walks the whole ladder
 below; on the heap policy that is 14 allocations and 453 requested bytes for a
 100-byte payload. From 32 the same payload costs four allocations, and a
@@ -627,10 +627,11 @@ target = min(max(required, grown), tx_max_size)
 0 -> 1 -> 2 -> 3 -> 4 -> 6 -> 9 -> 13 -> 19 -> ...
 ```
 
-`capacity >> 1` is deliberate: half a capacity is a shift, where 1.5x through a
-division would be a call to `__aeabi_uidiv` on a Cortex-M0 for the privilege of
-saving a few bytes. The `max(1, ...)` keeps small capacities moving, since
-`1 >> 1` is zero and a growth of zero would spin forever.
+`capacity >> 1` is written as a shift to make the 1.5x arithmetic obvious at a
+glance, not to dodge a division: an optimizing compiler strength-reduces
+`capacity / 2` to the very same `lsrs`, verified byte-for-byte on Cortex-M0 at
+`-Os` and `-Oz`. The `max(1, ...)` is the part that is load-bearing — `1 >> 1`
+is zero, and a growth of zero would spin forever.
 
 A large jump is honoured in ONE allocation rather than by walking the sequence:
 from a capacity of 64, a 500-byte append asks for 500, not 96 then 144 then
@@ -921,9 +922,12 @@ RX   only the first COBS code byte has arrived
 ```
 
 So `allocate_tx` takes a size and `allocate_rx` does not. On the heap policy a
-seven-byte message costs **nine** bytes rather than the worst case of the
-largest frame the policy allows — for `tx_max_size = 1024` that is 9 against
-1030. A single-slab pool still spends a whole block, which is that policy
+seven-byte CAPACITY REQUEST costs **nine** bytes rather than the worst case of
+the largest frame the policy allows — for `tx_max_size = 1024` that is 9
+against 1030. Note that it is the request, not the message: a seven-byte
+payload written into a message from `make_msg()` sits in the 32-byte reserve
+that default hint asked for (34 physical bytes), which is the trade the
+default makes on purpose. A single-slab pool still spends a whole block, which is that policy
 being simple; a segregated policy picks a size class from the same argument.
 
 Making RX size-aware would mean buffering the encoded frame, computing the

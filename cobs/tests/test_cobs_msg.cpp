@@ -222,6 +222,92 @@ public:
 	bool refuse_next = false;
 };
 
+/*
+ * A policy that over-allocates the way a segregated allocator would: neither
+ * exact like the heap one nor "the whole limit" like the single-slab pool, but
+ * somewhere in between. The two shipped policies only exercise the extremes,
+ * and a container that had quietly assumed capacity == requested would pass
+ * both of them.
+ */
+class SizeClassPolicy final {
+public:
+	static constexpr std::size_t rx_max_size = 8;
+	static constexpr std::size_t tx_max_size = 4096;
+
+	using Packet = RxPacket<SizeClassPolicy>;
+	[[nodiscard]] Packet* allocate_rx() noexcept { return nullptr; }
+	void deallocate_rx(Packet*) noexcept {}
+
+	// Its own rule, obeying nothing but the contract: 2n + 1, capped.
+	[[nodiscard]] static constexpr std::size_t class_for(const std::size_t n) noexcept
+	{
+		const std::size_t twice = n * 2u + 1u;
+		return (twice > tx_max_size) ? tx_max_size : twice;
+	}
+
+	[[nodiscard]] TxAllocation allocate_tx(const std::size_t requested) noexcept
+	{
+		if (requested > tx_max_size) {
+			return {};
+		}
+		const std::size_t capacity = class_for(requested);
+		void* const memory = ::operator new(cobs_max_wire_size(capacity), std::nothrow);
+		if (memory == nullptr) {
+			return {};
+		}
+		++allocations;
+		return {static_cast<std::byte*>(memory), capacity};
+	}
+
+	void deallocate_tx(std::byte* const memory, const std::size_t capacity) noexcept
+	{
+		if (memory != nullptr) {
+			++frees;
+			last_freed_capacity = capacity;
+		}
+		::operator delete(static_cast<void*>(memory));
+	}
+
+	std::size_t allocations = 0;
+	std::size_t frees = 0;
+	std::size_t last_freed_capacity = 0;
+};
+
+// The container must work off the REPORTED capacity, never off what it asked
+// for. This is the case between the two extremes the shipped policies cover.
+void testIntermediateOverallocation()
+{
+	SizeClassPolicy pool;
+	{
+		CobsMsg<SizeClassPolicy> m{pool, 7};
+		check(m.capacity() == 15, "a policy may grant more than was requested (7 -> 15)");
+		check(m.size() == 0, "without putting anything in the message");
+
+		// Fifteen bytes must fit with no reallocation, even though only seven
+		// were ever asked for.
+		const std::vector<uint8_t> body(15, 0x2A);
+		check(m.write_bytes(std::span<const uint8_t>{body}), "the whole grant is usable");
+		check(pool.allocations == 1, "with no reallocation");
+		check(framesAs(m, body), "and encodes from the granted geometry");
+	}
+	check(pool.frees == 1 && pool.last_freed_capacity == 15,
+	      "the block goes back with the capacity the policy reported, not the 7 asked for");
+
+	{	// A growth must also ask through the policy's rule, and record what
+		// came back rather than what it wanted.
+		SizeClassPolicy grow;
+		CobsMsg<SizeClassPolicy> m{grow, 4};
+		check(m.capacity() == 9, "4 -> 9");
+		const std::vector<uint8_t> body(20, 0x3B);
+		check(m.write_bytes(std::span<const uint8_t>{body}), "20 bytes need a growth");
+		// target = max(20, 9 + 4) = 20; the policy answers 41.
+		check(m.capacity() == 41, "the container asked for 20 and was granted 41");
+		check(grow.allocations == 2 && grow.frees == 1, "in exactly one reallocation");
+		check(grow.last_freed_capacity == 9, "the old block returned with ITS capacity");
+		check(framesAs(m, body), "and the payload survived the move");
+	}
+}
+
 void testCreation()
 {
 	{	// The hint is a capacity hint, never an initial size.
@@ -597,6 +683,24 @@ void testTypeConstraints()
 	              "a span is not a scalar; write_bytes takes those");
 	check(true, "structs, bool, pointers, member pointers and spans are refused");
 
+	/* volatile deserves its own assertion, because the constraint alone did
+	 * NOT catch it. Before the concept excluded volatile explicitly,
+	 * CobsScalar<volatile uint32_t> was true and this very CanWrite reported
+	 * the type as writable — a requires-expression checks that a call is
+	 * viable, not that its body instantiates, and the body failed on
+	 * `const volatile void*` -> `const void*`. The assertion below is the one
+	 * that would have failed then. */
+	static_assert(!CobsScalar<volatile uint32_t>,
+	              "volatile must not satisfy the concept");
+	static_assert(!CanWrite<M, volatile uint32_t>,
+	              "and a volatile value must not be writable");
+	static_assert(!CanWrite<M, volatile Op>);
+	static_assert(!CanWriteArray<M, volatile uint32_t>,
+	              "nor an array of them");
+	static_assert(CanWrite<M, const uint32_t>,
+	              "while plain const is still perfectly writable");
+	check(true, "volatile is refused, so an MMIO read has to be written out loud");
+
 	// write_array shares the SAME contract, deliberately — one rule to
 	// explain, not two nearly identical ones.
 	static_assert(CanWriteArray<M, uint16_t>);
@@ -611,7 +715,7 @@ void testTypeConstraints()
 
 /* ===================== the default reserve pays off ===================== */
 
-// The measured reason default_initial_capacity is not zero. Same policy rule
+// The measured reason Cobs::default_capacity_hint is not zero. Same policy rule
 // as the heap one, so these counts are the heap's counts.
 void testDefaultHintAvoidsTheLadder()
 {
@@ -660,6 +764,7 @@ int main()
 	testGrowthSequence();
 	testLargeJumpIsOneAllocation();
 	testDefaultHintAvoidsTheLadder();
+	testIntermediateOverallocation();
 	testNoGrowthWhenItFits();
 	testFailedGrowthChangesNothing();
 	testReserve();
