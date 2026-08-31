@@ -698,11 +698,26 @@ asserted at compile time where the type allows.
 
 ### 9.1.2 Obligations
 
-Both allocations report their region rather than letting the caller compute
-it, so a policy is free to place the payload somewhere other than immediately
-after the header — a heap policy may allocate them separately, a pool policy
-keeps them in one block. Exhaustion is a null `packet` / `memory`, never an
-error code: `if (!allocation.packet)` is the check either way.
+Exhaustion is a null `packet` / `memory`, never an error code:
+`if (!allocation.packet)` is the check either way.
+
+**An RX allocation is always ONE contiguous region, `[RxPacket][payload]`.**
+An earlier draft of this section allowed a policy to allocate the header and
+the payload separately. It should not have: `RxPacket` locates its payload as
+`this + sizeof(RxPacket)`, so a split allocation is not merely discouraged but
+impossible — it would need a second pointer in every packet, paid for by every
+packet, to serve a policy that wants to scatter one across two pieces of RAM.
+A heap policy has no difficulty honouring contiguity:
+
+```cpp
+void* memory = ::operator new(sizeof(Packet) + rx_max_size, std::nothrow);
+Packet* packet = std::construct_at(static_cast<Packet*>(memory));
+```
+
+so heap and pool end up with identical geometry and differ only in where the
+region came from. The packet's own geometry is therefore authoritative:
+`Cobs` reads `packet->writable_payload().first(rx_max_size)` and never
+consults `RxAllocation::payload` for the address.
 
 Three obligations that are easy to get wrong:
 
@@ -807,7 +822,48 @@ A policy that starts to know about encoding, decoder state, the ready queue or
 what makes "write your own allocator" a small job rather than a diploma in
 metaprogramming.
 
-### 9.4 Transport is not part of it
+### 9.4 `Cobs` owns the policy by value
+
+```cpp
+template<class Allocator = CobsHeapAllocator<>>
+class Cobs final {
+    [[no_unique_address]] Allocator m_allocator{};
+};
+```
+
+By value, so that `Cobs<> cobs;` works with no ceremony, a stateless heap
+policy costs nothing (`[[no_unique_address]]`), and a `CobsFixedAllocator` can
+simply contain its RX and TX pools.
+
+**`Cobs` is therefore neither copyable nor movable.** That is not tidiness:
+`PacketRef` holds a pointer to the allocator living inside the `Cobs` object,
+so moving one would turn every outstanding packet's owner pointer into a
+souvenir of a previous life.
+
+A policy needing runtime arguments is constructed in place, and one that is
+itself a light copyable handle to an external resource may simply be passed —
+so not every policy has to be copyable or movable:
+
+```cpp
+Cobs<MyAllocator> cobs{std::in_place, region_base, region_size};
+Cobs<MyAllocator> cobs{some_handle};   // only if the policy is copyable
+```
+
+This also corrects an argument made earlier in review. It is **not** true that
+a fixed policy forces the whole `Cobs` object into DMA-accessible RAM. That
+follows only if the policy stores its TX blocks inside itself; a policy holding
+pointers or spans into external RX/TX regions leaves `Cobs` placeable
+anywhere, and only the **TX region** must be DMA-visible — the transport reads
+it directly, unlike the RX pool, which only the CPU ever writes.
+
+### 9.4.1 Naming still to be applied in code
+
+The contract calls the limits `rx_max_size` / `tx_max_size`. The existing
+`FixedPoolAllocator` and `RxPacket` still say `payload_capacity`, from before
+§9 existed. That rename lands with the two policies; it is noted here so the
+gap is visible rather than discovered.
+
+### 9.5 Transport is not part of it
 
 The transport is bound separately (§2.1) and never travels through the
 allocator: memory and byte movement are unrelated concerns, and coupling them
