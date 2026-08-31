@@ -647,6 +647,9 @@ struct PaddedStruct {
 	uint32_t b;
 };
 
+enum class WireOp : uint16_t { Ping = 1, Pong = 2 }; // the spelling a wire wants
+enum class BoolBackedEnum : bool { No, Yes };        // legal C++, not a wire type
+
 template<class M, class T>
 concept CanWrite = requires(M& m, const T& v) { m.write(v); };
 
@@ -700,6 +703,17 @@ void testTypeConstraints()
 	static_assert(CanWrite<M, const uint32_t>,
 	              "while plain const is still perfectly writable");
 	check(true, "volatile is refused, so an MMIO read has to be written out loud");
+
+	/* An enumeration may name bool as its underlying type, which sailed
+	 * through the enum branch and put a bool on the wire after all — the one
+	 * wire-format hazard this layer enforces rather than documents. The rest
+	 * of them (unsized enums under -fshort-enums, size_t, long double) are a
+	 * documented rule, since enforcing them would mean banning `int`. */
+	static_assert(CanWrite<M, WireOp>, "an enum with an explicit width is fine");
+	static_assert(!CanWrite<M, BoolBackedEnum>,
+	              "but an enum backed by bool must not smuggle one through");
+	static_assert(!CanWriteArray<M, BoolBackedEnum>);
+	check(true, "an enum whose underlying type is bool is refused too");
 
 	// write_array shares the SAME contract, deliberately — one rule to
 	// explain, not two nearly identical ones.

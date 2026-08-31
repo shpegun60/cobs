@@ -210,8 +210,9 @@ configured. A pool is parameterized by the **payload capacity it offers**,
 never by its raw block size:
 
 ```cpp
-template<std::size_t PayloadCapacity, std::size_t BlockCount>
-class FixedPoolAllocator;
+template<std::size_t RxMaxSize, std::size_t RxBlocks,
+         std::size_t TxMaxSize, std::size_t TxBlocks>
+class CobsFixedAllocator;
 ```
 
 A block is a packet header followed by its payload, and the header's size is
@@ -283,11 +284,19 @@ parameter to carry:
 
 ```cpp
 Cobs<> cobs;                        // heap policy
-Cobs<MyAllocator> cobs{allocator};  // anybody else's memory and geometry
+Cobs<MyAllocator> cobs;             // anybody else's memory and geometry
+```
+
+The policy lives INSIDE the engine, by value (§9.4), so there is no separate
+object to hand in. A policy needing runtime arguments is constructed in place:
+
+```cpp
+Cobs<MyAllocator> cobs{std::in_place, region_base, region_size};
 ```
 
 The components underneath still take their own geometry explicitly —
-`FixedPoolAllocator<PayloadCapacity, BlockCount>`, `CobsMsg<Allocator>` — but
+`CobsFixedAllocator<RxMaxSize, RxBlocks, TxMaxSize, TxBlocks>`,
+`CobsMsg<Allocator>` — but
 the assembled object an application names has one knob, and that knob is the
 single place every memory decision is written down.
 
@@ -572,10 +581,10 @@ COBS expansion in front of it:
  block_start                     raw_start                        block_end
       |                              |                                 |
       +------------------------------+---------------------------------+
-      |   raw_offset (headroom)      |   MaxDecodedSize                |
+      |   cobs_raw_offset(C)         |   C, the granted capacity       |
       +------------------------------+---------------------------------+
       ^                              ^
-      encoder writes from here       application writes from here
+      encoder writes from here       the payload area starts here
 ```
 
 Both quantities come from the size functions of §4.2 rather than from a magic
@@ -599,7 +608,9 @@ the block when it has to.
 
 ```text
 make_msg()     Cobs::default_capacity_hint — a practical reserve
-make_msg(0)    explicitly minimal: the canonical empty frame and no more
+make_msg(0)    a zero initial capacity REQUEST; pushed straight away it
+               sends the canonical empty frame, but it may still be
+               written into and grown like any other message
 make_msg(N)    the caller knows a useful number
 ```
 
@@ -689,13 +700,48 @@ Everything else is a compile error, deliberately:
 keeps the protocol's framing visible in the protocol's own code:
 
 ```cpp
-msg.write<uint16_t>(count);
-msg.write_array(values);
+if (!msg.write<uint16_t>(count) || !msg.write_array(values)) {
+    return;   // every write result has to be acted on
+}
 ```
 
 If raw object representation is ever genuinely required, it belongs behind a
 deliberately alarming name — `write_object_representation()` — so that nobody
 mistakes it for ordinary wire serialization.
+
+#### 8.3.1.2 `CobsScalar` is not a promise of a stable wire format
+
+The concept keeps out the types with no sane representation. It does NOT, and
+cannot, guarantee that what it lets through means the same thing on both ends
+of a link. `write<T>` is a **native-representation serializer**, and the
+protocol's stability is the protocol author's job. Three ways to lose, all
+measured rather than imagined:
+
+```text
+enum PlainEnum { A, B };
+  sizeof == 4 normally, == 1 under -fshort-enums
+
+size_t / long / long double
+  8 / 4 / 16 bytes on x86-64 mingw, quite different on Cortex-M
+
+float / double
+  IEEE-754 on every target this library targets, but that is a fact about
+  those targets, not a language guarantee
+```
+
+So the rule for anything that crosses a link:
+
+> Protocol definitions use fixed-width types — `uint8_t` … `uint64_t`,
+> `int8_t` … `int64_t`. An enumeration on the wire declares its underlying
+> type explicitly (`enum class Op : uint16_t`). `size_t`, `long`,
+> `long double` and plain unsized enums are for local code, never for a frame.
+> `float`/`double` only where both ends have agreed on the format.
+
+One case is enforced rather than documented, because it silently defeated a
+rule this layer does state: `enum class Flag : bool` passed the enumeration
+branch and put a `bool` on the wire after all. An enumeration whose underlying
+type is `bool` is now rejected. Byte order is untouched by any of this — see
+above.
 
 ### 8.3.2 Pointer invalidation, and why it is invisible
 
@@ -846,6 +892,15 @@ the block holds at least cobs_max_wire_size(capacity) bytes
 deallocate_tx() is called with exactly the capacity that was reported
 ```
 
+Two obligations that go without saying until somebody's policy does not honour
+them, and which the shared contract test therefore checks:
+
+```text
+successful live allocations remain valid, distinct and exclusively the
+caller's until they are deallocated
+deallocation of nullptr is a no-op, not an abuse
+```
+
 Nothing else is in the contract — no payload span, no block count, no
 alignment, and above all **no physical block size**. Every one of those is a
 detail of some particular policy.
@@ -915,11 +970,18 @@ The asymmetry is deliberate, and it follows from what is known at the moment
 of allocation:
 
 ```text
-TX   the application already knows the payload size
-     -> allocate exactly what this frame needs
+TX   the container knows the capacity it needs RIGHT NOW — at creation, and
+     again at every growth
+     -> ask for exactly that, and ask again if the message outgrows it
 RX   only the first COBS code byte has arrived
      -> the final decoded size is unknowable; commit to rx_max_size
 ```
+
+Note what this does NOT claim: that the application knows the payload size up
+front. It often does not, which is why `CobsMsg` is a container that grows
+(§8.3.1). The asymmetry is that TX can always ask again, because nothing has
+been written to the wire yet, while RX has one chance before the bytes start
+arriving.
 
 So `allocate_tx` takes a size and `allocate_rx` does not. On the heap policy a
 seven-byte CAPACITY REQUEST costs **nine** bytes rather than the worst case of
@@ -1108,8 +1170,7 @@ deliberately:
 
 ```cpp
 using Allocator = CobsFixedAllocator</* RX */ 1024, 8, /* TX */ 1024, 2>;
-Allocator allocator;
-Cobs<Allocator> cobs{allocator};
+Cobs<Allocator> cobs;
 ```
 
 RX and TX limits are separate on purpose. A device that receives 1 KB commands
@@ -1152,14 +1213,15 @@ simply contain its RX and TX pools.
 so moving one would turn every outstanding packet's owner pointer into a
 souvenir of a previous life.
 
-A policy needing runtime arguments is constructed in place, and one that is
-itself a light copyable handle to an external resource may simply be passed —
-so not every policy has to be copyable or movable:
+A policy needing runtime arguments is constructed in place from them, so it
+need not be copyable or movable at all:
 
 ```cpp
 Cobs<MyAllocator> cobs{std::in_place, region_base, region_size};
-Cobs<MyAllocator> cobs{some_handle};   // only if the policy is copyable
 ```
+
+There is deliberately no constructor taking a ready-made policy object. It
+would only serve copyable ones, and one way in is enough.
 
 This also corrects an argument made earlier in review. It is **not** true that
 a fixed policy forces the whole `Cobs` object into DMA-accessible RAM. That

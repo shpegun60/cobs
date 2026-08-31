@@ -12,6 +12,8 @@
 #include "reference_encoder.h"
 
 #include <cstdio>
+#include <memory>
+#include <new>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -338,7 +340,7 @@ void testDestructorReclaimsActiveTx()
 
 /* ==================== the default reserve, and its clamp ================ */
 
-void testDefaultInitialCapacity()
+void testDefaultCapacityHint()
 {
 	{	// The heap policy grants exactly what is asked, so the default is
 		// visible directly: a short frame never reallocates.
@@ -377,6 +379,106 @@ void testDefaultInitialCapacity()
 	}
 }
 
+
+/*
+ * The reported capacity has to survive the WHOLE ownership chain, not just
+ * CobsMsg:
+ *
+ *     CobsMsg -> surrender_block() -> Cobs::m_activeTx -> proceed()
+ *             -> deallocate_tx(memory, reported_capacity)
+ *
+ * Neither shipped policy can catch a regression here. The heap one reports
+ * capacity == requested, so a mix-up is invisible; the fixed one ignores the
+ * capacity at free time entirely. So this uses a policy that over-allocates
+ * the way a segregated allocator would, and checks the number that comes back
+ * at the far end of the chain.
+ */
+class OverallocPolicy final {
+public:
+	static constexpr std::size_t rx_max_size = 64;
+	static constexpr std::size_t tx_max_size = 512;
+
+	using Packet = RxPacket<OverallocPolicy>;
+	[[nodiscard]] Packet* allocate_rx() noexcept
+	{
+		void* const memory = ::operator new(sizeof(Packet) + rx_max_size, std::nothrow);
+		if (memory == nullptr) { return nullptr; }
+		Packet* const p = std::construct_at(static_cast<Packet*>(memory));
+		p->owner = this;
+		return p;
+	}
+	void deallocate_rx(Packet* const p) noexcept
+	{
+		if (p == nullptr) { return; }
+		std::destroy_at(p);
+		::operator delete(static_cast<void*>(p));
+	}
+
+	[[nodiscard]] TxAllocation allocate_tx(const std::size_t requested) noexcept
+	{
+		if (requested > tx_max_size) { return {}; }
+		const std::size_t doubled = requested * 2u + 1u;
+		const std::size_t capacity = (doubled > tx_max_size) ? tx_max_size : doubled;
+		void* const memory = ::operator new(cobs_max_wire_size(capacity), std::nothrow);
+		if (memory == nullptr) { return {}; }
+		++allocations;
+		last_granted = capacity;
+		return {static_cast<std::byte*>(memory), capacity};
+	}
+	void deallocate_tx(std::byte* const memory, const std::size_t capacity) noexcept
+	{
+		if (memory != nullptr) { ++frees; last_freed = capacity; }
+		::operator delete(static_cast<void*>(memory));
+	}
+
+	std::size_t allocations = 0;
+	std::size_t frees = 0;
+	std::size_t last_granted = 0;
+	std::size_t last_freed = 0;
+};
+
+void testReportedCapacitySurvivesTheEngine()
+{
+	g_policy = "overalloc";
+	using Engine = Cobs<OverallocPolicy>;
+	Engine cobs;
+	FakeTransport t;
+	bind(cobs, t);
+
+	auto msg = cobs.make_msg(10);
+	check(static_cast<bool>(msg) && msg.capacity() == 21,
+	      "the policy grants more than was asked for (10 -> 21)");
+
+	const auto payload = pattern(0x80, 12);
+	check(msg.write_bytes(std::span<const uint8_t>{payload}), "a payload is written");
+	check(cobs.push(msg) == SendResult::Sent, "and pushed");
+	check(t.sent.size() == 1 && t.sent[0] == cobs_test::encode(payload),
+	      "the transport got the canonical frame");
+	check(cobs.allocator().frees == 0, "nothing is freed while the transport reads");
+
+	t.finish();
+	cobs.proceed();
+	check(cobs.allocator().frees == 1, "proceed reclaims the block");
+	check(cobs.allocator().last_freed == 21,
+	      "returning it with the capacity the POLICY reported, not the 10 requested "
+	      "nor the 12 written");
+
+	{	// The same, after a growth: the capacity that travels to activeTx must
+		// be the CURRENT block's, not the one the message was born with.
+		auto grown = cobs.make_msg(4);
+		check(grown.capacity() == 9, "a second message starts at 9");
+		const auto big = pattern(0x10, 60);
+		check(grown.write_bytes(std::span<const uint8_t>{big}), "60 bytes force a growth");
+		const std::size_t after_growth = grown.capacity();
+		check(after_growth == 121, "to 121 (asked 60, granted 121)");
+		check(cobs.push(grown) == SendResult::Sent, "it sends");
+		t.finish();
+		cobs.proceed();
+		check(cobs.allocator().last_freed == after_growth,
+		      "and comes back with the GROWN capacity, not the original 9");
+	}
+}
+
 } // namespace
 
 int main()
@@ -387,7 +489,8 @@ int main()
 
 	group("FixedSpecific");
 	testFixedExhaustion();
-	testDefaultInitialCapacity();
+	testDefaultCapacityHint();
+	testReportedCapacitySurvivesTheEngine();
 	testDestructorReclaimsActiveTx();
 
 	std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

@@ -112,10 +112,44 @@ class Cobs;
  * If raw object representation is ever genuinely needed, it belongs behind a
  * deliberately alarming name — write_object_representation() — and not behind
  * the method everybody reaches for first.
+ *
+ * WHAT THIS CONCEPT DOES NOT PROMISE (COBS_ENGINE.md §8.3.1.2). It keeps out
+ * the types with no sane representation; it cannot make the ones it allows
+ * mean the same thing on both ends of a link. `sizeof(enum PlainEnum)` is 4
+ * normally and 1 under -fshort-enums; size_t, long and long double differ
+ * between a host and a Cortex-M. So a protocol uses fixed-width types, and an
+ * enumeration on the wire declares its underlying type:
+ *
+ *     enum class Op : uint16_t { ... };     // fine on a wire
+ *     enum Op { ... };                      // width is a compiler option
+ *
+ * That rule is documentation, not a constraint — enforcing it would mean
+ * banning `int`. The ONE case that is enforced is the one that silently
+ * defeated a rule this layer does state: `enum class Flag : bool` passed the
+ * enumeration branch and put a bool on the wire after all.
  */
+namespace cobs_detail {
+/*
+ * std::underlying_type_t<T> is a HARD error for a non-enumeration, and `&&`
+ * inside a variable template does not save you: both operands instantiate.
+ * So the query has to sit behind a partial specialization that is only ever
+ * selected for enumerations.
+ */
+template<class T, bool = std::is_enum_v<T>>
+struct is_bool_backed_enum : std::false_type {};
+
+template<class T>
+struct is_bool_backed_enum<T, true>
+	: std::bool_constant<std::is_same_v<std::underlying_type_t<T>, bool>> {};
+
+template<class T>
+inline constexpr bool is_bool_backed_enum_v = is_bool_backed_enum<T>::value;
+} // namespace cobs_detail
+
 template<class T>
 concept CobsScalar =
 	!std::is_volatile_v<T> &&
+	!cobs_detail::is_bool_backed_enum_v<std::remove_cv_t<T>> &&
 	((std::is_arithmetic_v<std::remove_cv_t<T>> &&
 	  !std::is_same_v<std::remove_cv_t<T>, bool>) ||
 	 std::is_enum_v<std::remove_cv_t<T>> ||
@@ -238,8 +272,9 @@ public:
 	 * one writes it, which keeps the protocol's own framing visible in the
 	 * protocol's own code:
 	 *
-	 *     msg.write<uint16_t>(count);
-	 *     msg.write_array(values);
+	 *     if (!msg.write<uint16_t>(count) || !msg.write_array(values)) {
+	 *         return;   // every write result has to be acted on
+	 *     }
 	 */
 	template<CobsScalar T>
 	[[nodiscard]] bool write_array(const std::span<const T> values) noexcept
@@ -254,8 +289,12 @@ public:
 	/*
 	 * Makes room for `required` payload bytes in total, growing if needed.
 	 * Rarely called directly — the write methods call it — but useful to a
-	 * caller that knows the final length and wants the single allocation up
-	 * front.
+	 * caller that learns the final length after the message exists and wants
+	 * to skip the incremental growths.
+	 *
+	 * It does not save the FIRST allocation: the message already has a block
+	 * by the time anyone can call this. A caller who knows the length up front
+	 * should say so where it costs nothing — make_msg(length).
 	 *
 	 * On failure NOTHING changes: the old block, its capacity, its size and
 	 * its contents all survive intact. That is what lets a caller treat a
@@ -350,9 +389,13 @@ private:
 	 *
 	 * The shift is written explicitly to make the 1.5x arithmetic obvious at a
 	 * glance; an optimizing compiler strength-reduces `capacity / 2` to the
-	 * same `lsrs` anyway, on every target this library cares about. The
-	 * `max(1, ...)` is the part that matters: 1 >> 1 is 0, and a growth of
-	 * zero would loop forever.
+	 * same `lsrs` anyway, on every target this library cares about.
+	 *
+	 * `max(1, ...)` is NOT load-bearing for progress — this is only ever
+	 * called with required > capacity, and the final max() with `required`
+	 * guarantees the result exceeds the current capacity whatever delta comes
+	 * out. It is kept because a geometric policy that stops being geometric at
+	 * capacity 1 is a special case waiting to surprise somebody.
 	 *
 	 * A large jump is honoured in ONE allocation rather than by walking the
 	 * sequence: from 64, a request for 500 asks for 500, not 96 then 144 then
