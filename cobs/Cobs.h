@@ -56,9 +56,16 @@ public:
 	using Msg = CobsMsg<Allocator>;
 	using Ref = PacketRef<Allocator>;
 
-	// Republished so callers have one place to ask, and so a change of policy
-	// is visible rather than implied (§4.1).
-	static constexpr std::size_t max_decoded_size = Allocator::rx_max_size;
+	/*
+	 * Republished so callers have one place to ask, and so a change of policy
+	 * is visible rather than implied (§4.1). Both are BODY limits — the
+	 * largest application payload this instance will receive and send. The
+	 * decoded frame is length_size bytes longer than either, which is why
+	 * neither is called max_decoded_size any more: that name was one header
+	 * away from the truth, on a layer where being one header out is the
+	 * easiest mistake there is.
+	 */
+	static constexpr std::size_t max_receive_size = Allocator::rx_max_size;
 	static constexpr std::size_t max_send_size    = Allocator::tx_max_size;
 
 	/*

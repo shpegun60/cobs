@@ -210,39 +210,45 @@ There are two, one per direction, and they are stated by the allocator policy
 (§9):
 
 ```text
-rx_max_size    the largest fully decoded RX frame this instance accepts
-tx_max_size    the largest payload the TX builder will carry
+rx_max_size    the largest BODY this instance will receive
+tx_max_size    the largest BODY the TX builder will carry
 ```
 
-Both are **decoded/raw sizes, including any future integrity trailer**, not
-just the payload the application sees. That wording is what makes deferring
-CRC free. When a CRC is added later it occupies decoded bytes at both ends:
+Both are **body sizes** — the decoded frame is `length_size` bytes longer, and
+neither limit includes the header. They do include **any future integrity
+trailer**, because the trailer lives inside the body (§3). That is what makes
+deferring CRC free: when one is added it occupies body bytes at both ends,
 
 ```text
 v1:      visible payload = rx_max_size          / tx_max_size
 later:   visible payload = rx_max_size - CRC    / tx_max_size - CRC
 ```
 
-The RX side is sized directly from `rx_max_size`, because the decoder is
-handed its output span before a single payload byte has arrived (§9.1.1) and
-some number has to be committed to.
+and every buffer keeps its size.
 
-**The TX side is not.** A TX block's geometry — its size, its headroom, the
-overlap proof of §8.4 — is expressed in the **capacity granted for that
-allocation**, `C`, where `C <= tx_max_size`:
+**Neither limit is the size of a buffer any more.** Both directions size their
+storage per frame, from the length prefix (§3):
 
 ```text
-block size  = cobs_max_wire_size(C)
-headroom    = cobs_raw_offset(C)
+RX   the declared body length N, known from the header before the body
+     arrives, so allocate_rx(N) is exact; rx_max_size is the CEILING above
+     which a declared length is refused
+
+TX   the capacity C granted for that allocation, C <= tx_max_size
+
+     block size  = cobs_max_wire_size(length_size + C)
+     headroom    = cobs_raw_offset(length_size + C)
 ```
 
-`tx_max_size` is the ceiling the builder refuses to grow past, not the size of
-anything. So an integrity trailer changes what the application may write and
-nothing else, on either side.
+Both formulas are header-inclusive because the header is part of what gets
+COBS-encoded. `tx_max_size` is the ceiling the builder refuses to grow past,
+not the size of anything.
 
-Each is republished by `Cobs` under its own name — `max_decoded_size` and
-`max_send_size` — and both peers of a link must agree on them the same way
-they agree on a baud rate.
+Each limit is republished by `Cobs` as `max_receive_size` and `max_send_size`,
+and both peers of a link must agree on them the same way they agree on a baud
+rate. Neither is called `max_decoded_size`: that name was one header away from
+the truth, on a layer where being one header out is the easiest mistake there
+is.
 
 ```cpp
 template<class Allocator = CobsHeapAllocator<>>
@@ -470,8 +476,8 @@ delimiter has already resynchronized the stream. Requiring another one would
 discard the next perfectly good frame. So:
 
 ```text
-oversize / allocation failure  (no delimiter seen yet)  →  DropUntilDelimiter
-delimiter arrived too early    (delimiter consumed)     →  discard, Synced
+length disagreement found before the delimiter  →  DropUntilDelimiter
+delimiter arrived too early (delimiter consumed) →  discard, Synced
 ```
 
 ### 5.5 The implicit zero
@@ -1075,9 +1081,16 @@ Obligations on a non-null TX allocation:
 
 ```text
 requested <= capacity <= tx_max_size
-the block holds at least cobs_max_wire_size(capacity) bytes
+the block holds at least cobs_max_wire_size(length_size + capacity) bytes
 deallocate_tx() is called with exactly the capacity that was reported
 ```
+
+The TX obligation is **header-inclusive**: what gets encoded is
+`[length][payload]`, so a block sized for the payload alone is one or two
+bytes short and `CobsMsg::encode()` runs off the end of it. Use
+`CobsFrameFormat::tx_storage_size_for_capacity(capacity)` rather than
+open-coding it — the shared contract test does, precisely so that a policy
+written against the old formula fails there instead of in the field.
 
 Two obligations that go without saying until somebody's policy does not honour
 them, and which the shared contract test therefore checks:
@@ -1167,7 +1180,7 @@ exact, single-slab, segregated — share one `CobsMsg` with no `if constexpr`
 anywhere. It is checked directly: the test suite runs a third policy whose rule
 is `2n + 1`, and the container does not notice.
 
-### 9.1.1 TX is size-aware; RX cannot be
+### 9.1.1 Both directions are size-aware
 
 The asymmetry is deliberate, and it follows from what is known at the moment
 of allocation:
@@ -1218,8 +1231,9 @@ it; `CobsHeapAllocator` does, since sized `operator delete` is an ABI- and
 runtime-dependent optimisation whose value belongs in a benchmark rather than
 in a contract argument.
 
-A block sized for capacity `C` is `cobs_max_wire_size(C)` bytes: the tight
-worst case for that length, not the exact encoding of those particular bytes.
+A block sized for capacity `C` is `cobs_max_wire_size(length_size + C)` bytes:
+the tight worst case for that decoded length, not the exact encoding of those
+particular bytes.
 Knowing the latter would need a pre-scan of the payload, i.e. another pass. Not
 worth it.
 
@@ -1265,7 +1279,7 @@ packet, to serve a policy that wants to scatter one across two pieces of RAM.
 A heap policy has no difficulty honouring contiguity:
 
 ```cpp
-void* memory = ::operator new(sizeof(Packet) + rx_max_size, std::nothrow);
+void* memory = ::operator new(sizeof(Packet) + requested_size, std::nothrow);
 Packet* packet = std::construct_at(static_cast<Packet*>(memory));
 ```
 
@@ -1460,12 +1474,39 @@ following the same rule as the transport layer.
 
 ```text
 rx: frames_delivered, frames_lost, allocation_failure,
-    malformed, oversize, resyncs
+    malformed, oversize, length_mismatch, resyncs
 tx: frames_sent, send_refused_busy, send_failed
+```
+
+Each RX counter answers a different question, and `length_mismatch` exists so
+that none of them has to answer two:
+
+```text
+malformed          a structural COBS error — a delimiter inside a data block
+oversize           a declared length above rx_max_size
+length_mismatch    a header that is absent or truncated, or a body whose
+                   actual length disagrees with what the frame declared
+allocation_failure the policy refused a packet AFTER a valid length
+frames_lost        every frame that did not reach the queue, whatever the cause
+resyncs            only the failures found BEFORE the delimiter, which leave
+                   the rest of a frame in the stream to be skipped
 ```
 
 `frames_lost` is the single place a transport gap becomes visible to the
 application, and it is deliberately a number rather than an event (§7).
+
+`resyncs` is the one that repays attention. A failure the DELIMITER revealed
+is already synchronized, so counting a resync there would mean throwing away
+the next perfectly good frame:
+
+```text
+no header, truncated header, body shorter than declared   no resync
+empty-packet allocation refused (it happens after the
+    delimiter, since a zero-length body needs no segment) no resync
+
+body longer than declared, declared oversize, allocation
+    refused for a non-empty body, transport gap           resync
+```
 
 ---
 

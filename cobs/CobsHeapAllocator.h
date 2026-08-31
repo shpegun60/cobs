@@ -79,12 +79,14 @@ public:
 	}
 
 	/*
-	 * Exactly the capacity asked for, and a block sized for exactly that.
-	 * This is where the sized TX contract pays: a seven-byte CAPACITY REQUEST
-	 * costs nine bytes here, not cobs_max_wire_size of the largest frame the
-	 * policy allows — for tx_max_size = 1024 that is 9 against 1030. The
-	 * request, not the message: a seven-byte payload built through make_msg()
-	 * lives in whatever reserve its capacity hint asked for.
+	 * Exactly the capacity asked for, and a block sized for exactly that —
+	 * plus the length header, which shares the block and is part of what gets
+	 * encoded. This is where the sized TX contract pays: with a two-byte
+	 * header, a seven-byte CAPACITY REQUEST costs 11 bytes here
+	 * (cobs_max_wire_size(2 + 7)) rather than the 1032 a block for the largest
+	 * frame would take. The request, not the message: a seven-byte payload
+	 * built through make_msg() lives in whatever reserve its capacity hint
+	 * asked for.
 	 *
 	 * No rounding up, no size classes, no growth rule. Deciding how much to
 	 * ask for is the CONTAINER's job (§9.1.0): CobsMsg knows its current
@@ -92,9 +94,9 @@ public:
 	 * once. A policy that also had an opinion would be two growth rules
 	 * fighting over one allocation.
 	 *
-	 * A request for zero still gets real storage — cobs_max_wire_size(0) is
-	 * two bytes, enough for the canonical empty frame `01 00` — while the
-	 * reported payload capacity is honestly zero.
+	 * A request for zero still gets real storage — enough for a frame whose
+	 * decoded content is the length field alone — while the reported payload
+	 * capacity is honestly zero.
 	 */
 	[[nodiscard]] TxAllocation allocate_tx(const std::size_t requested) noexcept
 	{

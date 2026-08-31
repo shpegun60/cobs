@@ -95,7 +95,7 @@ void testRoundTripThroughTheWholeStack()
 	{
 		Rx rx(pool);
 		const auto a = payload(0x10, 5);
-		const auto b = payload(0x40, 0);   // the empty packet: 01 00
+		const auto b = payload(0x40, 0);   // the empty packet: a declared length of 0
 		const auto c = payload(0x70, kMaxDecoded);
 
 		std::vector<uint8_t> wire;
@@ -145,7 +145,7 @@ void testDefaultAllocator()
 	using DefaultRx = CobsRx<>;
 	static_assert(std::is_same_v<DefaultRx::AllocatorType, CobsHeapAllocator<>>,
 	              "the default policy is the heap one");
-	static_assert(DefaultRx::max_decoded_size == 1024, "with its default limit");
+	static_assert(DefaultRx::max_receive_size == 1024, "with its default limit");
 
 	DefaultRx::AllocatorType allocator;
 	DefaultRx rx(allocator);
@@ -164,15 +164,16 @@ void testDefaultAllocator()
 /* ========================= the protocol limit =========================== */
 
 // The declared limit is the protocol limit: a frame one byte over it is
-// rejected. Under the policy contract there is no longer any way for the pool
-// to "have room to spare" — writable_payload() is defined by rx_max_size
-// itself — so this now tests the mechanism that remains: the decoder refuses
-// a frame that does not fit the span it was given.
+// rejected. Since the length prefix arrived, that rejection happens from the
+// HEADER — two bytes of evidence, before a body segment exists and before the
+// allocator is asked for anything — rather than by filling a span and finding
+// it too small. The block count below is what proves it: the oversize frame
+// never took one.
 void testProtocolLimitIsEnforced()
 {
 	Pool pool;
 	Rx rx(pool);
-	static_assert(Rx::max_decoded_size == kMaxDecoded,
+	static_assert(Rx::max_receive_size == kMaxDecoded,
 	              "Cobs republishes the policy's limit under its own name");
 
 	const auto too_big = payload(0x30, kMaxDecoded + 1);
@@ -188,7 +189,8 @@ void testProtocolLimitIsEnforced()
 	const Ref r = rx.pop_packet();
 	check(r.size() == fine.size(), "which is the one that fits");
 	check(pool.rx_available() == kBlocks - 1,
-	      "the rejected frame's block went back to the pool");
+	      "and the oversize frame never took a block at all: only the legal "
+	      "one is out");
 }
 
 /* ============================ error handling ============================ */
@@ -429,8 +431,8 @@ void testLengthCodec()
 
 	// The asymmetric pair keeps its directional limits; only the wire header
 	// is shared.
-	static_assert(CobsRx<CobsHeapAllocator<1024, 64>>::max_decoded_size == 1024);
-	static_assert(CobsRx<CobsHeapAllocator<64, 1024>>::max_decoded_size == 64);
+	static_assert(CobsRx<CobsHeapAllocator<1024, 64>>::max_receive_size == 1024);
+	static_assert(CobsRx<CobsHeapAllocator<64, 1024>>::max_receive_size == 64);
 	check(true, "while the RX and TX limits stay independent");
 
 	bool narrow_ok = true;
@@ -711,6 +713,68 @@ void testRxLengthSweep()
 	}
 }
 
+
+/*
+ * The one allocation that happens AFTER the delimiter.
+ *
+ * A frame declaring zero needs no body segment, so nothing is allocated until
+ * FrameComplete — by which point the delimiter is already consumed and the
+ * stream is synchronized. A failure there must therefore cost a frame and NO
+ * resync, unlike every other allocation failure, which is discovered with the
+ * rest of the frame still in the stream.
+ */
+class RefuseEmptyOnly final {
+public:
+	static constexpr std::size_t rx_max_size = 64;
+	static constexpr std::size_t tx_max_size = 64;
+	using Packet = RxPacket<RefuseEmptyOnly>;
+	using Format = CobsFrameFormat<rx_max_size, tx_max_size>;
+
+	[[nodiscard]] Packet* allocate_rx(const std::size_t requested_size) noexcept
+	{
+		if (requested_size == 0u || requested_size > rx_max_size) {
+			return nullptr; // the empty packet, and only it, is refused
+		}
+		void* const memory =
+			::operator new(sizeof(Packet) + requested_size, std::nothrow);
+		if (memory == nullptr) { return nullptr; }
+		Packet* const packet = std::construct_at(static_cast<Packet*>(memory));
+		packet->owner = this;
+		return packet;
+	}
+	void deallocate_rx(Packet* const packet) noexcept
+	{
+		if (packet == nullptr) { return; }
+		std::destroy_at(packet);
+		::operator delete(static_cast<void*>(packet));
+	}
+	[[nodiscard]] TxAllocation allocate_tx(std::size_t) noexcept { return {}; }
+	void deallocate_tx(std::byte*, std::size_t) noexcept {}
+};
+
+void testEmptyPacketAllocationFailure()
+{
+	RefuseEmptyOnly pool;
+	CobsRx<RefuseEmptyOnly> rx(pool);
+
+	rx.consume(std::span<const uint8_t>{
+		cobs_test::frame({}, CobsRx<RefuseEmptyOnly>::length_size)});
+	check(rx.stats().allocation_failure == 1 && rx.stats().frames_delivered == 0,
+	      "a refused empty packet is an allocation failure");
+	check(rx.stats().frames_lost == 1, "and costs the frame");
+	check(rx.stats().resyncs == 0,
+	      "but NO resync: that allocation happens after the delimiter, so the "
+	      "stream is already synchronized");
+
+	// The very next frame must arrive without needing a delimiter first, which
+	// is the observable consequence of not having resynced.
+	const auto body = payload(0x21, 5);
+	rx.consume(std::span<const uint8_t>{
+		cobs_test::frame(body, CobsRx<RefuseEmptyOnly>::length_size)});
+	check(rx.stats().frames_delivered == 1, "and the next frame arrives immediately");
+	check(matches(rx.pop_packet(), body), "with its bytes intact");
+}
+
 } // namespace
 
 int main()
@@ -721,6 +785,7 @@ int main()
 	testMalformedLengths();
 	testFixedSlabPublishesDeclaredLength();
 	testRxLengthSweep();
+	testEmptyPacketAllocationFailure();
 
 	group("EndToEnd");
 	testRoundTripThroughTheWholeStack();

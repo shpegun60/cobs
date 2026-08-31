@@ -55,9 +55,14 @@ public:
 	using Packet = typename Allocator::Packet;
 	using Ref = PacketRef<Allocator>;
 
-	// The protocol limit comes FROM the policy (§9.2).
-	static constexpr std::size_t max_decoded_size = Allocator::rx_max_size;
-	static_assert(max_decoded_size <= UINT16_MAX, "RxPacket::size is a uint16_t");
+	/*
+	 * The largest BODY this instance accepts, from the policy (§9.2). Not the
+	 * largest decoded frame — that is length_size bytes more, and calling this
+	 * max_receive_size (as an earlier revision did) invited exactly the
+	 * off-by-a-header the length prefix makes so easy to write.
+	 */
+	static constexpr std::size_t max_receive_size = Allocator::rx_max_size;
+	static_assert(max_receive_size <= UINT16_MAX, "RxPacket::size is a uint16_t");
 
 	using Format = CobsFormatFor<Allocator>;
 	static constexpr std::size_t length_size = Format::length_size;
@@ -199,7 +204,7 @@ private:
 	{
 		const std::size_t declared = Format::load_length(m_lengthBytes.data());
 
-		if (declared > max_decoded_size) {
+		if (declared > max_receive_size) {
 			++m_stats.oversize;
 			abandonFrame();
 			return;

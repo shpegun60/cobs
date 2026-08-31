@@ -24,27 +24,19 @@
 #include <cstdint>
 #include <span>
 
+// The only code allowed to write into a packet: it is also the only code that
+// knows how big the block actually is.
+template<class Allocator>
+class CobsRx;
+
 template<class Allocator>
 struct RxPacket final {
+	friend class CobsRx<Allocator>;
+
 	uint16_t  refs       = 1;       // the creator holds the first reference
 	uint16_t  size       = 0;       // decoded bytes; set on FrameComplete
 	RxPacket* next_ready = nullptr; // intrusive ready-queue link (§6.2)
 	Allocator* owner     = nullptr; // who reclaims this block
-
-	/*
-	 * Where the decoder writes, INTERNAL to the RX vertical: exactly the
-	 * declared body length this packet was allocated for, never rx_max_size.
-	 * That distinction is the point of the length prefix — a heap policy
-	 * allocates 20 bytes for a 20-byte frame, so handing out rx_max_size here
-	 * would run straight off the end of the block.
-	 *
-	 * The caller is obliged to pass the same size it allocated with. Only
-	 * CobsRx does, on a packet that is not yet published.
-	 */
-	[[nodiscard]] std::span<uint8_t> writable_payload(const std::size_t allocated) noexcept
-	{
-		return {payload(), allocated};
-	}
 
 	// What the application sees: the decoded bytes, read-only.
 	[[nodiscard]] std::span<const uint8_t> data() const noexcept
@@ -53,6 +45,24 @@ struct RxPacket final {
 	}
 
 private:
+	/*
+	 * Where the decoder writes: exactly the declared body length this packet
+	 * was allocated for, never rx_max_size.
+	 *
+	 * PRIVATE, and that is not tidiness. Since the length prefix arrived, a
+	 * heap policy allocates 20 bytes for a 20-byte frame, so the size passed
+	 * here is the ONLY thing standing between the decoder and the end of the
+	 * block — writable_payload(rx_max_size) on such a packet would hand out a
+	 * span running a kilobyte past its allocation, and nothing in the type
+	 * could notice. The one caller that knows the right number is CobsRx,
+	 * which allocated with it moments earlier, so it is the one caller that
+	 * can reach this.
+	 */
+	[[nodiscard]] std::span<uint8_t> writable_payload(const std::size_t allocated) noexcept
+	{
+		return {payload(), allocated};
+	}
+
 	// The payload begins immediately after this header, inside the same
 	// block. uint8_t has alignment 1, so no padding is needed or introduced.
 	[[nodiscard]] uint8_t* payload() noexcept

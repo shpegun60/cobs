@@ -514,9 +514,9 @@ void testComplementaryPeers()
 
 	static_assert(A::length_size == 2 && B::length_size == 2,
 	              "the larger limit picks the width, so the pair agrees");
-	static_assert(A::max_decoded_size == 1024 && A::max_send_size == 64,
+	static_assert(A::max_receive_size == 1024 && A::max_send_size == 64,
 	              "while A keeps its own directional limits");
-	static_assert(B::max_decoded_size == 64 && B::max_send_size == 1024,
+	static_assert(B::max_receive_size == 64 && B::max_send_size == 1024,
 	              "and B keeps the mirrored ones");
 	check(true, "mirrored limits agree on the wire header and disagree on capacity");
 

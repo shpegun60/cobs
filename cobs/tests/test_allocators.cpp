@@ -50,11 +50,16 @@ void runContract(const char* name)
 	      "constructed with one reference and no queue link");
 	check(p->owner == &a, "and knows which policy reclaims it");
 
-	const auto payload = p->writable_payload(Allocator::rx_max_size);
+	// writable_payload() is private to the RX vertical (§6.5), so the contract
+	// test reaches the storage the way the contract DEFINES it: one contiguous
+	// [RxPacket][payload] region. Reading it back through the public data()
+	// view is what proves the two descriptions are the same bytes.
+	const auto payload_of = [](Packet* const pk) {
+		return reinterpret_cast<uint8_t*>(pk) + sizeof(Packet);
+	};
+	const std::span<uint8_t> payload{payload_of(p), Allocator::rx_max_size};
 	check(payload.size() == Allocator::rx_max_size,
-	      "the payload span is exactly rx_max_size");
-	check(payload.data() == reinterpret_cast<uint8_t*>(p) + sizeof(Packet),
-	      "and sits immediately after the header, in one region");
+	      "a packet allocated at rx_max_size has that many payload bytes");
 
 	for (std::size_t i = 0; i < payload.size(); ++i) {
 		payload[i] = static_cast<uint8_t>(i);
@@ -65,14 +70,18 @@ void runContract(const char* name)
 	}
 	check(intact, "the whole declared payload is writable and reads back");
 
+	p->size = 4;
+	check(p->data().data() == payload.data() && p->data().size() == 4,
+	      "and the public view maps onto exactly those bytes");
+	p->size = 0;
+
 	Packet* const q = a.allocate_rx(Allocator::rx_max_size);
 	check(q != nullptr && q != p, "a second packet is a distinct object");
 	{	// Non-overlapping: writing one must not disturb the other.
-		const auto pa = p->writable_payload(Allocator::rx_max_size);
-		const auto qa = q->writable_payload(Allocator::rx_max_size);
-		pa[0] = 0xAA;
-		qa[0] = 0x55;
-		check(pa[0] == 0xAA && qa[0] == 0x55, "and does not overlap it");
+		payload_of(p)[0] = 0xAA;
+		payload_of(q)[0] = 0x55;
+		check(payload_of(p)[0] == 0xAA && payload_of(q)[0] == 0x55,
+		      "and does not overlap it");
 	}
 
 	/* --- TX: a block, plus the payload capacity that block permits.
@@ -80,12 +89,22 @@ void runContract(const char* name)
 	 * The whole obligation, and nothing policy-specific:
 	 *
 	 *     requested <= capacity <= tx_max_size
-	 *     the block holds at least cobs_max_wire_size(capacity) bytes
+	 *     the block holds at least
+	 *         Format::tx_storage_size_for_capacity(capacity) bytes
 	 *
-	 * How much slack a policy chooses to report is its own business — exact,
-	 * a power-of-two class, or the whole slab — so the shared body must never
-	 * assert a particular number here.
+	 * That last line is HEADER-INCLUSIVE, and it is the whole reason this
+	 * check exists. The encoded frame is [length][payload], so a policy that
+	 * still sizes its blocks with cobs_max_wire_size(capacity) — correct
+	 * before the length prefix, one or two bytes short after it — would sail
+	 * through a test written the old way and then have CobsMsg::encode() run
+	 * off the end of the block. Asking Format for the number is what makes
+	 * that regression impossible to miss.
+	 *
+	 * How much slack a policy chooses to report is still its own business —
+	 * exact, a size class, or the whole slab — so the shared body must never
+	 * assert a particular capacity here.
 	 */
+	using Format = CobsFormatFor<Allocator>;
 	const auto txRequest = [&a](const std::size_t requested) {
 		const std::string n = std::to_string(requested);
 		const TxAllocation t = a.allocate_tx(requested);
@@ -98,12 +117,13 @@ void runContract(const char* name)
 		      "and never more than tx_max_size (request " + n + ")");
 
 		// The reported capacity is a promise about physical storage: the
-		// worst-case frame for that many payload bytes must fit.
-		const std::size_t physical = cobs_max_wire_size(t.capacity);
+		// worst-case frame for that many payload bytes must fit — INCLUDING
+		// the length header that shares the block with them.
+		const std::size_t physical = Format::tx_storage_size_for_capacity(t.capacity);
 		auto* const bytes = reinterpret_cast<uint8_t*>(t.memory);
 		for (std::size_t i = 0; i < physical; ++i) { bytes[i] = static_cast<uint8_t>(i); }
 		check(bytes[0] == 0x00 && bytes[physical - 1] == static_cast<uint8_t>(physical - 1),
-		      "with cobs_max_wire_size(capacity) bytes writable (request " + n + ")");
+		      "with the whole header-inclusive block writable (request " + n + ")");
 
 		a.deallocate_tx(t.memory, t.capacity);
 	};
@@ -160,7 +180,7 @@ void runContract(const char* name)
 		Packet* const rx = a.allocate_rx(Allocator::rx_max_size);
 		const TxAllocation tx = a.allocate_tx(7);
 		churn_ok = churn_ok && rx != nullptr && tx.memory != nullptr;
-		if (rx != nullptr) { rx->writable_payload(Allocator::rx_max_size)[0] = 0x11; }
+		if (rx != nullptr) { reinterpret_cast<uint8_t*>(rx)[sizeof(Packet)] = 0x11; }
 		a.deallocate_rx(rx);
 		a.deallocate_tx(tx.memory, tx.capacity);
 	}
@@ -226,16 +246,22 @@ void testHeapGrantsExactlyWhatWasAsked()
 	}
 	check(all_ok, "the heap policy reports exactly the capacity requested");
 
-	{	// Zero capacity still needs real storage: cobs_max_wire_size(0) is two
-		// bytes, which is the canonical empty frame `01 00`.
+	{	// Zero capacity still needs real storage — and more of it than it used
+		// to. The canonical empty ENGINE frame is not `01 00` any more: its
+		// decoded content is the length field, so the block must hold
+		// cobs_max_wire_size(length_size), three bytes for a one-byte header
+		// and four for a two-byte one.
+		using Fmt = CobsFormatFor<Allocator>;
 		const TxAllocation t = a.allocate_tx(0);
 		check(t.memory != nullptr && t.capacity == 0,
 		      "a zero request yields a real block of zero payload capacity");
+		const std::size_t needed = Fmt::tx_storage_size_for_capacity(0);
+		check(needed == cobs_max_wire_size(Fmt::length_size),
+		      "sized for the length field alone, delimiter included");
 		auto* const bytes = reinterpret_cast<uint8_t*>(t.memory);
-		bytes[0] = 0x01;
-		bytes[1] = 0x00;
-		check(bytes[0] == 0x01 && bytes[1] == 0x00,
-		      "big enough to hold the canonical empty frame");
+		for (std::size_t i = 0; i < needed; ++i) { bytes[i] = static_cast<uint8_t>(0xA0 + i); }
+		check(bytes[needed - 1] == static_cast<uint8_t>(0xA0 + needed - 1),
+		      "and every one of those bytes is writable");
 		a.deallocate_tx(t.memory, t.capacity);
 	}
 }
@@ -270,8 +296,13 @@ void testFixedGeometryIsAbiIndependent()
 
 	Allocator a;
 	auto* const p = a.allocate_rx(Allocator::rx_max_size);
-	check(p != nullptr && p->writable_payload(Allocator::rx_max_size).size() == 1024,
-	      "a 1024-byte policy hands out exactly 1024 payload bytes");
+	check(p != nullptr, "a 1024-byte policy honours a 1024-byte request");
+	auto* const bytes = reinterpret_cast<uint8_t*>(p) + sizeof(*p);
+	for (std::size_t i = 0; i < 1024; ++i) { bytes[i] = static_cast<uint8_t>(i); }
+	p->size = 1024;
+	check(p->data().size() == 1024 && p->data()[1023] == static_cast<uint8_t>(1023),
+	      "with all 1024 payload bytes usable on any ABI");
+	p->size = 0;
 	a.deallocate_rx(p);
 }
 
