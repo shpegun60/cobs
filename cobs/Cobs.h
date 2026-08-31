@@ -60,6 +60,27 @@ public:
 	static constexpr std::size_t max_decoded_size = Allocator::rx_max_size;
 	static constexpr std::size_t max_send_size    = Allocator::tx_max_size;
 
+	/*
+	 * What make_msg() reserves when the caller gives no hint (§8.3.1).
+	 *
+	 * Not zero, and the reason is measured rather than aesthetic: a message
+	 * built field by field from a capacity of zero walks the whole geometric
+	 * ladder, which on the heap policy is 14 allocations and 453 requested
+	 * bytes for a 100-byte payload. From 32 the same payload takes four
+	 * (32 -> 48 -> 72 -> 108), and a typical short frame takes exactly one.
+	 * An API that only performs well when the caller thought to pass a hint is
+	 * a trap with good documentation.
+	 *
+	 * It costs nothing on a single-slab policy, which reports tx_max_size
+	 * whatever it was asked for. A caller who wants the canonical minimum
+	 * says so: make_msg(0).
+	 *
+	 * Clamped, because a policy may declare a limit below this default, and
+	 * make_msg() must never fail merely because of its own default.
+	 */
+	static constexpr std::size_t default_initial_capacity =
+		(max_send_size < 32u) ? max_send_size : 32u;
+
 	using Sender = tiny::delegate<bool(std::span<const uint8_t>)>;
 	using TxBusy = tiny::delegate<bool()>;
 
@@ -93,7 +114,7 @@ public:
 		// destroyed with it, so returning it only keeps the pool's own
 		// accounting honest for anything watching.
 		if (m_activeTx.memory != nullptr) {
-			m_allocator.deallocate_tx(m_activeTx.memory, m_activeTx.wire_size);
+			m_allocator.deallocate_tx(m_activeTx.memory, m_activeTx.capacity);
 			m_activeTx = {};
 		}
 	}
@@ -145,30 +166,38 @@ public:
 	/* --------------------------------- TX -------------------------------- */
 
 	/*
-	 * A message whose block is sized for exactly this payload — the point of
-	 * the sized TX contract (§9.1): a seven-byte frame costs nine bytes on a
-	 * heap policy rather than the worst case of the largest frame allowed.
+	 * A new, EMPTY message to build into. Named make_ rather than get_ because
+	 * it constructs an owning object and may allocate; there is nothing to
+	 * "get".
 	 *
-	 * Callers who cannot know the length until they have serialized it ask for
-	 * an upper bound and then truncate():
+	 *     auto msg = cobs.make_msg();
+	 *     if (!msg) { ... TX storage exhausted ... }
+	 *     (void)msg.write<uint16_t>(id);
+	 *     (void)msg.write_bytes(body);
+	 *     (void)cobs.push(msg);
 	 *
-	 *     auto msg = cobs.get_msg(known_size);
-	 *     auto data = msg.payload();
+	 * The argument is a capacity hint, NOT an initial size: size() starts at
+	 * zero either way, and the hint only spares growths for a caller who knows
+	 * roughly how much is coming. Capacity then grows geometrically as the
+	 * message is written (§8.3.1), so a caller who cannot predict the length
+	 * does not have to.
 	 *
-	 *     auto msg = cobs.get_msg(upper_bound);
-	 *     const auto actual = serialize(msg.payload());
-	 *     (void)msg.truncate(actual);
+	 *     make_msg()     default_initial_capacity, a practical reserve
+	 *     make_msg(0)    explicitly minimal — the canonical empty frame
+	 *     make_msg(N)    the caller knows a useful number
 	 *
 	 * An EMPTY result is the back-pressure signal that the configured TX
 	 * storage is exhausted, and callers must handle it; CobsMsg is already a
 	 * nullable owner, so there is nothing for an optional to add.
 	 */
-	[[nodiscard]] Msg get_msg(const std::size_t payload_size) noexcept
+	[[nodiscard]] Msg make_msg() noexcept { return make_msg(default_initial_capacity); }
+
+	[[nodiscard]] Msg make_msg(const std::size_t initial_capacity) noexcept
 	{
-		if (payload_size > max_send_size) {
+		if (initial_capacity > max_send_size) {
 			return {};
 		}
-		return Msg{m_allocator, payload_size};
+		return Msg{m_allocator, initial_capacity};
 	}
 
 	/*
@@ -222,10 +251,10 @@ public:
 	void proceed() noexcept
 	{
 		if (m_activeTx.memory != nullptr && !m_txBusy()) {
-			// The ALLOCATION size travels with the pointer, so a policy that
-			// segregates by size class knows where it belongs without
-			// searching (§9.1).
-			m_allocator.deallocate_tx(m_activeTx.memory, m_activeTx.wire_size);
+			// The capacity the policy reported travels with the pointer, so a
+			// policy that segregates by size class knows where the block
+			// belongs without searching (§9.1).
+			m_allocator.deallocate_tx(m_activeTx.memory, m_activeTx.capacity);
 			m_activeTx = {};
 		}
 	}

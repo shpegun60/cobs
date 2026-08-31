@@ -75,27 +75,57 @@ void runContract(const char* name)
 		check(pa[0] == 0xAA && qa[0] == 0x55, "and does not overlap it");
 	}
 
-	// --- TX: raw bytes big enough for the worst-case frame
-	const std::size_t big = cobs_max_wire_size(Allocator::tx_max_size);
-	std::byte* const t = a.allocate_tx(big);
-	check(t != nullptr, "allocate_tx yields a block");
-	{
-		auto* const bytes = reinterpret_cast<uint8_t*>(t);
-		for (std::size_t i = 0; i < big; ++i) { bytes[i] = static_cast<uint8_t>(i); }
-		check(bytes[0] == 0 && bytes[big - 1] == static_cast<uint8_t>(big - 1),
-		      "with at least the requested bytes usable");
-	}
-	std::byte* const u = a.allocate_tx(big);
-	check(u != nullptr && u != t, "a second TX block is distinct");
+	/* --- TX: a block, plus the payload capacity that block permits.
+	 *
+	 * The whole obligation, and nothing policy-specific:
+	 *
+	 *     requested <= capacity <= tx_max_size
+	 *     the block holds at least cobs_max_wire_size(capacity) bytes
+	 *
+	 * How much slack a policy chooses to report is its own business — exact,
+	 * a power-of-two class, or the whole slab — so the shared body must never
+	 * assert a particular number here.
+	 */
+	const auto txRequest = [&a](const std::size_t requested) {
+		const std::string n = std::to_string(requested);
+		const TxAllocation t = a.allocate_tx(requested);
+		check(t.memory != nullptr, "allocate_tx(" + n + ") is honoured");
+		if (t.memory == nullptr) {
+			return;
+		}
+		check(t.capacity >= requested, "and reports at least the " + n + " asked for");
+		check(t.capacity <= Allocator::tx_max_size,
+		      "and never more than tx_max_size (request " + n + ")");
 
-	{	// A small request must be honoured too, whatever the policy does with
-		// it physically: exact on a heap, a whole slab on a single-class pool.
-		std::byte* const small = a.allocate_tx(cobs_max_wire_size(7));
-		check(small != nullptr, "a small request is honoured");
-		auto* const bytes = reinterpret_cast<uint8_t*>(small);
-		for (std::size_t i = 0; i < cobs_max_wire_size(7); ++i) { bytes[i] = 0x5A; }
-		a.deallocate_tx(small, cobs_max_wire_size(7));
+		// The reported capacity is a promise about physical storage: the
+		// worst-case frame for that many payload bytes must fit.
+		const std::size_t physical = cobs_max_wire_size(t.capacity);
+		auto* const bytes = reinterpret_cast<uint8_t*>(t.memory);
+		for (std::size_t i = 0; i < physical; ++i) { bytes[i] = static_cast<uint8_t>(i); }
+		check(bytes[0] == 0x00 && bytes[physical - 1] == static_cast<uint8_t>(physical - 1),
+		      "with cobs_max_wire_size(capacity) bytes writable (request " + n + ")");
+
+		a.deallocate_tx(t.memory, t.capacity);
+	};
+
+	txRequest(0);
+	txRequest(1);
+	txRequest(7);
+	txRequest(Allocator::tx_max_size / 2);
+	txRequest(Allocator::tx_max_size);
+
+	{	// The declared limit is a limit: one byte past it is not negotiable.
+		const TxAllocation over = a.allocate_tx(Allocator::tx_max_size + 1);
+		check(over.memory == nullptr && over.capacity == 0,
+		      "a request beyond tx_max_size yields an empty allocation");
 	}
+
+	const TxAllocation t = a.allocate_tx(Allocator::tx_max_size);
+	const TxAllocation u = a.allocate_tx(Allocator::tx_max_size);
+	check(t.memory != nullptr && u.memory != nullptr && u.memory != t.memory,
+	      "two TX blocks are distinct");
+	check(t.capacity == Allocator::tx_max_size,
+	      "a request for the whole limit reports exactly that capacity");
 
 	// --- §9.1.2: RX exhaustion must never starve TX
 	{
@@ -105,32 +135,34 @@ void runContract(const char* name)
 			if (extra == nullptr) { break; }
 			hoard.push_back(extra);
 		}
-		std::byte* const still = a.allocate_tx(big);
-		check(still != nullptr,
+		const TxAllocation still = a.allocate_tx(Allocator::tx_max_size);
+		check(still.memory != nullptr,
 		      "TX still allocates while RX is held to exhaustion (independent quotas)");
-		a.deallocate_tx(still, big);
+		a.deallocate_tx(still.memory, still.capacity);
 		for (Packet* const h : hoard) { a.deallocate_rx(h); }
 	}
 
 	a.deallocate_rx(p);
 	a.deallocate_rx(q);
-	a.deallocate_tx(t, big);
-	a.deallocate_tx(u, big);
+	a.deallocate_tx(t.memory, t.capacity);
+	a.deallocate_tx(u.memory, u.capacity);
 
 	// --- null is a no-op, not an abuse
 	a.deallocate_rx(nullptr);
-	a.deallocate_tx(nullptr, big);
+	a.deallocate_tx(nullptr, 0);
 	check(true, "deallocating nullptr is harmless");
 
-	// --- churn far beyond any plausible capacity: a leak would run it dry
+	// --- churn far beyond any plausible capacity: a leak would run it dry.
+	// Deliberately returned with the capacity the policy reported, which is
+	// the only number a segregated policy could use to find the block's pool.
 	bool churn_ok = true;
 	for (int i = 0; i < 500; ++i) {
 		Packet* const rx = a.allocate_rx();
-		std::byte* const tx = a.allocate_tx(big);
-		churn_ok = churn_ok && rx != nullptr && tx != nullptr;
+		const TxAllocation tx = a.allocate_tx(7);
+		churn_ok = churn_ok && rx != nullptr && tx.memory != nullptr;
 		if (rx != nullptr) { rx->writable_payload()[0] = 0x11; }
 		a.deallocate_rx(rx);
-		a.deallocate_tx(tx, big);
+		a.deallocate_tx(tx.memory, tx.capacity);
 	}
 	check(churn_ok, "500 allocate/free cycles never run dry");
 }
@@ -151,10 +183,10 @@ void testFixedExhaustionAndIndependence()
 	check(a.allocate_rx() == nullptr, "a third returns null rather than an error");
 	check(a.rx_stats().exhausted == 1, "and the exhaustion is counted");
 
-	const std::size_t w = cobs_max_wire_size(Allocator::tx_max_size);
-	std::byte* const t = a.allocate_tx(w);
-	check(t != nullptr, "TX is untouched by RX exhaustion");
-	check(a.allocate_tx(w) == nullptr, "and exhausts independently");
+	const TxAllocation t = a.allocate_tx(Allocator::tx_max_size);
+	check(t.memory != nullptr, "TX is untouched by RX exhaustion");
+	check(a.allocate_tx(Allocator::tx_max_size).memory == nullptr,
+	      "and exhausts independently");
 
 	a.deallocate_rx(p1);
 	a.deallocate_rx(p1); // double free
@@ -162,8 +194,69 @@ void testFixedExhaustionAndIndependence()
 	check(a.rx_available() == 1, "and the pool is not corrupted");
 
 	a.deallocate_rx(p2);
-	a.deallocate_tx(t, w);
+	a.deallocate_tx(t.memory, t.capacity);
 	check(a.rx_available() == 2 && a.tx_available() == 1, "everything comes back");
+}
+
+/*
+ * The capacity a policy reports is NOT part of the generic contract, so each
+ * one is checked here, against its own documented rule. This is the half of
+ * the model the shared body must stay ignorant of.
+ */
+void testHeapGrantsExactlyWhatWasAsked()
+{
+	g_policy = "heap";
+	using Allocator = CobsHeapAllocator<64, 1024>;
+	Allocator a;
+
+	// No rounding, no size classes, no growth rule: deciding how much to ask
+	// for belongs to CobsMsg (§9.1.0), and a policy with a second opinion
+	// would be two growth rules arguing over one allocation.
+	bool all_ok = true;
+	for (const std::size_t requested : {std::size_t{0}, std::size_t{1}, std::size_t{7},
+	                                    std::size_t{9}, std::size_t{70}, std::size_t{500},
+	                                    std::size_t{1023}, std::size_t{1024}}) {
+		const TxAllocation t = a.allocate_tx(requested);
+		const bool ok = t.memory != nullptr && t.capacity == requested;
+		if (!ok) {
+			std::printf("       request %zu -> capacity %zu\n", requested, t.capacity);
+		}
+		all_ok = all_ok && ok;
+		a.deallocate_tx(t.memory, t.capacity);
+	}
+	check(all_ok, "the heap policy reports exactly the capacity requested");
+
+	{	// Zero capacity still needs real storage: cobs_max_wire_size(0) is two
+		// bytes, which is the canonical empty frame `01 00`.
+		const TxAllocation t = a.allocate_tx(0);
+		check(t.memory != nullptr && t.capacity == 0,
+		      "a zero request yields a real block of zero payload capacity");
+		auto* const bytes = reinterpret_cast<uint8_t*>(t.memory);
+		bytes[0] = 0x01;
+		bytes[1] = 0x00;
+		check(bytes[0] == 0x01 && bytes[1] == 0x00,
+		      "big enough to hold the canonical empty frame");
+		a.deallocate_tx(t.memory, t.capacity);
+	}
+}
+
+void testFixedReportsTheWholeSlab()
+{
+	g_policy = "fixed";
+	using Allocator = CobsFixedAllocator<64, 1, 1024, 1>;
+	Allocator a;
+
+	// One size class: every accepted request reports the whole slab, because
+	// the block cost that much whatever was asked for.
+	bool all_ok = true;
+	for (const std::size_t requested : {std::size_t{0}, std::size_t{1}, std::size_t{7},
+	                                    std::size_t{1000}, std::size_t{1024}}) {
+		const TxAllocation t = a.allocate_tx(requested);
+		all_ok = all_ok && t.memory != nullptr && t.capacity == 1024;
+		a.deallocate_tx(t.memory, t.capacity);
+	}
+	check(all_ok, "a single-slab policy reports tx_max_size for every request");
+	check(a.tx_available() == 1, "and every block came back");
 }
 
 void testFixedGeometryIsAbiIndependent()
@@ -193,6 +286,10 @@ int main()
 	group("FixedSpecific");
 	testFixedExhaustionAndIndependence();
 	testFixedGeometryIsAbiIndependent();
+
+	group("ReportedCapacity");
+	testHeapGrantsExactlyWhatWasAsked();
+	testFixedReportsTheWholeSlab();
 
 	std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;

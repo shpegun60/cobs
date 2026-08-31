@@ -17,6 +17,7 @@
 
 #include "CobsEncoder.h"
 #include "RxPacket.h"
+#include "TxAllocation.h"
 
 #include <cstddef>
 #include <memory>
@@ -58,19 +59,40 @@ public:
 		::operator delete(static_cast<void*>(packet));
 	}
 
-	// Exactly the bytes asked for. This is where the sized TX contract pays:
-	// a seven-byte message costs nine bytes here, not cobs_max_wire_size of
-	// the largest frame the policy could ever carry.
-	[[nodiscard]] std::byte* allocate_tx(const std::size_t wire_size) noexcept
+	/*
+	 * Exactly the capacity asked for, and a block sized for exactly that.
+	 * This is where the sized TX contract pays: a seven-byte message costs
+	 * nine bytes here, not cobs_max_wire_size of the largest frame the policy
+	 * allows — for tx_max_size = 1024 that is 9 against 1030.
+	 *
+	 * No rounding up, no size classes, no growth rule. Deciding how much to
+	 * ask for is the CONTAINER's job (§9.1.0): CobsMsg knows its current
+	 * capacity and what it needs, so it computes the geometric target and asks
+	 * once. A policy that also had an opinion would be two growth rules
+	 * fighting over one allocation.
+	 *
+	 * A request for zero still gets real storage — cobs_max_wire_size(0) is
+	 * two bytes, enough for the canonical empty frame `01 00` — while the
+	 * reported payload capacity is honestly zero.
+	 */
+	[[nodiscard]] TxAllocation allocate_tx(const std::size_t requested) noexcept
 	{
-		return static_cast<std::byte*>(::operator new(wire_size, std::nothrow));
+		if (requested > tx_max_size) {
+			return {};
+		}
+		void* const memory =
+			::operator new(cobs_max_wire_size(requested), std::nothrow);
+		if (memory == nullptr) {
+			return {};
+		}
+		return {static_cast<std::byte*>(memory), requested};
 	}
 
-	// The size is part of the contract for the benefit of policies that
-	// segregate by size class; this one deliberately ignores it. Sized
-	// operator delete would be an ABI- and runtime-dependent optimisation,
-	// and measuring it belongs in a benchmark, not in a contract argument.
-	void deallocate_tx(std::byte* const memory, std::size_t /*wire_size*/) noexcept
+	// The capacity comes back for the benefit of policies that segregate by
+	// size class; this one deliberately ignores it. Sized operator delete
+	// would be an ABI- and runtime-dependent optimisation, and measuring it
+	// belongs in a benchmark, not in a contract argument.
+	void deallocate_tx(std::byte* const memory, std::size_t /*capacity*/) noexcept
 	{
 		::operator delete(static_cast<void*>(memory));
 	}

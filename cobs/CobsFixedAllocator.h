@@ -21,6 +21,7 @@
 
 #include "CobsEncoder.h"
 #include "RxPacket.h"
+#include "TxAllocation.h"
 #include "detail/StaticBlockPool.h"
 
 #include <cstddef>
@@ -87,15 +88,32 @@ public:
 		                   });
 	}
 
-	// One slab: the request is honoured from the same block whatever its size,
-	// so a short frame still costs a full block here. That is this policy
-	// being simple, not the contract being wasteful — a segregated policy
-	// picks a size class from the very same argument.
-	[[nodiscard]] std::byte* allocate_tx(const std::size_t wire_size) noexcept
+	/*
+	 * One slab: the request is honoured from the same block whatever its size,
+	 * so this policy reports the FULL tx_max_size back as the capacity. The
+	 * block was going to cost that much either way, and saying so means a
+	 * message built on this policy essentially never grows — it can be created
+	 * with no hint at all and filled to tx_max_size with one allocation, no
+	 * reallocation and no copy.
+	 *
+	 * That is the whole point of reporting capacity rather than assuming it:
+	 * on this policy the reserve is free, and only the policy knows that.
+	 */
+	[[nodiscard]] TxAllocation allocate_tx(const std::size_t requested) noexcept
 	{
-		return (wire_size <= TxPool::block_size) ? m_tx.allocate() : nullptr;
+		if (requested > tx_max_size) {
+			return {};
+		}
+		std::byte* const memory = m_tx.allocate();
+		if (memory == nullptr) {
+			return {};
+		}
+		return {memory, tx_max_size};
 	}
-	void deallocate_tx(std::byte* const memory, std::size_t /*wire_size*/) noexcept
+
+	// A single size class has nothing to look up, so the capacity is ignored
+	// here; a segregated policy would use it to pick the pool.
+	void deallocate_tx(std::byte* const memory, std::size_t /*capacity*/) noexcept
 	{
 		m_tx.deallocate(memory);
 	}

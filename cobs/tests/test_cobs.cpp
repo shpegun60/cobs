@@ -120,11 +120,13 @@ void runEngine(const char* name)
 		FakeTransport t;
 		bind(cobs, t);
 
-		auto msg = cobs.get_msg(kPayload);
-		check(static_cast<bool>(msg), "get_msg yields a message");
+		auto msg = cobs.make_msg();
+		check(static_cast<bool>(msg), "make_msg yields an empty message");
+		check(msg.size() == 0, "with nothing in it yet");
+		check(msg.capacity() >= Engine::default_initial_capacity,
+		      "but with the default reserve already in hand");
 		const auto payload = pattern(0x20, 6);
-		const auto room = msg.payload();
-		for (std::size_t i = 0; i < payload.size(); ++i) { room[i] = payload[i]; }
+		check(msg.write_bytes(std::span<const uint8_t>{payload}), "the payload is written");
 
 		check(cobs.push(msg) == SendResult::Sent, "push sends it");
 		check(!msg, "the message surrendered its block");
@@ -157,31 +159,32 @@ void runEngine(const char* name)
 		FakeTransport t;
 		bind(cobs, t);
 
-		auto first = cobs.get_msg(1);
-		
+		auto first = cobs.make_msg();
+		check(first.write(uint8_t{0x01}), "a one-byte frame is built");
 		check(cobs.push(first) == SendResult::Sent, "the first frame goes out");
 
-		auto second = cobs.get_msg(4);
+		auto second = cobs.make_msg(4);
 		const auto payload = pattern(0x30, 4);
-		const auto room = second.payload();
-		for (std::size_t i = 0; i < payload.size(); ++i) { room[i] = payload[i]; }
+		check(second.write_bytes(std::span<const uint8_t>{payload}), "and a second built");
 
 		check(cobs.push(second) == SendResult::Busy, "a second push while busy is refused");
 		check(static_cast<bool>(second) && !second.encoded(),
 		      "leaving the message Building, not encoded");
 		check(cobs.tx_stats().send_refused_busy == 1, "and counted");
 
-		// Still writable: the raw payload was never touched, and truncating
-		// after a refused push is still allowed because nothing was encoded.
-		const auto again = second.payload();
-		check(again.size() == payload.size() && again.data() == room.data(),
-		      "its payload is still the same writable region");
-		check(second.truncate(2), "and can still be shortened");
-		check(second.truncate(payload.size()) == false, "but never grown back");
+		// Still Building, so it is still a builder: a refused push touched
+		// nothing, and more bytes may be appended before the retry.
+		check(second.size() == payload.size(), "its payload is untouched");
+		check(second.write(uint8_t{0x34}), "and it still accepts writes");
+		check(second.size() == payload.size() + 1, "which land after what was there");
 
 		t.finish();
 		cobs.proceed();
 		check(cobs.push(second) == SendResult::Sent, "it sends once the link frees up");
+		auto expected = payload;
+		expected.push_back(0x34);
+		check(t.sent.back() == cobs_test::encode(expected),
+		      "carrying everything that was written, in order");
 	}
 
 	/* --- a failed start keeps the SAME frame retryable ------------------ */
@@ -190,10 +193,9 @@ void runEngine(const char* name)
 		FakeTransport t;
 		bind(cobs, t);
 
-		auto msg = cobs.get_msg(7);
+		auto msg = cobs.make_msg(7);
 		const auto payload = pattern(0x40, 7);
-		const auto room = msg.payload();
-		for (std::size_t i = 0; i < payload.size(); ++i) { room[i] = payload[i]; }
+		check(msg.write_bytes(std::span<const uint8_t>{payload}), "a frame is built");
 
 		t.refuse = true;
 		check(cobs.push(msg) == SendResult::Error, "a transport that will not start reports Error");
@@ -211,7 +213,7 @@ void runEngine(const char* name)
 	/* --- refusals that are not failures --------------------------------- */
 	{
 		Engine cobs;                       // nothing bound
-		auto msg = cobs.get_msg(kPayload);
+		auto msg = cobs.make_msg(kPayload);
 		
 		check(cobs.push(msg) == SendResult::NotBound, "pushing with no transport bound is NotBound");
 		check(static_cast<bool>(msg), "and the message is untouched");
@@ -220,7 +222,7 @@ void runEngine(const char* name)
 		check(cobs.push(empty) == SendResult::Invalid, "an empty message is Invalid");
 
 		Engine other;
-		auto foreign = other.get_msg(2);
+		auto foreign = other.make_msg(2);
 		
 		check(cobs.push(foreign) == SendResult::Invalid,
 		      "so is a message belonging to another engine of the same type");
@@ -239,14 +241,14 @@ void runEngine(const char* name)
 		check(!cobs.set_transport(typename Engine::Sender{}, busy_for<Engine>(t)),
 		      "and a tx_busy with no sender likewise");
 		{
-			auto msg = cobs.get_msg(kPayload);
+			auto msg = cobs.make_msg(kPayload);
 			
 			check(cobs.push(msg) == SendResult::NotBound,
 			      "so neither half leaked into the engine");
 		}
 
 		bind(cobs, t);
-		auto msg = cobs.get_msg(kPayload);
+		auto msg = cobs.make_msg(kPayload);
 		
 		check(cobs.push(msg) == SendResult::Sent, "a frame is in flight");
 
@@ -269,9 +271,8 @@ void runEngine(const char* name)
 		bind(cobs, t);
 
 		const auto out = pattern(0x60, 5);
-		auto msg = cobs.get_msg(5);
-		const auto room = msg.payload();
-		for (std::size_t i = 0; i < out.size(); ++i) { room[i] = out[i]; }
+		auto msg = cobs.make_msg();
+		check(msg.write_bytes(std::span<const uint8_t>{out}), "a frame is built");
 		check(cobs.push(msg) == SendResult::Sent, "a frame goes out");
 
 		const auto in = pattern(0x70, 11);
@@ -296,9 +297,9 @@ void testFixedExhaustion()
 	FakeTransport t;
 	bind(cobs, t);
 
-	auto a = cobs.get_msg(4);
+	auto a = cobs.make_msg(4);
 	check(static_cast<bool>(a), "the single TX block is handed out");
-	auto b = cobs.get_msg(4);
+	auto b = cobs.make_msg(4);
 	check(!b, "a second message from a one-block pool is empty");
 	check(cobs.push(b) == SendResult::Invalid, "and pushing it is Invalid, not a crash");
 
@@ -306,11 +307,11 @@ void testFixedExhaustion()
 	check(cobs.push(a) == SendResult::Sent, "the real one still sends");
 
 	// The block is with the transport, so the pool is dry until it returns.
-	auto c = cobs.get_msg(4);
+	auto c = cobs.make_msg(4);
 	check(!c, "the pool stays dry while the transport holds the block");
 	t.finish();
 	cobs.proceed();
-	auto d = cobs.get_msg(4);
+	auto d = cobs.make_msg(4);
 	check(static_cast<bool>(d), "and refills once proceed reclaims it");
 }
 
@@ -324,14 +325,56 @@ void testDestructorReclaimsActiveTx()
 	{
 		Cobs<Allocator> cobs;
 		bind(cobs, t);
-		auto msg = cobs.get_msg(kPayload);
-		
+		auto msg = cobs.make_msg();
+		check(msg.write(uint32_t{0x01020304u}), "a frame is built");
 		check(cobs.push(msg) == SendResult::Sent, "a frame is in flight at destruction");
 		check(cobs.allocator().tx_available() == 1, "one TX block is out");
 		// The transport is finished with it — precondition 2 is satisfied.
 		t.finish();
 	}
 	check(true, "destroying the engine with a reclaimed block is clean");
+}
+
+
+/* ==================== the default reserve, and its clamp ================ */
+
+void testDefaultInitialCapacity()
+{
+	{	// The heap policy grants exactly what is asked, so the default is
+		// visible directly: a short frame never reallocates.
+		g_policy = "heap";
+		using Engine = Cobs<CobsHeapAllocator<64, 1024>>;
+		static_assert(Engine::default_initial_capacity == 32);
+		Engine cobs;
+
+		auto msg = cobs.make_msg();
+		check(msg.size() == 0 && msg.capacity() == 32,
+		      "make_msg() reserves default_initial_capacity");
+
+		bool ok = true;
+		for (int i = 0; i < 32; ++i) { ok = ok && msg.write(static_cast<uint8_t>(i)); }
+		check(ok && msg.capacity() == 32,
+		      "and 32 bytes go in without a single reallocation");
+
+		// The explicit minimum is still reachable, for a caller that wants the
+		// canonical empty frame and nothing more.
+		auto minimal = cobs.make_msg(0);
+		check(static_cast<bool>(minimal) && minimal.capacity() == 0,
+		      "make_msg(0) is still explicitly minimal");
+		check(!minimal.encode().empty(), "and encodes the canonical empty frame");
+	}
+	{	// A policy whose limit is BELOW the default must still work: the
+		// default is clamped, so make_msg() can never fail on its own default.
+		g_policy = "fixed";
+		using Engine = Cobs<CobsFixedAllocator<32, 2, 16, 1>>;
+		static_assert(Engine::default_initial_capacity == 16,
+		              "the default must clamp to a smaller tx_max_size");
+		Engine cobs;
+		auto msg = cobs.make_msg();
+		check(static_cast<bool>(msg),
+		      "make_msg() works on a policy whose limit is below the default");
+		check(msg.capacity() == 16, "reporting the slab it actually got");
+	}
 }
 
 } // namespace
@@ -344,6 +387,7 @@ int main()
 
 	group("FixedSpecific");
 	testFixedExhaustion();
+	testDefaultInitialCapacity();
 	testDestructorReclaimsActiveTx();
 
 	std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

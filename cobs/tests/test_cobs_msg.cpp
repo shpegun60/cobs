@@ -1,16 +1,26 @@
 /*
- * Host verification for CobsMsg: storage, geometry and exclusive ownership.
- * No transport anywhere — that is the point of the type, and of this suite.
+ * Host verification for CobsMsg: block ownership, container semantics, the
+ * growth rule and the serializers. No transport anywhere — that is the point
+ * of the type, and of this suite.
  *
- * Ownership is asserted BEHAVIOURALLY, through TX pool occupancy: a message
- * that leaks a block or frees one twice shows up as the wrong number of
- * available blocks, not as a field read out of the object.
+ * Two things are asserted only INDIRECTLY, on purpose:
+ *
+ *   - Ownership, through TX pool occupancy and through a counting policy. A
+ *     message that leaks a block or frees one twice shows up as the wrong
+ *     number of available blocks, never as a field read out of the object.
+ *   - Payload contents, through encode() and the reference encoder. CobsMsg
+ *     hands out no writable payload span, so there is nothing to peek at; a
+ *     wrong byte, a lost byte or a botched growth copy all surface as a wrong
+ *     wire frame.
  */
 #include "CobsFixedAllocator.h"
+#include "CobsHeapAllocator.h"
 #include "CobsMsg.h"
 #include "reference_encoder.h"
 
 #include <cstdio>
+#include <cstring>
+#include <new>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -38,19 +48,31 @@ constexpr std::size_t kMaxDecoded = 64;
 constexpr std::size_t kTxBlocks = 2; // the recommended default: build one while one flies
 
 using TxPool = CobsFixedAllocator<kMaxDecoded, 1, kMaxDecoded, kTxBlocks>;
+using HeapPool = CobsHeapAllocator<kMaxDecoded, kMaxDecoded>;
 using Msg = CobsMsg<TxPool>;
 
-Msg make(TxPool& pool, const std::size_t capacity) { return Msg{pool, capacity}; }
-
-std::vector<uint8_t> fill(Msg& m, const uint8_t tag)
+// A message filled with `n` recognisable bytes, plus the bytes themselves for
+// the oracle to check against.
+template<class M>
+std::vector<uint8_t> fill(M& m, const std::size_t n, const uint8_t tag)
 {
-	const auto payload = m.payload();
-	std::vector<uint8_t> expected(payload.size());
-	for (std::size_t i = 0; i < payload.size(); ++i) {
+	std::vector<uint8_t> expected(n);
+	for (std::size_t i = 0; i < n; ++i) {
 		expected[i] = static_cast<uint8_t>(tag + i);
-		payload[i] = expected[i];
+	}
+	if (!m.write_bytes(std::span<const uint8_t>{expected})) {
+		expected.clear(); // the caller's assertion will notice
 	}
 	return expected;
+}
+
+// The only way to read a message back: encode it and decode the frame with the
+// independent reference implementation.
+template<class M>
+bool framesAs(M& m, const std::vector<uint8_t>& expected)
+{
+	const auto wire = m.encode();
+	return std::vector<uint8_t>(wire.begin(), wire.end()) == cobs_test::encode(expected);
 }
 
 /* ============================== ownership =============================== */
@@ -60,16 +82,16 @@ void testAcquireAndRelease()
 	TxPool pool;
 	check(pool.tx_available() == kTxBlocks, "the TX pool starts full");
 	{
-		Msg m = make(pool, kMaxDecoded);
+		Msg m{pool};
 		check(static_cast<bool>(m), "a message acquires a block");
 		check(pool.tx_available() == kTxBlocks - 1, "which the pool records as in use");
-		check(m.payload_size() == kMaxDecoded, "with the capacity it asked for");
+		check(m.size() == 0, "and starts empty");
 	}
 	check(pool.tx_available() == kTxBlocks, "destroying a Building message returns the block");
 
 	{	// The same, but encoded first — a different state, same obligation.
-		Msg m = make(pool, kMaxDecoded);
-		(void)fill(m, 0x10);
+		Msg m{pool};
+		(void)fill(m, 16, 0x10);
 		check(!m.encode().empty(), "the message encodes");
 		check(m.encoded(), "and is now Encoded");
 		check(pool.tx_available() == kTxBlocks - 1, "still holding its block");
@@ -79,7 +101,7 @@ void testAcquireAndRelease()
 	{	// A default-constructed message owns nothing and must not free anything.
 		Msg empty;
 		check(!empty, "a default-constructed message is empty");
-		check(empty.payload().empty(), "and hands out no payload");
+		check(empty.write<uint8_t>(1) == false, "and accepts no writes");
 		check(empty.encode().empty(), "and has nothing to encode");
 	}
 	check(pool.tx_available() == kTxBlocks && pool.tx_stats().rejected == 0,
@@ -89,25 +111,26 @@ void testAcquireAndRelease()
 void testExhaustionAndConcurrentMessages()
 {
 	TxPool pool;
-	Msg a = make(pool, kMaxDecoded);
-	Msg b = make(pool, kMaxDecoded);
+	Msg a{pool};
+	Msg b{pool};
 	check(static_cast<bool>(a) && static_cast<bool>(b),
 	      "several messages can be held at once");
 	check(pool.tx_available() == 0, "consuming the whole TX pool");
 
-	Msg c = make(pool, kMaxDecoded);
+	Msg c{pool};
 	check(!c, "a further message from a dry pool is empty rather than a failure code");
-	check(c.payload().empty(), "and stays unusable");
+	check(c.write<uint8_t>(0) == false, "and stays unusable");
 
 	{	// Distinct blocks, or two messages would encode over each other.
-		const auto pa = a.payload();
-		const auto pb = b.payload();
-		check(pa.data() != pb.data(), "concurrent messages own distinct blocks");
+		const auto ea = fill(a, 8, 0x10);
+		const auto eb = fill(b, 8, 0x90);
+		check(framesAs(a, ea) && framesAs(b, eb),
+		      "concurrent messages own distinct blocks");
 	}
 
 	a = Msg{};
 	check(pool.tx_available() == 1, "assigning an empty message over one releases its block");
-	Msg d = make(pool, kMaxDecoded);
+	Msg d{pool};
 	check(static_cast<bool>(d), "and the pool hands that block out again");
 	check(pool.tx_stats().rejected == 0, "with no block freed twice");
 }
@@ -116,25 +139,23 @@ void testMoveSemantics()
 {
 	TxPool pool;
 	{
-		Msg a = make(pool, kMaxDecoded);
-		const auto expected = fill(a, 0x20);
+		Msg a{pool};
+		const auto expected = fill(a, 20, 0x20);
 
 		Msg b = std::move(a);
 		check(!a, "a moved-from message is empty");
-		check(static_cast<bool>(b) && b.payload_size() == kMaxDecoded,
+		check(static_cast<bool>(b) && b.size() == 20,
 		      "and the destination carries the payload");
 		check(pool.tx_available() == kTxBlocks - 1,
 		      "the block moved rather than being duplicated or lost");
-
-		const auto wire = b.encode();
-		check(std::vector<uint8_t>(wire.begin(), wire.end()) == cobs_test::encode(expected),
+		check(framesAs(b, expected),
 		      "the moved message still encodes the bytes that were written");
 	}
 	check(pool.tx_available() == kTxBlocks, "and is released once");
 
 	{	// Move assignment must release what it overwrites, not leak it.
-		Msg a = make(pool, kMaxDecoded);
-		Msg b = make(pool, kMaxDecoded);
+		Msg a{pool};
+		Msg b{pool};
 		check(pool.tx_available() == 0, "two blocks held");
 		b = std::move(a);
 		check(pool.tx_available() == 1, "move assignment released b's own block first");
@@ -154,75 +175,308 @@ void testMoveSemantics()
 	check(true, "copying is rejected at compile time");
 }
 
-/* =============================== geometry =============================== */
+/* ========================== container semantics ========================= */
 
-void testPayloadGeometry()
-{
-	TxPool pool;
+/*
+ * A counting policy: exact capacity like the heap one, but it records every
+ * allocation and can be told to refuse the next. Growth is only observable
+ * through the allocator, which is exactly right — a container that reallocates
+ * is measured by how often it does so, not by its internal pointers.
+ */
+class SpyPolicy final {
+public:
+	static constexpr std::size_t rx_max_size = 8;
+	static constexpr std::size_t tx_max_size = 4096;
+
+	using Packet = RxPacket<SpyPolicy>;
+	[[nodiscard]] Packet* allocate_rx() noexcept { return nullptr; }
+	void deallocate_rx(Packet*) noexcept {}
+
+	[[nodiscard]] TxAllocation allocate_tx(const std::size_t requested) noexcept
 	{
-		Msg m = make(pool, kMaxDecoded);
-		check(m.payload().size() == kMaxDecoded, "the whole protocol limit can be asked for");
-		check(m.capacity() == kMaxDecoded, "and is reported as the capacity");
+		if (requested > tx_max_size || refuse_next) {
+			return {};
+		}
+		void* const memory = ::operator new(cobs_max_wire_size(requested), std::nothrow);
+		if (memory == nullptr) {
+			return {};
+		}
+		++allocations;
+		last_request = requested;
+		return {static_cast<std::byte*>(memory), requested};
+	}
 
-		// The payload sits exactly cobs_raw_offset(capacity) into the block,
-		// so the encoder has precisely the headroom its proof requires.
-		const auto* const p = m.payload().data();
-		const auto* const block = p - cobs_raw_offset(kMaxDecoded);
-		check(p == block + cobs_raw_offset(kMaxDecoded),
-		      "the payload begins exactly cobs_raw_offset(capacity) into the block");
+	void deallocate_tx(std::byte* const memory, const std::size_t capacity) noexcept
+	{
+		if (memory != nullptr) {
+			++frees;
+			last_freed_capacity = capacity;
+		}
+		::operator delete(static_cast<void*>(memory));
 	}
-	{	// One byte beyond the policy limit is refused outright.
-		Msg over = make(pool, kMaxDecoded + 1);
-		check(!over, "a capacity beyond tx_max_size yields an empty message");
-		check(pool.tx_available() == kTxBlocks, "and takes no block");
+
+	std::size_t allocations = 0;
+	std::size_t frees = 0;
+	std::size_t last_request = 0;
+	std::size_t last_freed_capacity = 0;
+	bool refuse_next = false;
+};
+
+void testCreation()
+{
+	{	// The hint is a capacity hint, never an initial size.
+		HeapPool heap;
+		CobsMsg<HeapPool> unhinted{heap};
+		check(static_cast<bool>(unhinted), "an unhinted message is valid");
+		check(unhinted.size() == 0 && unhinted.capacity() == 0,
+		      "heap: no hint means no capacity yet, and never any size");
+
+		CobsMsg<HeapPool> hinted{heap, 40};
+		check(hinted.size() == 0, "a hint does not put bytes in the message");
+		check(hinted.capacity() == 40, "heap: the hint is honoured exactly");
 	}
-	{	// The point of sized allocation: a small message asks for a small
-		// block. A single-slab pool still spends a whole one, but the request
-		// it makes is the small number.
-		Msg tiny = make(pool, 7);
-		check(static_cast<bool>(tiny) && tiny.payload().size() == 7,
-		      "a seven-byte message hands out exactly seven bytes");
-		check(cobs_max_wire_size(7) == 9, "which needs a nine-byte wire block");
+	{	// The single-slab pool answers with its whole limit either way, so a
+		// message on it is born with all the room it will ever need.
+		TxPool pool;
+		Msg unhinted{pool};
+		check(unhinted.size() == 0 && unhinted.capacity() == kMaxDecoded,
+		      "fixed: even an unhinted message gets the whole slab");
+		Msg hinted{pool, 8};
+		check(hinted.capacity() == kMaxDecoded, "fixed: and a small hint changes nothing");
 	}
-	{	// Zero-length payloads are legal and encode to 01 00.
-		Msg empty_payload = make(pool, 0);
-		check(static_cast<bool>(empty_payload) && empty_payload.payload().empty(),
-		      "a zero-capacity message is valid and hands out nothing");
+	{	// A hint past the protocol limit is refused rather than clamped: the
+		// caller asked for something this instance cannot carry.
+		HeapPool heap;
+		CobsMsg<HeapPool> over{heap, kMaxDecoded + 1};
+		check(!over, "a hint beyond tx_max_size yields an empty message");
 	}
-	check(pool.tx_available() == kTxBlocks, "every block came back");
 }
 
-// Shrinking after the fact, for callers that learn the length only after
-// serializing. The frame then starts INSIDE the block rather than at its
-// start, which is what keeps the payload from having to move.
-void testTruncate()
+void testGrowthSequence()
 {
-	TxPool pool;
-	{
-		Msg m = make(pool, kMaxDecoded);
-		const auto full = m.payload();
-		for (std::size_t i = 0; i < full.size(); ++i) { full[i] = static_cast<uint8_t>(0x80 + i); }
+	SpyPolicy spy;
+	CobsMsg<SpyPolicy> m{spy};
+	check(m.capacity() == 0 && spy.allocations == 1,
+	      "the initial block is one allocation, of no capacity");
 
-		check(m.truncate(kMaxDecoded + 1) == false, "truncate cannot grow past the capacity");
-		check(m.truncate(10), "truncate to ten bytes");
-		check(m.payload_size() == 10 && m.payload().size() == 10, "the payload shrinks");
-		check(m.capacity() == kMaxDecoded, "while the capacity, and the block, do not");
-		check(m.truncate(20) == false, "and truncate never grows back");
-		check(m.payload_size() == 10, "leaving the shortened size intact");
-
-		// The first ten bytes are the ones that were written: nothing moved.
-		std::vector<uint8_t> expected(10);
-		for (std::size_t i = 0; i < 10; ++i) { expected[i] = static_cast<uint8_t>(0x80 + i); }
-		const auto wire = m.encode();
-		check(std::vector<uint8_t>(wire.begin(), wire.end()) == cobs_test::encode(expected),
-		      "and the encoded frame is exactly those ten bytes");
-
-		// The frame legitimately begins after the block start.
-		check(reinterpret_cast<const void*>(wire.data()) != nullptr,
-		      "the frame starts wherever the shortened geometry puts it");
+	// One byte at a time: capacity must follow the documented 1.5x rule, and
+	// must never fail to advance.
+	std::vector<std::size_t> caps;
+	bool writes_ok = true;
+	for (std::size_t i = 0; i < 10; ++i) {
+		writes_ok = writes_ok && m.write<uint8_t>(static_cast<uint8_t>(i));
+		caps.push_back(m.capacity());
 	}
-	check(pool.tx_available() == kTxBlocks, "and the whole block is returned");
-	check(pool.tx_stats().rejected == 0, "with the size it was taken with");
+	check(writes_ok, "ten single-byte appends all succeed");
+	const std::vector<std::size_t> expected{1, 2, 3, 4, 6, 6, 9, 9, 9, 13};
+	check(caps == expected, "capacity follows 0 -> 1 -> 2 -> 3 -> 4 -> 6 -> 9 -> 13");
+	check(m.size() == 10, "and the size is the number of bytes actually written");
+
+	// Every growth is one allocation and one release; nothing accumulates.
+	check(spy.frees == spy.allocations - 1,
+	      "each growth released exactly the block it replaced");
+	check(spy.last_freed_capacity == 9,
+	      "and released it with ITS capacity, not the new one");
+
+	std::vector<uint8_t> written(10);
+	for (std::size_t i = 0; i < 10; ++i) { written[i] = static_cast<uint8_t>(i); }
+	check(framesAs(m, written),
+	      "and every byte survived the reallocations, in order");
+}
+
+void testLargeJumpIsOneAllocation()
+{
+	SpyPolicy spy;
+	CobsMsg<SpyPolicy> m{spy, 64};
+	check(m.capacity() == 64 && spy.allocations == 1, "starting from a 64-byte hint");
+
+	const std::vector<uint8_t> body(500, 0x5A);
+	check(m.write_bytes(std::span<const uint8_t>{body}), "a 500-byte append succeeds");
+	check(m.capacity() == 500,
+	      "asking for exactly what is required, not walking 96 -> 144 -> 216");
+	check(spy.allocations == 2 && spy.last_request == 500,
+	      "in a single allocation");
+	check(framesAs(m, body), "and the bytes are all there");
+}
+
+void testNoGrowthWhenItFits()
+{
+	SpyPolicy spy;
+	CobsMsg<SpyPolicy> m{spy, 256};
+	const std::size_t after_create = spy.allocations;
+
+	bool ok = true;
+	for (int i = 0; i < 64; ++i) { ok = ok && m.write<uint32_t>(0x11223344u); }
+	check(ok, "256 bytes written into a 256-byte capacity");
+	check(m.size() == 256 && m.capacity() == 256, "filling it exactly");
+	check(spy.allocations == after_create && spy.frees == 0,
+	      "with no reallocation and no release at all");
+
+	// And the fixed policy gets this for free, without any hint.
+	TxPool pool;
+	Msg fixed{pool};
+	bool fill_ok = true;
+	for (std::size_t i = 0; i < kMaxDecoded; ++i) {
+		fill_ok = fill_ok && fixed.write<uint8_t>(static_cast<uint8_t>(i));
+	}
+	check(fill_ok && fixed.size() == kMaxDecoded,
+	      "fixed: a whole tx_max_size payload written one byte at a time");
+	check(pool.tx_available() == kTxBlocks - 1,
+	      "still on the one block it started with — no growth ever happened");
+	check(fixed.write<uint8_t>(0) == false, "and one byte past the limit is refused");
+	check(fixed.size() == kMaxDecoded, "leaving the message exactly as it was");
+}
+
+void testFailedGrowthChangesNothing()
+{
+	SpyPolicy spy;
+	CobsMsg<SpyPolicy> m{spy, 8};
+	const auto written = fill(m, 8, 0x70);
+	check(m.size() == 8 && m.capacity() == 8, "eight bytes in an eight-byte capacity");
+
+	const std::size_t allocations = spy.allocations;
+	const std::size_t frees = spy.frees;
+	spy.refuse_next = true;
+
+	check(m.write<uint32_t>(0xDEADBEEFu) == false, "a write needing growth fails");
+	check(m.size() == 8 && m.capacity() == 8, "leaving size and capacity untouched");
+	check(spy.frees == frees, "and releasing nothing — the old block is still ours");
+	check(spy.allocations == allocations, "with no allocation having succeeded");
+
+	check(m.reserve(64) == false, "reserve fails the same way");
+	check(m.size() == 8 && m.capacity() == 8, "and changes nothing either");
+
+	spy.refuse_next = false;
+	check(framesAs(m, written),
+	      "the payload is byte-for-byte what it was before the failures");
+}
+
+void testReserve()
+{
+	SpyPolicy spy;
+	CobsMsg<SpyPolicy> m{spy};
+	check(m.reserve(0), "reserving nothing on an empty message succeeds");
+	check(spy.allocations == 1, "without allocating");
+
+	check(m.reserve(100), "reserve grows to the exact request");
+	check(m.capacity() == 100, "not to a geometric target above it");
+	check(spy.allocations == 2, "in one allocation");
+
+	check(m.reserve(50), "a smaller reserve is a no-op");
+	check(m.capacity() == 100 && spy.allocations == 2, "and does not shrink or reallocate");
+
+	check(m.reserve(SpyPolicy::tx_max_size + 1) == false,
+	      "reserving past tx_max_size is refused");
+	check(m.capacity() == 100, "leaving the capacity alone");
+
+	CobsMsg<SpyPolicy> encoded{spy, 4};
+	(void)encoded.write<uint32_t>(0);
+	(void)encoded.encode();
+	check(encoded.reserve(64) == false, "an Encoded message refuses to reserve");
+	check(encoded.write<uint8_t>(0) == false, "and refuses to write");
+}
+
+/* ============================== serializers ============================= */
+
+enum class Op : uint16_t { Ping = 0x0102, Pong = 0x0304 };
+
+void testSerializers()
+{
+	SpyPolicy spy;
+	CobsMsg<SpyPolicy> m{spy};
+
+	// Everything is appended in target byte order, so the oracle is built the
+	// same way — through memcpy of the same objects, never by hand-guessing
+	// an endianness.
+	std::vector<uint8_t> expected;
+	const auto expect = [&expected](const void* p, const std::size_t n) {
+		const auto* const bytes = static_cast<const uint8_t*>(p);
+		expected.insert(expected.end(), bytes, bytes + n);
+	};
+
+	bool ok = true;
+	const uint8_t  u8  = 0x11;         ok = ok && m.write(u8);  expect(&u8, 1);
+	const int8_t   i8  = -2;           ok = ok && m.write(i8);  expect(&i8, 1);
+	const uint16_t u16 = 0x1234;       ok = ok && m.write(u16); expect(&u16, 2);
+	const int16_t  i16 = -300;         ok = ok && m.write(i16); expect(&i16, 2);
+	const uint32_t u32 = 0xDEADBEEFu;  ok = ok && m.write(u32); expect(&u32, 4);
+	const int32_t  i32 = -70000;       ok = ok && m.write(i32); expect(&i32, 4);
+	const uint64_t u64 = 0x0102030405060708ull;
+	                                   ok = ok && m.write(u64); expect(&u64, 8);
+	const int64_t  i64 = -1;           ok = ok && m.write(i64); expect(&i64, 8);
+	const float    f   = 1.5f;         ok = ok && m.write(f);   expect(&f, sizeof f);
+	const double   d   = -2.25;        ok = ok && m.write(d);   expect(&d, sizeof d);
+	const Op       op  = Op::Pong;     ok = ok && m.write(op);  expect(&op, sizeof op);
+	check(ok, "every scalar, enum and floating-point value appends");
+
+	{	// A flag goes out as the byte the caller chose, because write<T> does
+		// not accept bool at all (see CobsScalar).
+		const uint8_t flag = 1;
+		ok = m.write(flag);
+		expect(&flag, 1);
+		const std::byte raw_byte{0xA5};
+		ok = ok && m.write(raw_byte);
+		expect(&raw_byte, 1);
+		check(ok, "and std::byte goes through as itself");
+	}
+	{	// A byte span, then an array of a wider type.
+		const std::vector<uint8_t> blob{0x00, 0xFF, 0x00, 0x7F};
+		ok = m.write_bytes(std::span<const uint8_t>{blob});
+		expect(blob.data(), blob.size());
+
+		const uint16_t words[] = {0x0001, 0x0200, 0xFFFF};
+		ok = ok && m.write_array(std::span<const uint16_t>{words});
+		expect(words, sizeof words);
+		check(ok, "so do a byte span and an array of a wider type");
+	}
+
+	check(m.size() == expected.size(), "the size is the sum of everything written");
+	check(framesAs(m, expected),
+	      "and the frame is exactly those bytes, canonically encoded (" +
+	          std::to_string(expected.size()) + " payload bytes)");
+}
+
+void testSerializerFailuresLeaveTheMessageUsable()
+{
+	SpyPolicy spy;
+	CobsMsg<SpyPolicy> m{spy, 4};
+	check(m.write<uint32_t>(0x01020304u), "four bytes fit");
+
+	spy.refuse_next = true;
+	check(m.write<uint64_t>(0) == false, "an eight-byte write that cannot grow fails");
+	const uint8_t blob[16] = {};
+	check(m.write_bytes(std::span<const uint8_t>{blob}) == false, "so does a span");
+	const uint32_t words[8] = {};
+	check(m.write_array(std::span<const uint32_t>{words}) == false, "so does an array");
+	check(m.size() == 4, "and none of them moved the size");
+
+	spy.refuse_next = false;
+	check(m.write<uint8_t>(0x05), "the message still works once memory is available");
+	check(m.size() == 5, "appending after a failed write, not on top of it");
+
+	// The uint32 went out in target order, so build the oracle the same way.
+	std::vector<uint8_t> oracle(5);
+	const uint32_t v = 0x01020304u;
+	std::memcpy(oracle.data(), &v, 4);
+	oracle[4] = 0x05;
+	check(framesAs(m, oracle), "with the earlier bytes intact");
+}
+
+void testOversizeIsRefusedNotClamped()
+{
+	SpyPolicy spy;
+	CobsMsg<SpyPolicy> m{spy};
+	const std::vector<uint8_t> huge(SpyPolicy::tx_max_size + 1, 0x33);
+	check(m.write_bytes(std::span<const uint8_t>{huge}) == false,
+	      "a payload past tx_max_size is refused");
+	check(m.size() == 0 && spy.allocations == 1, "with nothing written and nothing allocated");
+
+	const std::vector<uint8_t> exact(SpyPolicy::tx_max_size, 0x44);
+	check(m.write_bytes(std::span<const uint8_t>{exact}),
+	      "while exactly tx_max_size is accepted");
+	check(m.size() == SpyPolicy::tx_max_size && m.capacity() == SpyPolicy::tx_max_size,
+	      "filling the message to its limit");
+	check(m.write<uint8_t>(0) == false, "after which nothing more fits");
 }
 
 /* ================================ encode ================================ */
@@ -234,18 +488,15 @@ void testEncoding()
 	// Every interesting length, cross-checked against the reference encoder.
 	for (const std::size_t n : {std::size_t{0}, std::size_t{1}, std::size_t{2},
 	                            kMaxDecoded - 1, kMaxDecoded}) {
-		Msg m = make(pool, n);
-		const auto expected_payload = fill(m, 0x30);
-		const auto wire = m.encode();
-		const std::vector<uint8_t> got(wire.begin(), wire.end());
-		check(got == cobs_test::encode(expected_payload),
+		Msg m{pool};
+		const auto expected = fill(m, n, 0x30);
+		check(framesAs(m, expected),
 		      "payload of " + std::to_string(n) + " bytes encodes canonically in place");
-		check(wire.size() <= cobs_max_wire_size(n), "and fits the block it was written into");
 	}
 
 	{	// Encoding is idempotent, which is what makes a failed send retryable.
-		Msg m = make(pool, kMaxDecoded);
-		(void)fill(m, 0x40);
+		Msg m{pool};
+		(void)fill(m, kMaxDecoded, 0x40);
 		const auto first = m.encode();
 		const std::vector<uint8_t> copy(first.begin(), first.end());
 		const auto again = m.encode();
@@ -253,17 +504,146 @@ void testEncoding()
 		      "encoding twice yields the identical frame");
 		check(again.data() == first.data(), "from the same block, with no re-encoding");
 	}
-
-	{	// Once encoded the raw payload is gone, so it must not be writable.
-		Msg m = make(pool, kMaxDecoded);
-		(void)fill(m, 0x50);
-		(void)m.encode();
-		check(m.payload().empty(), "an Encoded message hands out no payload");
-		check(m.truncate(1) == false, "and refuses to truncate");
-		check(m.encoded(), "and stays Encoded");
-	}
 	check(pool.tx_available() == kTxBlocks, "every message released its block");
 	check(pool.tx_stats().rejected == 0, "and none was released twice");
+}
+
+// The frames a grown message produces must be indistinguishable from the ones
+// a pre-sized message produces: growth is an allocation strategy, not a wire
+// format.
+void testEncodingAcrossGrowthHistories()
+{
+	SpyPolicy spy;
+	const std::vector<std::size_t> lengths{0, 1, 2, 253, 254, 255, 509, 1024};
+
+	bool all_ok = true;
+	for (const std::size_t n : lengths) {
+		std::vector<uint8_t> body(n);
+		for (std::size_t i = 0; i < n; ++i) {
+			body[i] = static_cast<uint8_t>((i % 5 == 2) ? 0x00 : (0x41 + (i % 60)));
+		}
+
+		{	// Grown one byte at a time: many reallocations.
+			CobsMsg<SpyPolicy> m{spy};
+			bool ok = true;
+			for (const uint8_t b : body) { ok = ok && m.write(b); }
+			all_ok = all_ok && ok && framesAs(m, body);
+		}
+		{	// Grown once, from a hint just short of the length.
+			CobsMsg<SpyPolicy> m{spy, n / 2};
+			all_ok = all_ok && m.write_bytes(std::span<const uint8_t>{body}) &&
+			         framesAs(m, body);
+		}
+		{	// Never grown: reserved up front.
+			CobsMsg<SpyPolicy> m{spy, n};
+			all_ok = all_ok && m.write_bytes(std::span<const uint8_t>{body}) &&
+			         framesAs(m, body);
+		}
+	}
+	check(all_ok, "frames are identical whether the message grew once, "
+	              "many times, or never (" + std::to_string(lengths.size()) +
+	              " lengths x 3 histories)");
+	check(spy.allocations == spy.frees,
+	      "and every block from every history came back");
+}
+
+
+/* ======================= what the wire will not carry =================== */
+
+/*
+ * The constraint is the point: a comment about padding protects only the
+ * people who read comments. These are compile-time assertions, so a
+ * regression here is a build failure rather than three bytes of this
+ * compiler's padding arriving at somebody else's parser.
+ */
+struct PaddedStruct {
+	uint8_t  a;
+	uint32_t b;
+};
+
+template<class M, class T>
+concept CanWrite = requires(M& m, const T& v) { m.write(v); };
+
+template<class M, class T>
+concept CanWriteArray = requires(M& m, std::span<const T> s) { m.write_array(s); };
+
+void testTypeConstraints()
+{
+	using M = CobsMsg<TxPool>;
+
+	// Accepted: the types that mean something on a wire.
+	static_assert(CanWrite<M, uint8_t>);
+	static_assert(CanWrite<M, int8_t>);
+	static_assert(CanWrite<M, uint16_t>);
+	static_assert(CanWrite<M, int32_t>);
+	static_assert(CanWrite<M, uint64_t>);
+	static_assert(CanWrite<M, float>);
+	static_assert(CanWrite<M, double>);
+	static_assert(CanWrite<M, char>);
+	static_assert(CanWrite<M, Op>);          // enum
+	static_assert(CanWrite<M, std::byte>);
+	check(true, "scalars, enums and std::byte are accepted");
+
+	// Refused, each for its own reason.
+	static_assert(!CanWrite<M, PaddedStruct>,   // padding + field order + ABI
+	              "a struct must not be silently blitted onto the wire");
+	static_assert(!CanWrite<M, bool>,           // true is any non-zero pattern
+	              "bool has no fixed object representation");
+	static_assert(!CanWrite<M, const char*>,    // meaningless to the receiver
+	              "a pointer value must not be sendable");
+	static_assert(!CanWrite<M, uint32_t PaddedStruct::*>,
+	              "a member pointer must not be sendable");
+	static_assert(!CanWrite<M, std::span<const uint8_t>>,
+	              "a span is not a scalar; write_bytes takes those");
+	check(true, "structs, bool, pointers, member pointers and spans are refused");
+
+	// write_array shares the SAME contract, deliberately — one rule to
+	// explain, not two nearly identical ones.
+	static_assert(CanWriteArray<M, uint16_t>);
+	static_assert(CanWriteArray<M, int64_t>);
+	static_assert(CanWriteArray<M, Op>);
+	static_assert(CanWriteArray<M, std::byte>);
+	static_assert(!CanWriteArray<M, PaddedStruct>);
+	static_assert(!CanWriteArray<M, bool>);
+	static_assert(!CanWriteArray<M, const char*>);
+	check(true, "and write_array accepts and refuses exactly the same types");
+}
+
+/* ===================== the default reserve pays off ===================== */
+
+// The measured reason default_initial_capacity is not zero. Same policy rule
+// as the heap one, so these counts are the heap's counts.
+void testDefaultHintAvoidsTheLadder()
+{
+	const auto buildByteAtATime = [](SpyPolicy& spy, const std::size_t hint,
+	                                 const std::size_t payload) {
+		CobsMsg<SpyPolicy> m{spy, hint};
+		for (std::size_t i = 0; i < payload; ++i) {
+			if (!m.write(static_cast<uint8_t>(i))) { return false; }
+		}
+		return m.size() == payload;
+	};
+
+	{	// From zero: the whole geometric ladder, which is what the default
+		// exists to avoid.
+		SpyPolicy spy;
+		check(buildByteAtATime(spy, 0, 100), "100 bytes written from a zero hint");
+		check(spy.allocations == 14,
+		      "costing 14 allocations — the ladder 0,1,2,3,4,6,9,13,19,...");
+	}
+	{	// From 32, which is what make_msg() reserves.
+		SpyPolicy spy;
+		check(buildByteAtATime(spy, 32, 100), "the same 100 bytes from a hint of 32");
+		check(spy.allocations == 4, "costing four: 32 -> 48 -> 72 -> 108");
+	}
+	{	// A short frame, the common case, costs exactly one.
+		SpyPolicy spy;
+		check(buildByteAtATime(spy, 32, 12), "a twelve-byte frame from a hint of 32");
+		// One allocation, and the one release that ends its life: no
+		// reallocation happened at any point.
+		check(spy.allocations == 1 && spy.frees == 1,
+		      "costing exactly one allocation, with no reallocation at all");
+	}
 }
 
 } // namespace
@@ -275,12 +655,24 @@ int main()
 	testExhaustionAndConcurrentMessages();
 	testMoveSemantics();
 
-	group("Geometry");
-	testPayloadGeometry();
-	testTruncate();
+	group("Container");
+	testCreation();
+	testGrowthSequence();
+	testLargeJumpIsOneAllocation();
+	testDefaultHintAvoidsTheLadder();
+	testNoGrowthWhenItFits();
+	testFailedGrowthChangesNothing();
+	testReserve();
+
+	group("Serializers");
+	testTypeConstraints();
+	testSerializers();
+	testSerializerFailuresLeaveTheMessageUsable();
+	testOversizeIsRefusedNotClamped();
 
 	group("Encode");
 	testEncoding();
+	testEncodingAcrossGrowthHistories();
 
 	std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;

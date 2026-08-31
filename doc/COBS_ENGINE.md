@@ -514,10 +514,10 @@ would re-open the ordering problem that the transport layer already solved.
 `CobsMsg` is move-only.
 
 ```text
-Empty  --get_msg()-->  Building  --push()-->  Encoded  --send() ok-->  Transferred
-                          ^                      |
-                          |                      | send() failed
-                          +--- transport busy ---+  (stays Encoded, retryable)
+Empty  --make_msg()-->  Building  --push()-->  Encoded  --send() ok-->  Transferred
+                           ^                      |
+                           |                      | send() failed
+                           +--- transport busy ---+  (stays Encoded, retryable)
 ```
 
 The `Encoded` state is load-bearing rather than decorative. `push()` first
@@ -527,7 +527,9 @@ caller's own bytes — the raw payload no longer exists. If `send()` then fails
 to start the hardware, there is nothing to undo and nothing to re-encode:
 the message stays `Encoded` and `push()` may retry the *same* wire frame.
 
-`write()` and `reserve()` are rejected once the message is `Encoded`.
+Every builder method — `write<T>()`, `write_bytes()`, `write_array()`,
+`reserve()` — returns `false` once the message is `Encoded`: the raw bytes they
+would have appended to no longer exist.
 
 ### 8.2 One active transfer
 
@@ -577,13 +579,138 @@ COBS expansion in front of it:
 ```
 
 Both quantities come from the size functions of §4.2 rather than from a magic
-constant, and both are **per message**: the block is sized for the payload the
-caller asked for (§9.1.0), not for the largest the policy allows.
+constant, and both are **per message**: the block is sized for the capacity
+this message was granted (§9.1.0), not for the largest the policy allows.
 
-`truncate()` then splits two geometries that used to be one. The payload is
-already physically at `cobs_raw_offset(C)` for the requested capacity `C`, and
-moving it would end the zero-copy story, so encoding a shortened payload `S`
-begins further into the block:
+`CobsMsg` is a CONTAINER, and carries three numbers. Confusing any two of them
+is a bug:
+
+```text
+capacity()   payload bytes the current block permits; granted by the policy,
+             and the number deallocate_tx() gets back
+size()       payload bytes actually WRITTEN; what encode() frames
+m_wire       the encoded frame length, once encode() has run
+```
+
+`make_msg(hint)` sets `size()` to zero and asks the policy for `hint` bytes of
+capacity. The hint is a hint: it spares growths, and nothing else. Bytes arrive
+through `write<T>()`, `write_bytes()` and `write_array()`, each of which grows
+the block when it has to.
+
+```text
+make_msg()     Cobs::default_initial_capacity — a practical reserve
+make_msg(0)    explicitly minimal: the canonical empty frame and no more
+make_msg(N)    the caller knows a useful number
+```
+
+`default_initial_capacity` is **32**, and not zero, for a measured reason. A
+message built field by field from a capacity of zero walks the whole ladder
+below; on the heap policy that is 14 allocations and 453 requested bytes for a
+100-byte payload. From 32 the same payload costs four allocations, and a
+typical short frame costs one. It is free on a single-slab policy, which
+reports `tx_max_size` whatever it was asked for. The value is clamped to
+`tx_max_size`, so `make_msg()` can never fail because of its own default.
+
+An API that performs well only when the caller remembered to pass a hint is a
+trap with good documentation.
+
+### 8.3.1 Growth
+
+Capacity grows geometrically, about 1.5x, computed by the CONTAINER — never by
+the policy (§9.1.0):
+
+```text
+delta  = max(1, capacity >> 1)
+grown  = min(capacity + delta, tx_max_size)
+target = min(max(required, grown), tx_max_size)
+
+0 -> 1 -> 2 -> 3 -> 4 -> 6 -> 9 -> 13 -> 19 -> ...
+```
+
+`capacity >> 1` is deliberate: half a capacity is a shift, where 1.5x through a
+division would be a call to `__aeabi_uidiv` on a Cortex-M0 for the privilege of
+saving a few bytes. The `max(1, ...)` keeps small capacities moving, since
+`1 >> 1` is zero and a growth of zero would spin forever.
+
+A large jump is honoured in ONE allocation rather than by walking the sequence:
+from a capacity of 64, a 500-byte append asks for 500, not 96 then 144 then
+216. A request past `tx_max_size` is refused outright; nothing is clamped
+silently.
+
+The single-slab `CobsFixedAllocator` reports `tx_max_size` from the first
+allocation, so on that policy the growth path is reachable but never taken: a
+message can be created with no hint at all and filled to the protocol limit
+with one allocation, no reallocation and no copy.
+
+**Reallocation is the one place a copy is allowed in the TX vertical**, and
+only on an actual growth. Its order matters, because a failure must change
+nothing:
+
+```text
+1. allocate the new block
+2. if that fails -> return false; old block, size and contents all intact
+3. copy size() payload bytes from old raw() to new raw()
+4. release the old block WITH ITS OWN capacity
+5. install the new pointer and the new capacity
+```
+
+The copy crosses two different offsets — `cobs_raw_offset(old)` to
+`cobs_raw_offset(new)` — because the headroom a block needs depends on its
+capacity. Headroom itself is never copied.
+
+### 8.3.1.1 What the serializers accept
+
+`write<T>()` and `write_array<T>()` share ONE constraint — the `CobsScalar`
+concept — so there is one rule to explain rather than two nearly identical
+ones:
+
+```text
+write<T>        arithmetic (except bool), enumerations, std::byte
+write_array<T>  a contiguous run of the same
+write_bytes()   arbitrary bytes
+```
+
+Everything else is a compile error, deliberately:
+
+- **Structs.** `struct { uint8_t a; uint32_t b; }` is trivially copyable, so
+  C++ would happily blit it — with three bytes of padding, in this compiler's
+  field order and this target's byte order. The receiver would have to
+  reproduce all three accidents. A comment about this protects only the people
+  who read comments.
+- **`bool`.** `true` is permitted to be any non-zero bit pattern, so its object
+  representation is the compiler's private business. Write
+  `uint8_t{flag ? 1u : 0u}`.
+- **Pointers and member pointers**, which fall out of the concept for free:
+  neither is arithmetic nor an enumeration, and neither means anything at the
+  other end of a link.
+
+`write_array()` adds no length prefix. A caller who needs one writes it, which
+keeps the protocol's framing visible in the protocol's own code:
+
+```cpp
+msg.write<uint16_t>(count);
+msg.write_array(values);
+```
+
+If raw object representation is ever genuinely required, it belongs behind a
+deliberately alarming name — `write_object_representation()` — so that nobody
+mistakes it for ordinary wire serialization.
+
+### 8.3.2 Pointer invalidation, and why it is invisible
+
+> Any operation that increases `capacity()` may invalidate every pointer,
+> reference and span into the payload.
+
+The ordinary vector rule. What makes it harmless here is that **the public API
+hands out no writable payload span at all**: a message is built through the
+serializers, and there is no pointer for a caller to be holding when a growth
+happens. The hazard exists in the implementation and is confined to it.
+
+### 8.3.3 Encoding geometry
+
+The payload is physically at `cobs_raw_offset(C)` for the current capacity `C`,
+and moving it at encode time would end the zero-copy story, so encoding a
+payload of size `S` begins further into the block:
 
 ```text
 allocated for C
@@ -595,21 +722,25 @@ block          encoding begins here, and so does the wire frame
 It fits exactly: `R(S) <= R(C)` because `S <= C`, and the encoded region ends
 at `cobs_raw_offset(C) + S`, at most the end of the block. So a wire frame need
 not start at `block[0]`; the transport is handed the span `encode()` returns,
-while the ALLOCATION remains the whole block and is returned as such.
+while the ALLOCATION remains the whole block and is returned as such. Encoding
+copies nothing, whatever growth history the message had.
 
+In terms of the granted capacity `C`:
 
 ```text
-wire_capacity = cobs_max_wire_size(MaxDecodedSize)
-              = cobs_max_encoded_size(MaxDecodedSize) + 1
+wire_capacity = cobs_max_wire_size(C)
+              = cobs_max_encoded_size(C) + 1
 
-raw_offset    = wire_capacity - MaxDecodedSize
-              = ceil(MaxDecodedSize / 254) + 1        (for MaxDecodedSize > 0)
+raw_offset    = wire_capacity - C
+              = ceil(C / 254) + 1                     (for C > 0)
 
 block size    = wire_capacity
 ```
 
-The block is exactly `wire_capacity` bytes: the worst-case encoded frame plus
-its delimiter fills it precisely, ending where the raw region ended.
+The block is exactly `wire_capacity` bytes: the worst-case encoded frame for
+`C` payload bytes plus its delimiter fills it precisely, ending where the raw
+region ended. Every one of these follows from the capacity the policy granted,
+never from `tx_max_size` — that is what makes a short message cheap.
 
 ### 8.4 The overlap invariant, with its proof
 
@@ -696,14 +827,86 @@ struct SomeCobsAllocator {
     [[nodiscard]] Packet* allocate_rx() noexcept;
     void deallocate_rx(Packet* packet) noexcept;
 
-    [[nodiscard]] std::byte* allocate_tx(std::size_t wire_size) noexcept;
-    void deallocate_tx(std::byte* memory, std::size_t wire_size) noexcept;
+    [[nodiscard]] TxAllocation allocate_tx(std::size_t requested_capacity) noexcept;
+    void deallocate_tx(std::byte* memory, std::size_t capacity) noexcept;
+};
+
+struct TxAllocation {
+    std::byte*  memory   = nullptr;
+    std::size_t capacity = 0;   // payload bytes, not physical bytes
 };
 ```
 
-Nothing else is in the contract — no allocation descriptors, no reported
-capacity, no payload span, no block count, no alignment, no physical block
-size. Every one of those is a detail of some particular policy.
+Obligations on a non-null TX allocation:
+
+```text
+requested <= capacity <= tx_max_size
+the block holds at least cobs_max_wire_size(capacity) bytes
+deallocate_tx() is called with exactly the capacity that was reported
+```
+
+Nothing else is in the contract — no payload span, no block count, no
+alignment, and above all **no physical block size**. Every one of those is a
+detail of some particular policy.
+
+#### 9.1.0 Why `TxAllocation` came back
+
+An earlier revision of this section removed the TX descriptor deliberately,
+and that was right at the time: `allocate_tx` was asked for exactly the block
+one message needed, so `requested` and usable capacity were the same number
+and the struct only restated what the caller already knew. A descriptor that
+reports what the allocator *happened* to hand over physically is noise, and
+worse, it invites the caller to use a number that can disagree with the
+declared limit.
+
+What changed is that the two numbers are now deliberately different:
+
+```text
+tx_max_size    the protocol limit, e.g. 1024
+requested      what the container asked for this time, e.g. 100
+capacity       what THIS allocation permits, e.g. 100, or 1024
+```
+
+The capacity is a fact the container cannot derive, because it depends on how
+the policy allocates:
+
+```text
+Heap policy         request 100  ->  capacity 100    (exact)
+Single-slab pool    request 100  ->  capacity 1024   (the slab was paid for)
+Segregated policy   request 100  ->  capacity 128    (its matching class)
+```
+
+Without it, a pool that physically holds `tx_max_size` would reallocate and
+copy on every growth while sitting on a kilobyte of already-committed RAM. With
+it, a message on that policy is born with all the capacity it will ever need
+and the growth path is simply never taken. So the descriptor is back, but it
+carries a different kind of information — *how much payload this caller may
+use* rather than *how many bytes exist* — and it is expressed in payload units,
+so alignment and padding remain invisible.
+
+#### 9.1.0.1 The container decides how much to ask for; the policy decides what to give
+
+These are two separate jobs and the contract keeps them separate:
+
+```text
+CobsMsg      knows its current capacity and what it now needs
+             -> computes the geometric target (§8.3.1) and asks once
+
+Allocator    knows how it carves memory
+             -> answers with a block and the capacity that block permits
+```
+
+The heap policy therefore has **no growth rule at all**: it allocates exactly
+what was requested and reports exactly that. An earlier draft had it round up
+to a power of two, which was a second growth rule living one layer below the
+first — two heuristics compounding into a sequence neither of them described.
+Removing it costs nothing, because the container was already computing a
+geometric target before it asked.
+
+That division is also what lets policies with completely different strategies —
+exact, single-slab, segregated — share one `CobsMsg` with no `if constexpr`
+anywhere. It is checked directly: the test suite runs a third policy whose rule
+is `2n + 1`, and the container does not notice.
 
 ### 9.1.1 TX is size-aware; RX cannot be
 
@@ -717,7 +920,7 @@ RX   only the first COBS code byte has arrived
      -> the final decoded size is unknowable; commit to rx_max_size
 ```
 
-So `allocate_tx` takes the size and `allocate_rx` does not. On a heap policy a
+So `allocate_tx` takes a size and `allocate_rx` does not. On the heap policy a
 seven-byte message costs **nine** bytes rather than the worst case of the
 largest frame the policy allows — for `tx_max_size = 1024` that is 9 against
 1030. A single-slab pool still spends a whole block, which is that policy
@@ -727,37 +930,49 @@ Making RX size-aware would mean buffering the encoded frame, computing the
 decoded length, allocating, and then decoding a second time. One encoder pass
 and zero copies are worth more than the bytes that would save.
 
-`deallocate_tx` takes the size back for the same reason `operator delete(void*,
-size_t)` exists: the caller knows it, so a segregated policy need not search
-its pools for the pointer's owner. The size passed is the **allocation** size,
-not the possibly-truncated frame length. A policy is free to ignore it —
-`CobsHeapAllocator` does, since sized `operator delete` is an ABI- and
+`deallocate_tx` takes the capacity back for the same reason `operator
+delete(void*, size_t)` exists: the caller knows it, so a segregated policy need
+not search its pools for the pointer's owner. The number passed is the
+**capacity the policy reported for THAT block** — which a growth may have
+changed since the message was created — and not the logical size, and not the
+encoded frame length. A policy is free to ignore
+it; `CobsHeapAllocator` does, since sized `operator delete` is an ABI- and
 runtime-dependent optimisation whose value belongs in a benchmark rather than
 in a contract argument.
 
-The size requested is `cobs_max_wire_size(payload_size)`: the tight worst case
-for that length, not the exact encoding of those particular bytes. Knowing the
-latter would need a pre-scan of the payload, i.e. another pass. Not worth it.
+A block sized for capacity `C` is `cobs_max_wire_size(C)` bytes: the tight
+worst case for that length, not the exact encoding of those particular bytes.
+Knowing the latter would need a pre-scan of the payload, i.e. another pass. Not
+worth it.
 
 ### 9.1.2 The policy is taken at its word
 
-`Cobs` never asks how much memory it actually got. The exchange is:
+On RX, `Cobs` never asks how much memory it actually got. The exchange is:
 
 > You declared `rx_max_size = 1024`. If `allocate_rx()` returns non-null, you
 > are **obliged** to have given valid storage for a packet header plus 1024
 > payload bytes. If you cannot, return null.
 
 `std::allocator<T>::allocate(n)` works the same way: it hands back a pointer
-or fails, never a pointer paired with "how many I really managed". A contract
-that reports actual capacity invites the caller to use it, and then the
-declared limit and the reported one are two facts that can disagree.
-
-So the sizes are derived, never queried:
+or fails, never a pointer paired with "how many I really managed". So the RX
+size is derived, never queried:
 
 ```cpp
 packet->writable_payload()                      // exactly rx_max_size bytes
-cobs_max_wire_size(Allocator::tx_max_size)      // what a TX block must hold
 ```
+
+The TX capacity report (§9.1.0) is not an exception to this, and it is worth
+being precise about why. It is not the allocator confessing how much it
+managed to supply — that number could disagree with `tx_max_size`, and a
+contract with two disagreeing truths is exactly what this rule exists to
+prevent. It is a **grant**, bounded on both sides by things already agreed:
+
+```text
+requested <= capacity <= tx_max_size
+```
+
+The caller named the floor, the policy named the ceiling, and the ceiling is
+the declared limit. There is one direction and no disagreement possible.
 
 A pool that physically rounds a 1024-byte packet up to 1040, or a TX block to
 the next alignment boundary, keeps that entirely to itself. The spare bytes
@@ -833,10 +1048,10 @@ The second case matters because "queue depth plus one" over-states the need:
 ownership of the same block simply moves from the queued `CobsMsg` to
 `Cobs::activeTx`.
 
-> An empty result from `get_msg()` is the back-pressure signal that the
+> An empty result from `make_msg()` is the back-pressure signal that the
 > configured TX storage has been exhausted; callers must handle it.
 
-It is not a silent failure — `get_msg()` returns an honest empty message — but
+It is not a silent failure — `make_msg()` returns an honest empty message — but
 an upper layer is perfectly capable of ignoring the result and inventing its
 own mystery.
 
