@@ -10,7 +10,7 @@
  * Kept deliberately separate from reference_encoder.h. That one is the oracle
  * for PURE COBS and must stay ignorant of this protocol; the decoder and
  * encoder suites check byte strings that have nothing to do with an engine.
- * This one composes the two, by hand, so a mistake in CobsFrameFormat cannot
+ * This one composes the two, by hand, so a mistake in cobs::Format cannot
  * hide inside the thing that is supposed to catch it.
  */
 #ifndef COBS_TEST_REFERENCE_FRAME_H_

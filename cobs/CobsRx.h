@@ -28,7 +28,7 @@
 #define COBS_RX_H_
 
 #include "Codec.h"
-#include "CobsFrameFormat.h"
+#include "Format.h"
 #include "CobsHeapAllocator.h"
 #include "PacketRef.h"
 #include "Storage.h"
@@ -39,8 +39,8 @@
 #include <span>
 
 // One template parameter, per the frozen contract (COBS_ENGINE.md §4.3): the
-// policy is the single source of truth for the limits, so there is nothing
-// else for a parameter to carry.
+// policy names one Format, so a separate geometry parameter could only
+// disagree with it.
 //
 // This is the RX half on its own, taking the policy by reference. The
 // assembled Cobs owns its policy by value (§9.4) and wraps this; an
@@ -58,6 +58,7 @@ public:
 	using AllocatorType = Allocator;
 	using Packet = typename Allocator::Packet;
 	using Ref = PacketRef<Allocator>;
+	using Format = typename Allocator::Format;
 
 	/*
 	 * The largest BODY this instance accepts, from the policy (§9.2). Not the
@@ -66,10 +67,9 @@ public:
 	 * from the truth, on a layer where being one header out is the easiest
 	 * mistake there is.
 	 */
-	static constexpr std::size_t max_receive_size = Allocator::rx_max_size;
+	static constexpr std::size_t max_receive_size = Format::max_receive_size;
 	static_assert(max_receive_size <= UINT16_MAX, "RxPacket::size is a uint16_t");
 
-	using Format = CobsFormatFor<Allocator>;
 	static constexpr std::size_t length_size = Format::length_size;
 
 	struct Stats {
@@ -209,7 +209,7 @@ private:
 	 * The only place a packet is allocated, and the only place `owner` is set.
 	 *
 	 * The policy does NOT stamp it, deliberately. §9 says a policy is two
-	 * constants and four functions; if it also had to write a private field of
+	 * Format, Packet and four functions; if it also had to write a private field of
 	 * a type it merely allocates storage for, that would be a hidden fifth
 	 * obligation, invisible in the signatures and impossible for the contract
 	 * test to check now that the field is private. A policy written to the

@@ -46,7 +46,7 @@ void check(const bool ok, const std::string& what)
 
 constexpr std::size_t kMaxDecoded = 64;
 constexpr std::size_t kBlocks = 4;
-using Pool = CobsFixedAllocator<kMaxDecoded, kBlocks, kMaxDecoded, 2>;
+using Pool = CobsFixedAllocator<cobs::Format<kMaxDecoded, kMaxDecoded>, kBlocks, 2>;
 using Rx = CobsRx<Pool>;
 using Ref = Rx::Ref;
 
@@ -151,7 +151,7 @@ void testDefaultAllocator()
 	DefaultRx rx(allocator);
 
 	const auto p = payload(0x11, 300);
-	// NOT engine_frame(): the default policy's limits are 1024, so it speaks a
+	// NOT engine_frame(): the default policy's Format limits are 1024, so it speaks a
 	// TWO-byte header while the pool used elsewhere in this file speaks one.
 	// Feeding it the other engine's frame would be exactly the peer
 	// incompatibility §3 warns about.
@@ -416,23 +416,27 @@ void testRetentionConsumesCapacity()
  */
 void testLengthCodec()
 {
-	using Narrow = CobsFrameFormat<200, 100>;   // both limits below 256
-	using Wide   = CobsFrameFormat<1024, 64>;   // one above: two bytes both ways
-	using Wide2  = CobsFrameFormat<64, 1024>;   // ...whichever direction it is
+	using Narrow = cobs::Format<200, 100>;   // both limits below 256
+	using Wide   = cobs::Format<1024, 64>;   // one above: two bytes both ways
+	using Wide2  = cobs::Format<64, 1024>;   // ...whichever direction it is
 
 	static_assert(Narrow::length_size == 1);
 	static_assert(Wide::length_size == 2);
 	static_assert(Wide2::length_size == 2);
-	static_assert(CobsFrameFormat<255, 255>::length_size == 1, "255 still fits one byte");
-	static_assert(CobsFrameFormat<256, 1>::length_size == 2, "256 does not");
+	static_assert(cobs::Format<0, 0>::length_size == 1, "zero limits still use one byte");
+	static_assert(cobs::Format<254, 0>::length_size == 1, "254 fits one byte");
+	static_assert(cobs::Format<255, 255>::length_size == 1, "255 still fits one byte");
+	static_assert(cobs::Format<256, 1>::length_size == 2, "256 does not");
+	static_assert(cobs::Format<65535, 65535>::length_size == 2,
+	              "the largest supported limit uses two bytes");
 	static_assert(std::is_same_v<Narrow::LengthType, uint8_t>);
 	static_assert(std::is_same_v<Wide::LengthType, uint16_t>);
 	check(true, "the header width follows max(rx_max_size, tx_max_size)");
 
 	// The asymmetric pair keeps its directional limits; only the wire header
 	// is shared.
-	static_assert(CobsRx<CobsHeapAllocator<1024, 64>>::max_receive_size == 1024);
-	static_assert(CobsRx<CobsHeapAllocator<64, 1024>>::max_receive_size == 64);
+	static_assert(CobsRx<CobsHeapAllocator<cobs::Format<1024, 64>>>::max_receive_size == 1024);
+	static_assert(CobsRx<CobsHeapAllocator<cobs::Format<64, 1024>>>::max_receive_size == 64);
 	check(true, "while the RX and TX limits stay independent");
 
 	bool narrow_ok = true;
@@ -465,14 +469,12 @@ void testLengthCodec()
 // is a measurement rather than a claim.
 class RecordingHeap final {
 public:
-	static constexpr std::size_t rx_max_size = 64;
-	static constexpr std::size_t tx_max_size = 64;
 	using Packet = RxPacket<RecordingHeap>;
-	using Format = CobsFrameFormat<rx_max_size, tx_max_size>;
+	using Format = cobs::Format<64, 64>;
 
 	[[nodiscard]] Packet* allocate_rx(const std::size_t requested_size) noexcept
 	{
-		if (requested_size > rx_max_size || refuse) {
+		if (requested_size > Format::max_receive_size || refuse) {
 			return nullptr;
 		}
 		void* const memory =
@@ -507,14 +509,14 @@ void testExactAllocation()
 	// Nothing is allocated until the declared length is known — and then
 	// exactly that much, once.
 	for (const std::size_t n : {std::size_t{1}, std::size_t{7}, std::size_t{37},
-	                            std::size_t{63}, RecordingHeap::rx_max_size}) {
+	                            std::size_t{63}, RecordingHeap::Format::max_receive_size}) {
 		const auto body = payload(0x40, n);
 		rx.consume(std::span<const uint8_t>{cobs_test::frame(body, RecRx::length_size)});
 		const auto r = rx.pop_packet();
 		check(r.size() == n && std::vector<uint8_t>(r.data().begin(), r.data().end()) == body,
 		      "a " + std::to_string(n) + "-byte frame arrives intact");
 	}
-	const std::vector<std::size_t> expected{1, 7, 37, 63, RecordingHeap::rx_max_size};
+	const std::vector<std::size_t> expected{1, 7, 37, 63, RecordingHeap::Format::max_receive_size};
 	check(pool.requests == expected,
 	      "and each was allocated at EXACTLY its declared length, once");
 
@@ -546,7 +548,7 @@ void testMalformedLengths()
 		      "the delimiter that exposed it already resynchronized us");
 	}
 	{	// A truncated two-byte header.
-		using Wide = CobsHeapAllocator<1024, 1024>;
+		using Wide = CobsHeapAllocator<cobs::Format<1024, 1024>>;
 		Wide pool;
 		CobsRx<Wide> rx(pool);
 		static_assert(CobsRx<Wide>::length_size == 2);
@@ -567,7 +569,7 @@ void testMalformedLengths()
 		RecordingHeap pool;
 		RecRx rx(pool);
 		rx.consume(std::span<const uint8_t>{
-			cobs_test::frame_declaring(RecordingHeap::rx_max_size + 1,
+			cobs_test::frame_declaring(RecordingHeap::Format::max_receive_size + 1,
 			                           payload(0x60, 40), RecRx::length_size)});
 		check(rx.stats().oversize == 1 && rx.stats().frames_delivered == 0,
 		      "a declared length above rx_max_size is oversize");
@@ -665,7 +667,7 @@ void testFixedSlabPublishesDeclaredLength()
  */
 void testRxLengthSweep()
 {
-	using Wide = CobsHeapAllocator<600, 600>;   // two-byte header
+	using Wide = CobsHeapAllocator<cobs::Format<600, 600>>;   // two-byte header
 	static_assert(CobsRx<Wide>::length_size == 2);
 	Wide pool;
 	CobsRx<Wide> rx(pool);
@@ -674,8 +676,8 @@ void testRxLengthSweep()
 	for (const std::size_t n : {252u, 253u, 254u, 255u, 256u, 507u, 508u, 509u}) {
 		lengths.push_back(n);
 	}
-	lengths.push_back(Wide::rx_max_size - 1);
-	lengths.push_back(Wide::rx_max_size);
+	lengths.push_back(Wide::Format::max_receive_size - 1);
+	lengths.push_back(Wide::Format::max_receive_size);
 
 	bool all_ok = true;
 	std::size_t cases = 0;
@@ -704,7 +706,7 @@ void testRxLengthSweep()
 
 	{	// One byte past the limit is refused from the header alone.
 		rx.consume(std::span<const uint8_t>{
-			cobs_test::frame_declaring(Wide::rx_max_size + 1,
+			cobs_test::frame_declaring(Wide::Format::max_receive_size + 1,
 			                           std::vector<uint8_t>(10, 0x55),
 			                           CobsRx<Wide>::length_size)});
 		check(rx.stats().oversize == 1, "and rx_max_size + 1 is refused from the header");
@@ -723,14 +725,12 @@ void testRxLengthSweep()
  */
 class RefuseEmptyOnly final {
 public:
-	static constexpr std::size_t rx_max_size = 64;
-	static constexpr std::size_t tx_max_size = 64;
 	using Packet = RxPacket<RefuseEmptyOnly>;
-	using Format = CobsFrameFormat<rx_max_size, tx_max_size>;
+	using Format = cobs::Format<64, 64>;
 
 	[[nodiscard]] Packet* allocate_rx(const std::size_t requested_size) noexcept
 	{
-		if (requested_size == 0u || requested_size > rx_max_size) {
+		if (requested_size == 0u || requested_size > Format::max_receive_size) {
 			return nullptr; // the empty packet, and only it, is refused
 		}
 		void* const memory =
@@ -791,7 +791,7 @@ void testOversizeWithNoBody()
 	RecRx rx(pool);
 
 	rx.consume(std::span<const uint8_t>{
-		cobs_test::frame_declaring(RecordingHeap::rx_max_size + 1, {},
+		cobs_test::frame_declaring(RecordingHeap::Format::max_receive_size + 1, {},
 		                           RecRx::length_size)});
 	check(rx.stats().oversize == 1,
 	      "a declared length above the limit is oversize even with no body");
@@ -812,7 +812,7 @@ void testOversizeWithNoBody()
 		RecordingHeap pool2;
 		RecRx rx2(pool2);
 		rx2.consume(std::span<const uint8_t>{
-			cobs_test::frame_declaring(RecordingHeap::rx_max_size + 1,
+			cobs_test::frame_declaring(RecordingHeap::Format::max_receive_size + 1,
 			                           payload(0x41, 8), RecRx::length_size)});
 		check(rx2.stats().oversize == 1 && rx2.stats().length_mismatch == 0,
 		      "the same header with a body is the same verdict");
@@ -841,7 +841,7 @@ concept CanReadData = requires(const P& p) { p.data(); };
 
 void testPacketInternalsAreSealed()
 {
-	using P = RxPacket<CobsHeapAllocator<1024, 1024>>;
+	using P = RxPacket<CobsHeapAllocator<cobs::Format<1024, 1024>>>;
 	static_assert(!CanWritePayload<P>, "the writable span must not be reachable");
 	static_assert(!CanSetSize<P>,
 	              "a public size is a one-line out-of-bounds read: "
@@ -857,8 +857,8 @@ void testPacketInternalsAreSealed()
 /* ============ a policy written to the letter of the contract ============ */
 
 /*
- * §9 says an allocator policy is two constants and four functions. This one
- * is exactly that and not a byte more — in particular it never touches
+ * §9 says a storage policy names Format and Packet and provides four memory
+ * operations. This one is exactly that and not a byte more — it never touches
  * packet->owner, because nothing in the contract says to.
  *
  * It used to segfault. The shipped policies both stamped `owner` themselves,
@@ -873,15 +873,12 @@ void testPacketInternalsAreSealed()
  */
 class ByTheBookPolicy final {
 public:
-	static constexpr std::size_t rx_max_size = 64;
-	static constexpr std::size_t tx_max_size = 64;
-
 	using Packet = RxPacket<ByTheBookPolicy>;
-	using Format = CobsFrameFormat<rx_max_size, tx_max_size>;
+	using Format = cobs::Format<64, 64>;
 
 	[[nodiscard]] Packet* allocate_rx(const std::size_t requested_size) noexcept
 	{
-		if (requested_size > rx_max_size) { return nullptr; }
+		if (requested_size > Format::max_receive_size) { return nullptr; }
 		void* const memory =
 			::operator new(sizeof(Packet) + requested_size, std::nothrow);
 		if (memory == nullptr) { return nullptr; }
@@ -1004,7 +1001,7 @@ void testRefcountDoesNotWrap()
 template<std::size_t Max>
 void checkWidestFrame(const char* name)
 {
-	using Pool = CobsHeapAllocator<Max, Max>;
+	using Pool = CobsHeapAllocator<cobs::Format<Max, Max>>;
 	Pool pool;
 	CobsRx<Pool> rx(pool);
 
@@ -1027,11 +1024,11 @@ void checkWidestFrame(const char* name)
 
 void testWidestFrames()
 {
-	static_assert(CobsRx<CobsHeapAllocator<255, 255>>::length_size == 1,
+	static_assert(CobsRx<CobsHeapAllocator<cobs::Format<255, 255>>>::length_size == 1,
 	              "255 is the last body a one-byte header can describe");
-	static_assert(CobsRx<CobsHeapAllocator<256, 256>>::length_size == 2,
+	static_assert(CobsRx<CobsHeapAllocator<cobs::Format<256, 256>>>::length_size == 2,
 	              "256 needs two");
-	static_assert(CobsRx<CobsHeapAllocator<65535, 65535>>::length_size == 2,
+	static_assert(CobsRx<CobsHeapAllocator<cobs::Format<65535, 65535>>>::length_size == 2,
 	              "and two is enough to the very end");
 
 	checkWidestFrame<255>("H=1 max");

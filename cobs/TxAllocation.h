@@ -17,7 +17,7 @@
  *
  *      requested <= capacity <= tx_max_size
  *      the block holds at least
- *          CobsFrameFormat<...>::tx_storage_size_for_capacity(capacity) bytes
+ *          cobs::Format<...>::tx_storage_size_for_capacity(capacity) bytes
  *
  * That last one is HEADER-INCLUSIVE and this is the place people will read it
  * from, so it is worth being exact. What gets COBS-encoded is the decoded

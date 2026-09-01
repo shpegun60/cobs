@@ -294,7 +294,7 @@ void runEngine(const char* name)
 void testFixedExhaustion()
 {
 	g_policy = "fixed";
-	using Allocator = CobsFixedAllocator<32, 2, 32, 1>;
+	using Allocator = CobsFixedAllocator<cobs::Format<32, 32>, 2, 1>;
 	Cobs<Allocator> cobs;
 	FakeTransport t;
 	bind(cobs, t);
@@ -322,7 +322,7 @@ void testFixedExhaustion()
 void testDestructorReclaimsActiveTx()
 {
 	g_policy = "fixed";
-	using Allocator = CobsFixedAllocator<32, 2, 32, 2>;
+	using Allocator = CobsFixedAllocator<cobs::Format<32, 32>, 2, 2>;
 	FakeTransport t;
 	{
 		Cobs<Allocator> cobs;
@@ -345,7 +345,7 @@ void testDefaultCapacityHint()
 	{	// The heap policy grants exactly what is asked, so the default is
 		// visible directly: a short frame never reallocates.
 		g_policy = "heap";
-		using Engine = Cobs<CobsHeapAllocator<64, 1024>>;
+		using Engine = Cobs<CobsHeapAllocator<cobs::Format<64, 1024>>>;
 		static_assert(Engine::default_capacity_hint == 32);
 		Engine cobs;
 
@@ -379,7 +379,7 @@ void testDefaultCapacityHint()
 	{	// A policy whose limit is BELOW the default must still work: the
 		// default is clamped, so make_msg() can never fail on its own default.
 		g_policy = "fixed";
-		using Engine = Cobs<CobsFixedAllocator<32, 2, 16, 1>>;
+		using Engine = Cobs<CobsFixedAllocator<cobs::Format<32, 16>, 2, 1>>;
 		static_assert(Engine::default_capacity_hint == 16,
 		              "the default must clamp to a smaller tx_max_size");
 		Engine cobs;
@@ -406,14 +406,11 @@ void testDefaultCapacityHint()
  */
 class OverallocPolicy final {
 public:
-	static constexpr std::size_t rx_max_size = 64;
-	static constexpr std::size_t tx_max_size = 512;
-
 	using Packet = RxPacket<OverallocPolicy>;
-	using Format = CobsFrameFormat<rx_max_size, tx_max_size>;
+	using Format = cobs::Format<64, 512>;
 	[[nodiscard]] Packet* allocate_rx(const std::size_t requested_size) noexcept
 	{
-		if (requested_size > rx_max_size) { return nullptr; }
+		if (requested_size > Format::max_receive_size) { return nullptr; }
 		void* const memory = ::operator new(sizeof(Packet) + requested_size, std::nothrow);
 		if (memory == nullptr) { return nullptr; }
 		return std::construct_at(static_cast<Packet*>(memory));
@@ -427,9 +424,10 @@ public:
 
 	[[nodiscard]] TxAllocation allocate_tx(const std::size_t requested) noexcept
 	{
-		if (requested > tx_max_size) { return {}; }
+		if (requested > Format::max_send_size) { return {}; }
 		const std::size_t doubled = requested * 2u + 1u;
-		const std::size_t capacity = (doubled > tx_max_size) ? tx_max_size : doubled;
+		const std::size_t capacity =
+			(doubled > Format::max_send_size) ? Format::max_send_size : doubled;
 		void* const memory = ::operator new(Format::tx_storage_size_for_capacity(capacity), std::nothrow);
 		if (memory == nullptr) { return {}; }
 		++allocations;
@@ -507,8 +505,8 @@ void testReportedCapacitySurvivesTheEngine()
 void testComplementaryPeers()
 {
 	g_policy = "pair";
-	using A = Cobs<CobsHeapAllocator<1024, 64>>;
-	using B = Cobs<CobsHeapAllocator<64, 1024>>;
+	using A = Cobs<CobsHeapAllocator<cobs::Format<1024, 64>>>;
+	using B = Cobs<CobsHeapAllocator<cobs::Format<64, 1024>>>;
 
 	static_assert(A::length_size == 2 && B::length_size == 2,
 	              "the larger limit picks the width, so the pair agrees");
@@ -576,18 +574,55 @@ void testComplementaryPeers()
 	}
 }
 
+void testStorageDoesNotChangeFormat()
+{
+	g_policy = "format";
+	using Wire = cobs::Format<64, 64>;
+	using HeapEngine = Cobs<CobsHeapAllocator<Wire>>;
+	using PoolEngine = Cobs<CobsFixedAllocator<Wire, 2, 1>>;
+
+	static_assert(std::is_same_v<typename HeapEngine::Format, Wire>);
+	static_assert(std::is_same_v<typename PoolEngine::Format, Wire>);
+	static_assert(HeapEngine::length_size == PoolEngine::length_size);
+
+	HeapEngine heap;
+	PoolEngine pool;
+	FakeTransport heap_transport;
+	FakeTransport pool_transport;
+	bind(heap, heap_transport);
+	bind(pool, pool_transport);
+
+	const std::vector<uint8_t> payload{0x11, 0x00, 0x22, 0x33, 0x00, 0x44};
+	auto heap_message = heap.make_msg(payload.size());
+	auto pool_message = pool.make_msg(payload.size());
+	check(heap_message.write_bytes(std::span<const uint8_t>{payload}),
+	      "heap message accepts the payload");
+	check(pool_message.write_bytes(std::span<const uint8_t>{payload}),
+	      "pool message accepts the same payload");
+	check(heap.push(heap_message) == SendResult::Sent, "heap sends");
+	check(pool.push(pool_message) == SendResult::Sent, "pool sends");
+	check(heap_transport.sent.back() == pool_transport.sent.back(),
+	      "one Format produces byte-identical frames across storage strategies");
+
+	heap_transport.finish();
+	pool_transport.finish();
+	heap.proceed();
+	pool.proceed();
+}
+
 } // namespace
 
 int main()
 {
 	group("Engine");
-	runEngine<CobsHeapAllocator<64, 64>>("heap");
-	runEngine<CobsFixedAllocator<64, 4, 64, 2>>("fixed");
+	runEngine<CobsHeapAllocator<cobs::Format<64, 64>>>("heap");
+	runEngine<CobsFixedAllocator<cobs::Format<64, 64>, 4, 2>>("fixed");
 
 	group("FixedSpecific");
 	testFixedExhaustion();
 	testDefaultCapacityHint();
 	testComplementaryPeers();
+	testStorageDoesNotChangeFormat();
 	testReportedCapacitySurvivesTheEngine();
 	testDestructorReclaimsActiveTx();
 

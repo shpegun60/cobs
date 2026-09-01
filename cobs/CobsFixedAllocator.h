@@ -20,7 +20,7 @@
 #define COBS_FIXED_ALLOCATOR_H_
 
 #include "Codec.h"
-#include "CobsFrameFormat.h"
+#include "Format.h"
 #include "RxPacket.h"
 #include "TxAllocation.h"
 #include "detail/StaticBlockPool.h"
@@ -29,43 +29,39 @@
 #include <memory>
 #include <new>
 
-template<std::size_t RxMaxSize, std::size_t RxBlocks,
-         std::size_t TxMaxSize, std::size_t TxBlocks>
+template<class WireFormat, std::size_t RxBlocks, std::size_t TxBlocks>
 class CobsFixedAllocator final {
 public:
-	static constexpr std::size_t rx_max_size = RxMaxSize;
-	static constexpr std::size_t tx_max_size = TxMaxSize;
-
 	// RxPacket only stores an Allocator*, so naming this incomplete type here
 	// is legal — which is what lets the pool below be sized from sizeof(Packet).
 	using Packet = RxPacket<CobsFixedAllocator>;
-	using Format = CobsFrameFormat<RxMaxSize, TxMaxSize>;
+	using Format = WireFormat;
 
 	static constexpr std::size_t rx_blocks = RxBlocks;
 	static constexpr std::size_t tx_blocks = TxBlocks;
 
 	// Checked before the pool types below are even formed, since both derive
 	// their block sizes from exactly this arithmetic.
-	static_assert(cobs::codec::size_arithmetic_fits(tx_max_size),
+	static_assert(cobs::codec::size_arithmetic_fits(Format::max_send_size),
 		"tx_max_size is too large for the COBS size arithmetic to stay within size_t");
-	static_assert(rx_max_size <= static_cast<std::size_t>(-1) - sizeof(Packet),
+	static_assert(Format::max_receive_size <= static_cast<std::size_t>(-1) - sizeof(Packet),
 		"rx_max_size plus a packet header overflows size_t");
 
 private:
 	using RxPool = cobs_detail::StaticBlockPool<
-		sizeof(Packet) + RxMaxSize, RxBlocks, alignof(Packet)>;
+		sizeof(Packet) + Format::max_receive_size, RxBlocks, alignof(Packet)>;
 	// TX blocks are plain bytes: the payload needs no alignment beyond 1, and
 	// the pool raises that on its own behalf for the free-list link. The block
 	// holds the encoded [length][payload], header included (§8.3).
 	using TxPool = cobs_detail::StaticBlockPool<
-		Format::tx_storage_size_for_capacity(TxMaxSize), TxBlocks, 1>;
+		Format::tx_storage_size_for_capacity(Format::max_send_size), TxBlocks, 1>;
 
 public:
 	// The defence against a policy declaring more than it can supply belongs
 	// here, at compile time, inside the policy itself (§9.1.2).
-	static_assert(RxPool::block_size >= sizeof(Packet) + rx_max_size,
+	static_assert(RxPool::block_size >= sizeof(Packet) + Format::max_receive_size,
 		"the RX pool cannot hold a packet header plus rx_max_size bytes");
-	static_assert(TxPool::block_size >= Format::tx_storage_size_for_capacity(tx_max_size),
+	static_assert(TxPool::block_size >= Format::tx_storage_size_for_capacity(Format::max_send_size),
 		"the TX pool cannot hold the worst-case wire frame of tx_max_size bytes");
 
 	using Stats = cobs_detail::PoolStats;
@@ -83,7 +79,7 @@ public:
 	 */
 	[[nodiscard]] Packet* allocate_rx(const std::size_t requested_size) noexcept
 	{
-		if (requested_size > rx_max_size) {
+		if (requested_size > Format::max_receive_size) {
 			return nullptr;
 		}
 		std::byte* const memory = m_rx.allocate();
@@ -120,14 +116,14 @@ public:
 	 */
 	[[nodiscard]] TxAllocation allocate_tx(const std::size_t requested) noexcept
 	{
-		if (requested > tx_max_size) {
+		if (requested > Format::max_send_size) {
 			return {};
 		}
 		std::byte* const memory = m_tx.allocate();
 		if (memory == nullptr) {
 			return {};
 		}
-		return {memory, tx_max_size};
+		return {memory, Format::max_send_size};
 	}
 
 	// A single size class has nothing to look up, so the capacity is ignored

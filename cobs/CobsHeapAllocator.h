@@ -3,22 +3,20 @@
  * (doc/COBS_ENGINE.md §9), and the default for `Cobs<>`.
  *
  * It is the smallest thing that can satisfy the contract, which makes it the
- * example to read before writing your own: two constants, four functions, and
- * no state at all.
+ * example to read before writing your own: one Format, one Packet type, four
+ * functions, and no state at all.
  *
- * The limits are template parameters rather than "unbounded" for two reasons,
- * neither of them the old one. The wire length field is fixed-width, so the
- * largest frame the format can describe is settled when the type is
- * instantiated; and a protocol needs a configured ceiling above which a
- * declared length is refused rather than believed. The PER-FRAME allocation is
- * exact — allocate_rx(N) for a frame that declared N (§9.1.1).
+ * Format is a template parameter rather than an "unbounded" mode. Its fixed
+ * length field settles both directional ceilings, while this type decides only
+ * where the bytes come from. The PER-FRAME allocation is exact —
+ * allocate_rx(N) for a frame that declared N (§9.1.1).
  */
 
 #ifndef COBS_HEAP_ALLOCATOR_H_
 #define COBS_HEAP_ALLOCATOR_H_
 
 #include "Codec.h"
-#include "CobsFrameFormat.h"
+#include "Format.h"
 #include "RxPacket.h"
 #include "TxAllocation.h"
 
@@ -26,21 +24,18 @@
 #include <memory>
 #include <new>
 
-template<std::size_t RxMaxSize = 1024, std::size_t TxMaxSize = 1024>
+template<class WireFormat = cobs::Format<1024, 1024>>
 class CobsHeapAllocator final {
 public:
-	static constexpr std::size_t rx_max_size = RxMaxSize;
-	static constexpr std::size_t tx_max_size = TxMaxSize;
-
 	using Packet = RxPacket<CobsHeapAllocator>;
-	using Format = CobsFrameFormat<RxMaxSize, TxMaxSize>;
+	using Format = WireFormat;
 
 	// A policy defends its own geometry at compile time (§9.1.2), and that
 	// includes the arithmetic it is built on. Both of these are unreachable
 	// for any sane limit and both are silent corruption if they ever hold.
-	static_assert(cobs::codec::size_arithmetic_fits(tx_max_size),
+	static_assert(cobs::codec::size_arithmetic_fits(Format::max_send_size),
 		"tx_max_size is too large for the COBS size arithmetic to stay within size_t");
-	static_assert(rx_max_size <= static_cast<std::size_t>(-1) - sizeof(Packet),
+	static_assert(Format::max_receive_size <= static_cast<std::size_t>(-1) - sizeof(Packet),
 		"rx_max_size plus a packet header overflows size_t");
 
 	CobsHeapAllocator() noexcept = default;
@@ -58,7 +53,7 @@ public:
 	 */
 	[[nodiscard]] Packet* allocate_rx(const std::size_t requested_size) noexcept
 	{
-		if (requested_size > rx_max_size) {
+		if (requested_size > Format::max_receive_size) {
 			return nullptr;
 		}
 		void* const memory =
@@ -103,7 +98,7 @@ public:
 	 */
 	[[nodiscard]] TxAllocation allocate_tx(const std::size_t requested) noexcept
 	{
-		if (requested > tx_max_size) {
+		if (requested > Format::max_send_size) {
 			return {};
 		}
 		// The block must hold the encoded [length][payload], not just the

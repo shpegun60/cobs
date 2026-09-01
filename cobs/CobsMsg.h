@@ -38,7 +38,7 @@
  * ---------------------------------------------------------------------------
  *
  * Layout (§8.3), with K the capacity of the current block and H the width of
- * the wire length header (CobsFrameFormat). The header is INSIDE the block,
+ * the wire length header (cobs::Format). The header is INSIDE the block,
  * ahead of the payload, and is invisible to size() and capacity():
  *
  *      block, cobs::codec::max_wire_size(H + K) bytes
@@ -71,7 +71,7 @@
 #define COBS_MSG_H_
 
 #include "Codec.h"
-#include "CobsFrameFormat.h"
+#include "Format.h"
 #include "Storage.h"
 #include "TxAllocation.h"
 
@@ -163,8 +163,8 @@ concept CobsScalar =
 	 std::is_enum_v<std::remove_cv_t<T>> ||
 	 std::is_same_v<std::remove_cv_t<T>, std::byte>);
 
-// One template parameter, like everything else in this layer: the policy
-// states tx_max_size, so the geometry follows from it (COBS_ENGINE.md §9.2).
+// One template parameter, like everything else in this layer: the storage
+// names its protocol Format, so memory strategy cannot redefine geometry.
 template<class Allocator>
 class CobsMsg final {
 	static_assert(cobs::Storage<Allocator>,
@@ -176,9 +176,9 @@ class CobsMsg final {
 	friend class Cobs<Allocator>;
 
 public:
-	using Format = CobsFormatFor<Allocator>;
+	using Format = typename Allocator::Format;
 
-	static constexpr std::size_t max_payload_size = Allocator::tx_max_size;
+	static constexpr std::size_t max_payload_size = Format::max_send_size;
 	// Part of the wire format, republished so an integration build can assert
 	// the format it expects (COBS_ENGINE.md §3).
 	static constexpr std::size_t length_size = Format::length_size;

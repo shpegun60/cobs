@@ -28,7 +28,7 @@
 #ifndef COBS_H_
 #define COBS_H_
 
-#include "CobsFrameFormat.h"
+#include "Format.h"
 #include "CobsHeapAllocator.h"
 #include "CobsMsg.h"
 #include "CobsRx.h"
@@ -59,6 +59,7 @@ public:
 	using AllocatorType = Allocator;
 	using Msg = CobsMsg<Allocator>;
 	using Ref = PacketRef<Allocator>;
+	using Format = typename Allocator::Format;
 
 	/*
 	 * Republished so callers have one place to ask, and so a change of policy
@@ -69,8 +70,8 @@ public:
 	 * away from the truth, on a layer where being one header out is the
 	 * easiest mistake there is.
 	 */
-	static constexpr std::size_t max_receive_size = Allocator::rx_max_size;
-	static constexpr std::size_t max_send_size    = Allocator::tx_max_size;
+	static constexpr std::size_t max_receive_size = Format::max_receive_size;
+	static constexpr std::size_t max_send_size    = Format::max_send_size;
 
 	/*
 	 * The wire format this engine speaks (COBS_ENGINE.md §3). Every frame
@@ -84,7 +85,6 @@ public:
 	 * disagree cannot exchange even a one-byte frame. It is constexpr so an
 	 * integration build can static_assert the format it expects.
 	 */
-	using Format = CobsFormatFor<Allocator>;
 	static constexpr std::size_t length_size = Format::length_size;
 	using LengthType = typename Format::LengthType;
 

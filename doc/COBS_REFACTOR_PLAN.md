@@ -136,20 +136,20 @@ regression clues for those ABIs, not universal ABI promises:
 |---|---:|---:|
 | pointer / `std::size_t` | 8 / 8 bytes | 4 / 4 bytes |
 | `TxAllocation` | 16 bytes | 8 bytes |
-| `RxPacket<CobsHeapAllocator<...>>` | 24 bytes | 16 bytes |
+| `RxPacket<CobsHeapAllocator<cobs::Format<...>>>` | 24 bytes | 16 bytes |
 | `PacketRef<...>` | 8 bytes | 4 bytes |
 | `CobsMsg<...>` | 48 bytes | 24 bytes |
 | `cobs::codec::Decoder` | 48 bytes | 24 bytes |
 | `CobsRx<...>` | 136 bytes | 80 bytes |
-| `Cobs<CobsHeapAllocator<...>>` | 304 bytes | 168 bytes |
-| `CobsHeapAllocator<...>` | 1 byte | 1 byte |
+| `Cobs<CobsHeapAllocator<cobs::Format<...>>>` | 304 bytes | 168 bytes |
+| `CobsHeapAllocator<cobs::Format<...>>` | 1 byte | 1 byte |
 | `tiny::delegate` sender | 64 bytes | 32 bytes |
 | `tiny::delegate` busy query | 64 bytes | 32 bytes |
 | RX statistics | 28 bytes | 28 bytes |
 | TX statistics | 12 bytes | 12 bytes |
 | pool statistics | 16 bytes | 16 bytes |
-| `CobsFixedAllocator<1024, 8, 1024, 2>` | 10,496 bytes | 10,424 bytes |
-| `Cobs<CobsFixedAllocator<1024, 8, 1024, 2>>` | 10,800 bytes | 10,592 bytes |
+| `CobsFixedAllocator<cobs::Format<1024, 1024>, 8, 2>` | 10,496 bytes | 10,424 bytes |
+| `Cobs<CobsFixedAllocator<cobs::Format<1024, 1024>, 8, 2>>` | 10,800 bytes | 10,592 bytes |
 
 The owning delegates are intentionally retained. Their size is not a
 reason to weaken their owning-callable semantics. Before layout work is marked
@@ -342,9 +342,11 @@ lifetime tests, not as part of a broad rename.
 
 ### 8.1 Separate protocol geometry from memory strategy
 
-Current policies expose `rx_max_size` and `tx_max_size`, and
-`CobsFormatFor<Allocator>` derives length geometry from them. Consequently,
-changing a memory strategy can also change the protocol type.
+Before Phase 2, policies exposed `rx_max_size` and `tx_max_size`, and
+`CobsFormatFor<Allocator>` derived length geometry from them. Consequently,
+changing a memory strategy could also change the protocol type. That reverse
+dependency has now been removed: each storage names one `cobs::Format`, and
+the engine reads protocol geometry only from that type.
 
 The target separates these choices:
 
@@ -380,9 +382,11 @@ Forcing this through `std::allocator` or PMR would hide rather than standardize
 the actual contract. The correct standardization mechanism is a narrow C++20
 concept plus behavioral conformance tests.
 
-### 8.3 Transitional Phase 0 concept
+### 8.3 Checked transitional storage concept
 
-Before any rename, the current policy shape is checked directly:
+Phase 0 first checked the existing operations. Phase 2 moved directional
+limits into the required `Format` type without yet renaming the four memory
+operations:
 
 ```cpp
 template<class T>
@@ -393,9 +397,10 @@ concept Storage = requires(
     std::byte* memory)
 {
     typename T::Packet;
+    typename T::Format;
 
-    { T::rx_max_size } -> std::convertible_to<std::size_t>;
-    { T::tx_max_size } -> std::convertible_to<std::size_t>;
+    { T::Format::max_receive_size } -> std::convertible_to<std::size_t>;
+    { T::Format::max_send_size } -> std::convertible_to<std::size_t>;
 
     { storage.allocate_rx(size) }
         noexcept -> std::same_as<typename T::Packet*>;
@@ -411,10 +416,9 @@ concept Storage = requires(
 };
 ```
 
-This is intentionally transitional. It gives immediate diagnostics and a
-single definition of the present extension shape without combining a concept
-rename, method rename, descriptor migration, and protocol migration in one
-change.
+This remains transitional only in operation and descriptor vocabulary. Format
+ownership is already final: storage implementations no longer duplicate
+directional protocol constants.
 
 ### 8.4 Final storage concept
 
@@ -758,12 +762,12 @@ protocol changes must never be bundled together.
 
 ### Phase 2 - protocol `Format`
 
-- [ ] Introduce `Format<MaxReceive, MaxSend>`.
-- [ ] Make both built-in storage strategies name one format type.
-- [ ] Remove the reverse dependency from format to allocator constants.
-- [ ] Test complementary peers and length-width boundaries at 0, 254, 255,
+- [x] Introduce `Format<MaxReceive, MaxSend>`.
+- [x] Make both built-in storage strategies accept and name one format type.
+- [x] Remove the reverse dependency from format to allocator constants.
+- [x] Test complementary peers and length-width boundaries at 0, 254, 255,
       256, and 65535 where supported.
-- [ ] Prove heap and pool with the same `Format` emit identical frames.
+- [x] Prove heap and pool with the same `Format` emit identical frames.
 
 ### Phase 3 - final storage vocabulary
 
@@ -908,3 +912,7 @@ The following are not part of this refactor:
   `Codec.h`, `Decoder.cpp`, `Encoder.cpp`, and real `cobs::codec` definitions.
   No aliases or compatibility traits were retained; object layouts and all
   codec/engine checks remained identical.
+- Physically replaced `CobsFrameFormat`/`CobsFormatFor` with `cobs::Format` in
+  `Format.h`. Storage policies now accept and name a format type; endpoint,
+  receiver, and message read limits only from `Storage::Format`. Duplicate
+  storage limit fields were removed, and heap/pool wire identity is tested.

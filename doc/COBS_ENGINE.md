@@ -39,8 +39,8 @@ only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 | Ready queue | intrusive, threaded through the packets themselves |
 | RX lifetime | intrusive refcount, `PacketRef`, payload immutable after publication |
 | Refcount | plain (single execution domain); no atomic policy in v1 |
-| Allocator | a compile-time **policy** (§9) and the single source of truth for memory: geometry, limits and quotas. `Cobs<Allocator>` is the whole signature. Defaults to `CobsHeapAllocator<>`; embedded targets opt into a fixed pool |
-| Protocol limits | `Allocator::rx_max_size` / `tx_max_size`, both BODY limits — the decoded frame is `length_size` bytes longer. Republished as `Cobs::max_receive_size` / `max_send_size` |
+| Allocator | a compile-time **policy** (§9) and the single source of truth for memory strategy and quotas. It names one `Format`; `Cobs<Allocator>` remains the whole engine signature. Defaults to `CobsHeapAllocator<>`; embedded targets opt into a fixed pool |
+| Protocol limits | `Allocator::Format::max_receive_size` / `max_send_size`, both BODY limits — the decoded frame is `length_size` bytes longer. Republished by `Cobs` under the same names |
 | TX ownership | move-only `CobsMsg`, exclusive until the transport accepts it |
 | Transport busy before encoding | message stays `Building` |
 | `send()` failure after encoding | message stays `Encoded`, the same wire frame is retryable |
@@ -210,12 +210,12 @@ in §4 a tight bound rather than a loose capacity estimate.
 
 ### 4.1 The two protocol limits
 
-There are two, one per direction, and they are stated by the allocator policy
-(§9):
+There are two, one per direction, and they are stated by `cobs::Format`. The
+storage policy names that type but does not duplicate its values (§9):
 
 ```text
-rx_max_size    the largest BODY this instance will receive
-tx_max_size    the largest BODY the TX builder will carry
+max_receive_size    the largest BODY this instance will receive
+max_send_size       the largest BODY the TX builder will carry
 ```
 
 Both are **body sizes** — the decoded frame is `length_size` bytes longer, and
@@ -282,33 +282,23 @@ there is.
 ```cpp
 template<class Allocator = CobsHeapAllocator<>>
 class Cobs final {
-    static constexpr std::size_t max_receive_size = Allocator::rx_max_size;
-    static constexpr std::size_t max_send_size    = Allocator::tx_max_size;
+    using Format = typename Allocator::Format;
+    static constexpr std::size_t max_receive_size = Format::max_receive_size;
+    static constexpr std::size_t max_send_size    = Format::max_send_size;
 };
 ```
 
-An earlier draft of this document put it the other way round — a
-a protocol-limit parameter on `Cobs`, with the allocator merely asserted to be
-big enough — on the principle that a memory backend must never decide protocol
-semantics. That principle is right about a *generic* allocator. It does not
-apply here, because this is not one: `CobsAllocatorPolicy` is a purpose-built
-type whose entire job is to state the memory configuration of a COBS instance,
-and the largest frame that configuration can hold is part of that job, not a
-side effect of it.
-
-The consequence is deliberate and must be understood before choosing a policy:
-**replacing the policy can change which wire frames are accepted.** That is
-the policy doing its work, not leaking an implementation detail. What would be
-wrong is a *silent* change, which is why both numbers are republished under
-`Cobs`'s own names.
+`Format` is now a first-class protocol type. Replacing heap storage with a pool
+while keeping the same `Format` cannot change the header width or directional
+limits. A storage implementation that names no `Format` does not satisfy the
+checked `cobs::Storage` contract.
 
 The rule that survives unchanged is the one a level down, about how a pool is
 configured. A pool is parameterized by the **payload capacity it offers**,
 never by its raw block size:
 
 ```cpp
-template<std::size_t RxMaxSize, std::size_t RxBlocks,
-         std::size_t TxMaxSize, std::size_t TxBlocks>
+template<class Format, std::size_t RxBlocks, std::size_t TxBlocks>
 class CobsFixedAllocator;
 ```
 
@@ -388,13 +378,13 @@ template<class Allocator = CobsHeapAllocator<>>
 class Cobs;
 ```
 
-That is the whole signature. The transport arrives by delegate (§2.1) and the
-sizes come from the policy (§9), so there is nothing else for a template
-parameter to carry:
+That is the whole signature. The transport arrives by delegate (§2.1), and the
+storage names its protocol `Format`, so there is no second engine parameter
+that can disagree with it:
 
 ```cpp
 Cobs<> cobs;                        // heap policy
-Cobs<MyAllocator> cobs;             // anybody else's memory and geometry
+Cobs<MyAllocator> cobs;             // anybody else's storage for its Format
 ```
 
 The policy lives INSIDE the engine, by value (§9.4), so there is no separate
@@ -404,11 +394,8 @@ object to hand in. A policy needing runtime arguments is constructed in place:
 Cobs<MyAllocator> cobs{std::in_place, region_base, region_size};
 ```
 
-The components underneath still take their own geometry explicitly —
-`CobsFixedAllocator<RxMaxSize, RxBlocks, TxMaxSize, TxBlocks>`,
-`CobsMsg<Allocator>` — but
-the assembled object an application names has one knob, and that knob is the
-single place every memory decision is written down.
+Every component underneath refers to `Allocator::Format`; no layer
+reconstructs wire geometry from allocator constants.
 
 ---
 
@@ -1095,15 +1082,12 @@ thing wrong.
 
 ### 9.1 The contract
 
-Two constants and four functions. That is all of it.
+One protocol type, one packet type and four memory operations. That is all of
+it. Directional limits live only in `Format`.
 
 ```cpp
 struct SomeCobsAllocator {
-    // The declared limits of this COBS instance (§9.2). These ARE what the
-    // protocol accepts and sends.
-    static constexpr std::size_t rx_max_size = ...;
-    static constexpr std::size_t tx_max_size = ...;
-
+    using Format = cobs::Format<1024, 64>;
     using Packet = RxPacket<SomeCobsAllocator>;
 
     [[nodiscard]] Packet* allocate_rx(std::size_t requested_size) noexcept;
@@ -1122,7 +1106,7 @@ struct TxAllocation {
 Obligations on a non-null TX allocation:
 
 ```text
-requested <= capacity <= tx_max_size
+requested <= capacity <= Format::max_send_size
 the block holds at least cobs::codec::max_wire_size(length_size + capacity) bytes
 deallocate_tx() is called with exactly the capacity that was reported
 ```
@@ -1130,7 +1114,7 @@ deallocate_tx() is called with exactly the capacity that was reported
 The TX obligation is **header-inclusive**: what gets encoded is
 `[length][payload]`, so a block sized for the payload alone is one or two
 bytes short and `CobsMsg::encode()` runs off the end of it. Use
-`CobsFrameFormat::tx_storage_size_for_capacity(capacity)` rather than
+`cobs::Format::tx_storage_size_for_capacity(capacity)` rather than
 open-coding it — the shared contract test does, precisely so that a policy
 written against the old formula fails there instead of in the field.
 
@@ -1142,7 +1126,7 @@ successful live allocations remain valid, distinct and exclusively the
 caller's until they are deallocated
 deallocation of nullptr is a no-op, not an abuse
 constructing the policy is noexcept
-requested_size <= rx_max_size, and a non-null packet has storage for
+requested_size <= Format::max_receive_size, and a non-null packet has storage for
     exactly that many payload bytes
 ```
 
@@ -1284,8 +1268,8 @@ worth it.
 
 On RX, `Cobs` never asks how much memory it actually got. The exchange is:
 
-> You declared `rx_max_size = 1024`. If `allocate_rx(n)` returns non-null with
-> `n <= 1024`, you are **obliged** to have given valid storage for a packet
+> Your `Format` declares `max_receive_size = 1024`. If `allocate_rx(n)` returns
+> non-null with `n <= 1024`, you are **obliged** to have given valid storage for a packet
 > header plus `n` payload bytes. If you cannot, return null.
 
 `std::allocator<T>::allocate(n)` works the same way: it hands back a pointer
@@ -1349,8 +1333,8 @@ stamp it themselves, which made it a hidden FIFTH obligation — absent from the
 signatures, absent from this list, and unverifiable by the contract test once
 the field became private. A policy written to the letter of §9 therefore
 returned a packet whose owner was null, and the first `PacketRef` release
-dereferenced it. There is now a test policy that is exactly the two constants
-and four functions and nothing else, precisely so that this cannot come back.
+dereferenced it. There is now a test policy that is exactly one `Format`, one
+packet type and four functions, precisely so that this cannot come back.
 
 So the policy's whole job on RX is: produce storage for
 `sizeof(Packet) + requested_size`, construct the packet in it, and hand it
@@ -1406,35 +1390,39 @@ It is not a silent failure — `make_msg()` returns an honest empty message — 
 an upper layer is perfectly capable of ignoring the result and inventing its
 own mystery.
 
-### 9.2 The policy is the single source of truth
+### 9.2 Protocol and memory each have one source of truth
 
-Everything about memory is written down once, in the policy:
+`Format` owns protocol geometry. The policy owns only memory strategy and
+quotas, and names the format it serves:
 
 ```text
+cobs::Format<Rx, Tx>
+├── max_receive_size     largest BODY this instance accepts
+├── max_send_size        largest BODY this instance can send
+├── length_size / LengthType
+└── checked framing geometry
+
 CobsAllocatorPolicy
-├── rx_max_size          largest BODY this instance accepts
-├── RX capacity / quota
-├── tx_max_size          largest BODY this instance can send
-├── TX capacity / quota
+├── using Format = ...
+├── RX strategy / quota
+├── TX strategy / quota
 ├── allocate_rx(n)  / deallocate_rx()
 └── allocate_tx()   / deallocate_tx()
 ```
 
-`Cobs` reads those numbers and never second-guesses them. It republishes them
-under its own names — `max_receive_size`, `max_send_size` — so that code above
-has one place to ask, and so a change of policy is visible rather than
-implied (§4.1).
+`Cobs` reads those numbers from `Allocator::Format` and never reconstructs
+them. It republishes them under `max_receive_size` and `max_send_size` (§4.1).
 
 The default is **`CobsHeapAllocator`**, as `UART_COBS_ARCHITECTURE.md` §1 has
 said from the start, which makes the common spelling `Cobs<>`. It is
 parameterized rather than unbounded, because "no limit" is not available to
 us: the length field is itself fixed-width, so the largest frame the format can
 describe has to be decided when the type is instantiated. The PER-FRAME
-allocation is exact (§6.1.1); `rx_max_size` is the ceiling above which a declared
-length is refused.
+allocation is exact (§6.1.1); `Format::max_receive_size` is the ceiling above
+which a declared length is refused.
 
 ```cpp
-template<std::size_t RxMaxSize = 1024, std::size_t TxMaxSize = 1024>
+template<class Format = cobs::Format<1024, 1024>>
 class CobsHeapAllocator;
 
 template<class Allocator = CobsHeapAllocator<>>
@@ -1445,7 +1433,8 @@ so `Cobs<>` gets workable defaults and a bigger heap-backed link is still one
 line:
 
 ```cpp
-Cobs<CobsHeapAllocator<4096, 512>> cobs;
+using Wire = cobs::Format<4096, 512>;
+Cobs<CobsHeapAllocator<Wire>> cobs;
 ```
  A fixed pool
 default would look more embedded-minded and be worse: it would force the
@@ -1455,7 +1444,8 @@ would then carry that fixed quota whatever its workload. A target where
 deliberately:
 
 ```cpp
-using Allocator = CobsFixedAllocator</* RX */ 1024, 8, /* TX */ 1024, 2>;
+using Wire = cobs::Format<1024, 1024>;
+using Allocator = CobsFixedAllocator<Wire, /* RX blocks */ 8, /* TX blocks */ 2>;
 Cobs<Allocator> cobs;
 ```
 
@@ -1471,7 +1461,7 @@ Cobs<Allocator>
      protocol             memory
         |                    |
   decoder / encoder     allocate / deallocate
-  RX and TX state       geometry and limits
+  RX and TX state       strategy and quotas
   ready queue           anything: heap, pool, SDRAM, external region
   PacketRef / CobsMsg
 ```

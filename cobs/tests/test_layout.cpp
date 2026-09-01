@@ -22,8 +22,8 @@
 
 namespace {
 
-using Heap = CobsHeapAllocator<1024, 1024>;
-using Fixed = CobsFixedAllocator<1024, 8, 1024, 2>;
+using Heap = CobsHeapAllocator<cobs::Format<1024, 1024>>;
+using Fixed = CobsFixedAllocator<cobs::Format<1024, 1024>, 8, 2>;
 using Packet = RxPacket<Heap>;
 using Ref = PacketRef<Heap>;
 using Message = CobsMsg<Heap>;

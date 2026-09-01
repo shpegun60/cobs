@@ -47,8 +47,8 @@ void check(const bool ok, const std::string& what)
 constexpr std::size_t kMaxDecoded = 64;
 constexpr std::size_t kTxBlocks = 2; // the recommended default: build one while one flies
 
-using TxPool = CobsFixedAllocator<kMaxDecoded, 1, kMaxDecoded, kTxBlocks>;
-using HeapPool = CobsHeapAllocator<kMaxDecoded, kMaxDecoded>;
+using TxPool = CobsFixedAllocator<cobs::Format<kMaxDecoded, kMaxDecoded>, 1, kTxBlocks>;
+using HeapPool = CobsHeapAllocator<cobs::Format<kMaxDecoded, kMaxDecoded>>;
 using Msg = CobsMsg<TxPool>;
 
 // A message filled with `n` recognisable bytes, plus the bytes themselves for
@@ -73,7 +73,7 @@ bool framesAs(M& m, const std::vector<uint8_t>& expected)
 {
 	// The oracle is the ENGINE frame — COBS([length][body]) — assembled by
 	// hand from the independent reference encoder, so a mistake in
-	// CobsFrameFormat cannot hide inside the thing meant to catch it.
+	// cobs::Format cannot hide inside the thing meant to catch it.
 	const auto wire = m.encode();
 	return std::vector<uint8_t>(wire.begin(), wire.end()) ==
 	       cobs_test::frame(expected, M::length_size);
@@ -189,17 +189,14 @@ void testMoveSemantics()
  */
 class SpyPolicy final {
 public:
-	static constexpr std::size_t rx_max_size = 8;
-	static constexpr std::size_t tx_max_size = 4096;
-
 	using Packet = RxPacket<SpyPolicy>;
-	using Format = CobsFrameFormat<rx_max_size, tx_max_size>;
+	using Format = cobs::Format<8, 4096>;
 	[[nodiscard]] Packet* allocate_rx(std::size_t) noexcept { return nullptr; }
 	void deallocate_rx(Packet*) noexcept {}
 
 	[[nodiscard]] TxAllocation allocate_tx(const std::size_t requested) noexcept
 	{
-		if (requested > tx_max_size || refuse_next) {
+		if (requested > Format::max_send_size || refuse_next) {
 			return {};
 		}
 		void* const memory = ::operator new(Format::tx_storage_size_for_capacity(requested), std::nothrow);
@@ -236,11 +233,8 @@ public:
  */
 class SizeClassPolicy final {
 public:
-	static constexpr std::size_t rx_max_size = 8;
-	static constexpr std::size_t tx_max_size = 4096;
-
 	using Packet = RxPacket<SizeClassPolicy>;
-	using Format = CobsFrameFormat<rx_max_size, tx_max_size>;
+	using Format = cobs::Format<8, 4096>;
 	[[nodiscard]] Packet* allocate_rx(std::size_t) noexcept { return nullptr; }
 	void deallocate_rx(Packet*) noexcept {}
 
@@ -248,12 +242,12 @@ public:
 	[[nodiscard]] static constexpr std::size_t class_for(const std::size_t n) noexcept
 	{
 		const std::size_t twice = n * 2u + 1u;
-		return (twice > tx_max_size) ? tx_max_size : twice;
+		return (twice > Format::max_send_size) ? Format::max_send_size : twice;
 	}
 
 	[[nodiscard]] TxAllocation allocate_tx(const std::size_t requested) noexcept
 	{
-		if (requested > tx_max_size) {
+		if (requested > Format::max_send_size) {
 			return {};
 		}
 		const std::size_t capacity = class_for(requested);
@@ -457,7 +451,7 @@ void testReserve()
 	check(m.reserve(50), "a smaller reserve is a no-op");
 	check(m.capacity() == 100 && spy.allocations == 2, "and does not shrink or reallocate");
 
-	check(m.reserve(SpyPolicy::tx_max_size + 1) == false,
+	check(m.reserve(SpyPolicy::Format::max_send_size + 1) == false,
 	      "reserving past tx_max_size is refused");
 	check(m.capacity() == 100, "leaving the capacity alone");
 
@@ -558,15 +552,15 @@ void testOversizeIsRefusedNotClamped()
 {
 	SpyPolicy spy;
 	CobsMsg<SpyPolicy> m{spy};
-	const std::vector<uint8_t> huge(SpyPolicy::tx_max_size + 1, 0x33);
+	const std::vector<uint8_t> huge(SpyPolicy::Format::max_send_size + 1, 0x33);
 	check(m.write_bytes(std::span<const uint8_t>{huge}) == false,
 	      "a payload past tx_max_size is refused");
 	check(m.size() == 0 && spy.allocations == 1, "with nothing written and nothing allocated");
 
-	const std::vector<uint8_t> exact(SpyPolicy::tx_max_size, 0x44);
+	const std::vector<uint8_t> exact(SpyPolicy::Format::max_send_size, 0x44);
 	check(m.write_bytes(std::span<const uint8_t>{exact}),
 	      "while exactly tx_max_size is accepted");
-	check(m.size() == SpyPolicy::tx_max_size && m.capacity() == SpyPolicy::tx_max_size,
+	check(m.size() == SpyPolicy::Format::max_send_size && m.capacity() == SpyPolicy::Format::max_send_size,
 	      "filling the message to its limit");
 	check(m.write<uint8_t>(0) == false, "after which nothing more fits");
 }
@@ -778,17 +772,15 @@ void testDefaultHintAvoidsTheLadder()
 // heap-exact, for contrast.
 class NarrowHeap final {
 public:
-	static constexpr std::size_t rx_max_size = 200;
-	static constexpr std::size_t tx_max_size = 200;
 	using Packet = RxPacket<NarrowHeap>;
-	using Format = CobsFrameFormat<rx_max_size, tx_max_size>;
+	using Format = cobs::Format<200, 200>;
 
 	[[nodiscard]] Packet* allocate_rx(std::size_t) noexcept { return nullptr; }
 	void deallocate_rx(Packet*) noexcept {}
 
 	[[nodiscard]] TxAllocation allocate_tx(const std::size_t requested) noexcept
 	{
-		if (requested > tx_max_size) { return {}; }
+		if (requested > Format::max_send_size) { return {}; }
 		void* const memory =
 			::operator new(Format::tx_storage_size_for_capacity(requested), std::nothrow);
 		if (memory == nullptr) { return {}; }
@@ -905,7 +897,7 @@ int main()
 	testSerializerFailuresLeaveTheMessageUsable();
 	testOversizeIsRefusedNotClamped();
 
-	group("FrameFormat");
+	group("Format");
 	testLengthPrefixIsHiddenAndCorrect();
 	testHeaderShiftsTheCobsBoundaries();
 

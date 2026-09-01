@@ -2,8 +2,8 @@
  * The allocator policy contract (doc/COBS_ENGINE.md §9), run against BOTH
  * policies from one test body.
  *
- * That shared body is the real point. It uses nothing but the contract — two
- * constants and four functions — so if it ever needed to know whether it was
+ * That shared body is the real point. It uses nothing but the contract — one
+ * Format, one Packet type and four functions — so if it ever needed to know whether it was
  * talking to the heap or to static storage, the abstraction would have leaked.
  * Anything a policy exposes beyond the contract (pool occupancy, statistics,
  * exhaustion counts) is tested separately, where it belongs.
@@ -18,8 +18,8 @@
 
 namespace {
 
-using ContractHeap = CobsHeapAllocator<128, 96>;
-using ContractPool = CobsFixedAllocator<128, 2, 96, 1>;
+using ContractHeap = CobsHeapAllocator<cobs::Format<128, 96>>;
+using ContractPool = CobsFixedAllocator<cobs::Format<128, 96>, 2, 1>;
 
 static_assert(cobs::Storage<ContractHeap>,
 	"the built-in heap policy must satisfy the checked storage contract");
@@ -28,8 +28,7 @@ static_assert(cobs::Storage<ContractPool>,
 
 struct MissingTxOperations {
 	struct Packet {};
-	static constexpr std::size_t rx_max_size = 8;
-	static constexpr std::size_t tx_max_size = 8;
+	using Format = cobs::Format<8, 8>;
 
 	Packet* allocate_rx(std::size_t) noexcept;
 	void deallocate_rx(Packet*) noexcept;
@@ -37,8 +36,7 @@ struct MissingTxOperations {
 
 struct WrongTxResult {
 	struct Packet {};
-	static constexpr std::size_t rx_max_size = 8;
-	static constexpr std::size_t tx_max_size = 8;
+	using Format = cobs::Format<8, 8>;
 
 	Packet* allocate_rx(std::size_t) noexcept;
 	void deallocate_rx(Packet*) noexcept;
@@ -48,10 +46,18 @@ struct WrongTxResult {
 
 struct ThrowingAllocateRx {
 	struct Packet {};
-	static constexpr std::size_t rx_max_size = 8;
-	static constexpr std::size_t tx_max_size = 8;
+	using Format = cobs::Format<8, 8>;
 
 	Packet* allocate_rx(std::size_t); // deliberately not noexcept
+	void deallocate_rx(Packet*) noexcept;
+	TxAllocation allocate_tx(std::size_t) noexcept;
+	void deallocate_tx(std::byte*, std::size_t) noexcept;
+};
+
+struct MissingFormat {
+	struct Packet {};
+
+	Packet* allocate_rx(std::size_t) noexcept;
 	void deallocate_rx(Packet*) noexcept;
 	TxAllocation allocate_tx(std::size_t) noexcept;
 	void deallocate_tx(std::byte*, std::size_t) noexcept;
@@ -63,6 +69,8 @@ static_assert(!cobs::Storage<WrongTxResult>,
 	"allocate_tx must return the ownership descriptor, not a bare pointer");
 static_assert(!cobs::Storage<ThrowingAllocateRx>,
 	"storage operations are required to be noexcept");
+static_assert(!cobs::Storage<MissingFormat>,
+	"a storage implementation must name its protocol Format");
 
 int g_checks = 0;
 int g_failures = 0;
@@ -91,7 +99,7 @@ void runContract(const char* name)
 	Allocator a;
 
 	// --- RX: one contiguous [RxPacket][payload], sized by the declared limit
-	Packet* const p = a.allocate_rx(Allocator::rx_max_size);
+	Packet* const p = a.allocate_rx(Allocator::Format::max_receive_size);
 	check(p != nullptr, "allocate_rx yields a packet");
 	check(p->data().empty(), "carrying no decoded bytes yet");
 	// refs, size, next_ready and owner are private to the RX vertical (§6.5) —
@@ -108,8 +116,8 @@ void runContract(const char* name)
 	const auto payload_of = [](Packet* const pk) {
 		return reinterpret_cast<uint8_t*>(pk) + sizeof(Packet);
 	};
-	const std::span<uint8_t> payload{payload_of(p), Allocator::rx_max_size};
-	check(payload.size() == Allocator::rx_max_size,
+	const std::span<uint8_t> payload{payload_of(p), Allocator::Format::max_receive_size};
+	check(payload.size() == Allocator::Format::max_receive_size,
 	      "a packet allocated at rx_max_size has that many payload bytes");
 
 	for (std::size_t i = 0; i < payload.size(); ++i) {
@@ -121,7 +129,7 @@ void runContract(const char* name)
 	}
 	check(intact, "the whole declared payload is writable and reads back");
 
-	Packet* const q = a.allocate_rx(Allocator::rx_max_size);
+	Packet* const q = a.allocate_rx(Allocator::Format::max_receive_size);
 	check(q != nullptr && q != p, "a second packet is a distinct object");
 	{	// Non-overlapping: writing one must not disturb the other.
 		payload_of(p)[0] = 0xAA;
@@ -150,7 +158,7 @@ void runContract(const char* name)
 	 * exact, a size class, or the whole slab — so the shared body must never
 	 * assert a particular capacity here.
 	 */
-	using Format = CobsFormatFor<Allocator>;
+	using Format = typename Allocator::Format;
 	const auto txRequest = [&a](const std::size_t requested) {
 		const std::string n = std::to_string(requested);
 		const TxAllocation t = a.allocate_tx(requested);
@@ -159,7 +167,7 @@ void runContract(const char* name)
 			return;
 		}
 		check(t.capacity >= requested, "and reports at least the " + n + " asked for");
-		check(t.capacity <= Allocator::tx_max_size,
+		check(t.capacity <= Allocator::Format::max_send_size,
 		      "and never more than tx_max_size (request " + n + ")");
 
 		// The reported capacity is a promise about physical storage: the
@@ -177,31 +185,31 @@ void runContract(const char* name)
 	txRequest(0);
 	txRequest(1);
 	txRequest(7);
-	txRequest(Allocator::tx_max_size / 2);
-	txRequest(Allocator::tx_max_size);
+	txRequest(Allocator::Format::max_send_size / 2);
+	txRequest(Allocator::Format::max_send_size);
 
 	{	// The declared limit is a limit: one byte past it is not negotiable.
-		const TxAllocation over = a.allocate_tx(Allocator::tx_max_size + 1);
+		const TxAllocation over = a.allocate_tx(Allocator::Format::max_send_size + 1);
 		check(over.memory == nullptr && over.capacity == 0,
 		      "a request beyond tx_max_size yields an empty allocation");
 	}
 
-	const TxAllocation t = a.allocate_tx(Allocator::tx_max_size);
-	const TxAllocation u = a.allocate_tx(Allocator::tx_max_size);
+	const TxAllocation t = a.allocate_tx(Allocator::Format::max_send_size);
+	const TxAllocation u = a.allocate_tx(Allocator::Format::max_send_size);
 	check(t.memory != nullptr && u.memory != nullptr && u.memory != t.memory,
 	      "two TX blocks are distinct");
-	check(t.capacity == Allocator::tx_max_size,
+	check(t.capacity == Allocator::Format::max_send_size,
 	      "a request for the whole limit reports exactly that capacity");
 
 	// --- §9.1.2: RX exhaustion must never starve TX
 	{
 		std::vector<Packet*> hoard;
 		for (int i = 0; i < 64; ++i) {
-			Packet* const extra = a.allocate_rx(Allocator::rx_max_size);
+			Packet* const extra = a.allocate_rx(Allocator::Format::max_receive_size);
 			if (extra == nullptr) { break; }
 			hoard.push_back(extra);
 		}
-		const TxAllocation still = a.allocate_tx(Allocator::tx_max_size);
+		const TxAllocation still = a.allocate_tx(Allocator::Format::max_send_size);
 		check(still.memory != nullptr,
 		      "TX still allocates while RX is held to exhaustion (independent quotas)");
 		a.deallocate_tx(still.memory, still.capacity);
@@ -223,7 +231,7 @@ void runContract(const char* name)
 	// the only number a segregated policy could use to find the block's pool.
 	bool churn_ok = true;
 	for (int i = 0; i < 500; ++i) {
-		Packet* const rx = a.allocate_rx(Allocator::rx_max_size);
+		Packet* const rx = a.allocate_rx(Allocator::Format::max_receive_size);
 		const TxAllocation tx = a.allocate_tx(7);
 		churn_ok = churn_ok && rx != nullptr && tx.memory != nullptr;
 		if (rx != nullptr) { reinterpret_cast<uint8_t*>(rx)[sizeof(Packet)] = 0x11; }
@@ -238,20 +246,20 @@ void runContract(const char* name)
 void testFixedExhaustionAndIndependence()
 {
 	g_policy = "fixed";
-	using Allocator = CobsFixedAllocator<64, 2, 32, 1>;
+	using Allocator = CobsFixedAllocator<cobs::Format<64, 32>, 2, 1>;
 	Allocator a;
 
 	check(a.rx_available() == 2 && a.tx_available() == 1, "pools start full");
 
-	auto* const p1 = a.allocate_rx(Allocator::rx_max_size);
-	auto* const p2 = a.allocate_rx(Allocator::rx_max_size);
+	auto* const p1 = a.allocate_rx(Allocator::Format::max_receive_size);
+	auto* const p2 = a.allocate_rx(Allocator::Format::max_receive_size);
 	check(p1 != nullptr && p2 != nullptr, "both RX blocks allocate");
-	check(a.allocate_rx(Allocator::rx_max_size) == nullptr, "a third returns null rather than an error");
+	check(a.allocate_rx(Allocator::Format::max_receive_size) == nullptr, "a third returns null rather than an error");
 	check(a.rx_stats().exhausted == 1, "and the exhaustion is counted");
 
-	const TxAllocation t = a.allocate_tx(Allocator::tx_max_size);
+	const TxAllocation t = a.allocate_tx(Allocator::Format::max_send_size);
 	check(t.memory != nullptr, "TX is untouched by RX exhaustion");
-	check(a.allocate_tx(Allocator::tx_max_size).memory == nullptr,
+	check(a.allocate_tx(Allocator::Format::max_send_size).memory == nullptr,
 	      "and exhausts independently");
 
 	a.deallocate_rx(p1);
@@ -272,7 +280,7 @@ void testFixedExhaustionAndIndependence()
 void testHeapGrantsExactlyWhatWasAsked()
 {
 	g_policy = "heap";
-	using Allocator = CobsHeapAllocator<64, 1024>;
+	using Allocator = CobsHeapAllocator<cobs::Format<64, 1024>>;
 	Allocator a;
 
 	// No rounding, no size classes, no growth rule: deciding how much to ask
@@ -297,7 +305,7 @@ void testHeapGrantsExactlyWhatWasAsked()
 		// decoded content is the length field, so the block must hold
 		// cobs::codec::max_wire_size(length_size), three bytes for a one-byte header
 		// and four for a two-byte one.
-		using Fmt = CobsFormatFor<Allocator>;
+		using Fmt = typename Allocator::Format;
 		const TxAllocation t = a.allocate_tx(0);
 		check(t.memory != nullptr && t.capacity == 0,
 		      "a zero request yields a real block of zero payload capacity");
@@ -315,7 +323,7 @@ void testHeapGrantsExactlyWhatWasAsked()
 void testFixedReportsTheWholeSlab()
 {
 	g_policy = "fixed";
-	using Allocator = CobsFixedAllocator<64, 1, 1024, 1>;
+	using Allocator = CobsFixedAllocator<cobs::Format<64, 1024>, 1, 1>;
 	Allocator a;
 
 	// One size class: every accepted request reports the whole slab, because
@@ -336,12 +344,12 @@ void testFixedGeometryIsAbiIndependent()
 	g_policy = "fixed";
 	// The declared limits are exactly what was asked for, on any ABI; only the
 	// physical block size moves, and it is nobody's business (§9.1.1).
-	using Allocator = CobsFixedAllocator<1024, 4, 256, 2>;
-	static_assert(Allocator::rx_max_size == 1024);
-	static_assert(Allocator::tx_max_size == 256);
+	using Allocator = CobsFixedAllocator<cobs::Format<1024, 256>, 4, 2>;
+	static_assert(Allocator::Format::max_receive_size == 1024);
+	static_assert(Allocator::Format::max_send_size == 256);
 
 	Allocator a;
-	auto* const p = a.allocate_rx(Allocator::rx_max_size);
+	auto* const p = a.allocate_rx(Allocator::Format::max_receive_size);
 	check(p != nullptr, "a 1024-byte policy honours a 1024-byte request");
 	auto* const bytes = reinterpret_cast<uint8_t*>(p) + sizeof(*p);
 	for (std::size_t i = 0; i < 1024; ++i) { bytes[i] = static_cast<uint8_t>(i); }
@@ -408,9 +416,9 @@ void testSizeArithmeticGuard()
 	check(true, "the boundary is exact, and its geometry is still sane");
 
 	// And the policies really do carry the assertion.
-	static_assert(cobs::codec::size_arithmetic_fits(CobsHeapAllocator<64, 1024>::tx_max_size));
+	static_assert(cobs::codec::size_arithmetic_fits(CobsHeapAllocator<cobs::Format<64, 1024>>::Format::max_send_size));
 	static_assert(cobs::codec::size_arithmetic_fits(
-		CobsFixedAllocator<64, 2, 1024, 2>::tx_max_size));
+		CobsFixedAllocator<cobs::Format<64, 1024>, 2, 2>::Format::max_send_size));
 	check(true, "both shipped policies assert it on their own limits");
 }
 
@@ -419,8 +427,8 @@ void testSizeArithmeticGuard()
 int main()
 {
 	group("Contract");
-	runContract<CobsHeapAllocator<128, 96>>("heap");
-	runContract<CobsFixedAllocator<128, 8, 96, 4>>("fixed");
+	runContract<CobsHeapAllocator<cobs::Format<128, 96>>>("heap");
+	runContract<CobsFixedAllocator<cobs::Format<128, 96>, 8, 4>>("fixed");
 
 	group("FixedSpecific");
 	testFixedExhaustionAndIndependence();

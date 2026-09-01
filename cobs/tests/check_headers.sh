@@ -15,7 +15,7 @@ HEADERS="
 Cobs.h
 Codec.h
 CobsFixedAllocator.h
-CobsFrameFormat.h
+Format.h
 CobsHeapAllocator.h
 CobsMsg.h
 CobsRx.h

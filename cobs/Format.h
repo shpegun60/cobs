@@ -1,5 +1,5 @@
 /*
- * CobsFrameFormat — the protocol frame that sits INSIDE a COBS frame.
+ * cobs::Format — protocol geometry, independent of memory strategy.
  *
  * Contract: doc/COBS_ENGINE.md §3 and §4. Every engine frame carries a
  * fixed-width decoded length prefix ahead of its body:
@@ -46,8 +46,8 @@
  * ---------------------------------------------------------------------------
  */
 
-#ifndef COBS_FRAME_FORMAT_H_
-#define COBS_FRAME_FORMAT_H_
+#ifndef COBS_FORMAT_H_
+#define COBS_FORMAT_H_
 
 #include "Codec.h"
 
@@ -55,14 +55,19 @@
 #include <cstdint>
 #include <type_traits>
 
+namespace cobs {
+
 template<std::size_t RxMaxSize, std::size_t TxMaxSize>
-struct CobsFrameFormat final {
+struct Format final {
 	// A 32-bit format is deliberately not offered. Nothing in this stack wants
 	// 64 KiB frames, and an unused third width is a third thing to get wrong.
 	static_assert(RxMaxSize <= UINT16_MAX,
 		"rx_max_size must fit the wire length field: at most 65535");
 	static_assert(TxMaxSize <= UINT16_MAX,
 		"tx_max_size must fit the wire length field: at most 65535");
+
+	static constexpr std::size_t max_receive_size = RxMaxSize;
+	static constexpr std::size_t max_send_size = TxMaxSize;
 
 	// The larger limit picks the width — see the header comment. Both
 	// directions then use it.
@@ -126,9 +131,6 @@ struct CobsFrameFormat final {
 		"tx_max_size plus the length header overflows the COBS size arithmetic");
 };
 
-// Every layer derives the format from the policy, so it is never a separate
-// template parameter that two of them could disagree about.
-template<class Allocator>
-using CobsFormatFor = CobsFrameFormat<Allocator::rx_max_size, Allocator::tx_max_size>;
+} // namespace cobs
 
-#endif /* COBS_FRAME_FORMAT_H_ */
+#endif /* COBS_FORMAT_H_ */
