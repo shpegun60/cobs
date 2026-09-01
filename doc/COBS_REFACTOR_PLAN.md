@@ -1060,3 +1060,12 @@ The following are not part of this refactor:
   archived body is unchanged below its new banner, all relative links resolve,
   UART host stayed 131/131, and the full F1/G4/H7RS port/probe matrix passed
   with only the known vendor warning.
+- Split packet lifetime from receiver internals into a dedicated public-boundary
+  `test_packet` executable. It includes only `Cobs.h` from production, obtains
+  handles solely through `Endpoint::pop_packet()`, and observes copy/move,
+  assignment, retained-packet back-pressure, last-reference release, and the
+  70,000-copy regression through fixed-pool occupancy. `test_receiver` now
+  owns only RX decoding, allocation, validation, queueing, and teardown.
+  MinGW and WSL ASan/UBSan each passed the resulting 23,035 checks; all five
+  public headers remained self-contained and the Cortex-M layout assertions
+  stayed unchanged.

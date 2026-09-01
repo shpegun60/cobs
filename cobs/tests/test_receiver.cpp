@@ -2,16 +2,12 @@
  * End-to-end verification of the RX vertical:
  *
  *   encoded bytes -> cobs::codec::Decoder -> storage -> cobs::RxBlock
- *                 -> intrusive ready queue -> cobs::Packet -> release -> pool
+ *                 -> intrusive ready queue -> cobs::Packet
  *
- * cobs::Packet's own semantics (copy, move, assignment, self-assignment) are
- * tested here rather than beside the pool, because a reference can now only
- * come from its legitimate owner: adopt() is private to Receiver, so a test can
- * no longer mint one by hand — which was exactly the hole being closed.
- *
- * Refcounts are therefore checked BEHAVIOURALLY, through pool occupancy. That
- * is a stronger test than reading the field: it asserts the guarantee the
- * application depends on rather than the bookkeeping behind it.
+ * This suite owns receiver state, allocation, length validation, queueing, and
+ * teardown. cobs::Packet's public copy/move/refcount lifetime is exercised
+ * separately by test_packet through Endpoint::pop_packet(), its only
+ * application creation path.
  */
 #include "detail/Receiver.h"
 #include "Storage.h"
@@ -282,89 +278,6 @@ void testGapDropsOnlyTheFrameInFlight()
 	check(!rx.pop_packet(), "nothing was invented from the damaged region");
 }
 
-/* ======================= cobs::Packet ownership ============================ */
-
-// One frame in the queue, then every handle operation, checked through pool
-// occupancy: the block must be held while any handle refers to it and freed
-// exactly once when the last one goes.
-void testHandleSemantics()
-{
-	const auto p = payload(0xD0, 6);
-	const auto wire = engine_frame(p);
-
-	{	// copy keeps the packet alive past the original
-		Pool pool;
-		Rx rx(pool);
-		feed(rx, wire);
-		Packet a = rx.pop_packet();
-		check(pool.rx_available() == kBlocks - 1, "a popped packet holds its block");
-		{
-			Packet b = a;
-			a.reset();
-			check(pool.rx_available() == kBlocks - 1,
-			      "after a copy, releasing the original does not free the packet");
-			check(matches(b, p), "and the copy still reads the payload");
-		}
-		check(pool.rx_available() == kBlocks, "the last handle frees it");
-		check(pool.rx_stats().rejected == 0, "exactly once");
-	}
-	{	// move transfers without changing the count
-		Pool pool;
-		Rx rx(pool);
-		feed(rx, wire);
-		Packet a = rx.pop_packet();
-		Packet b = std::move(a);
-		check(!a, "a moved-from handle is empty");
-		check(matches(b, p), "the moved-to handle owns the packet");
-		check(pool.rx_available() == kBlocks - 1, "and it is still held exactly once");
-		b.reset();
-		check(pool.rx_available() == kBlocks, "releasing it frees the block");
-	}
-	{	// assignment releases what is overwritten
-		Pool pool;
-		Rx rx(pool);
-		feed(rx, wire);
-		feed(rx, wire);
-		Packet a = rx.pop_packet();
-		Packet b = rx.pop_packet();
-		check(pool.rx_available() == kBlocks - 2, "two packets held");
-		b = a;
-		check(pool.rx_available() == kBlocks - 1, "copy assignment released b's packet");
-		a.reset();
-		check(pool.rx_available() == kBlocks - 1, "b still holds the shared one");
-		b.reset();
-		check(pool.rx_available() == kBlocks, "and releases it last");
-
-		feed(rx, wire);
-		feed(rx, wire);
-		Packet c = rx.pop_packet();
-		Packet d = rx.pop_packet();
-		d = std::move(c);
-		check(pool.rx_available() == kBlocks - 1, "move assignment released d's packet");
-		check(matches(d, p) && !c, "and transferred c's");
-	}
-	{	// self-assignment must not free what it is about to keep
-		Pool pool;
-		Rx rx(pool);
-		feed(rx, wire);
-		Packet a = rx.pop_packet();
-		Packet& alias = a;
-
-		a = alias;
-		check(static_cast<bool>(a) && matches(a, p),
-		      "self copy-assignment leaves the handle and its payload intact");
-		check(pool.rx_available() == kBlocks - 1, "and the block still held");
-
-		a = std::move(alias);
-		check(static_cast<bool>(a) && matches(a, p),
-		      "self move-assignment leaves the handle and its payload intact");
-
-		a.reset();
-		check(pool.rx_available() == kBlocks, "and it still frees exactly once");
-		check(pool.rx_stats().rejected == 0, "with no double free");
-	}
-}
-
 // Whatever Receiver still owns when it dies must go back to the pool.
 void testDestructorReleasesEverything()
 {
@@ -383,31 +296,6 @@ void testDestructorReleasesEverything()
 	      "destroying Receiver returns the queued packets and the one in progress");
 	check(pool.rx_stats().rejected == 0, "without freeing anything twice");
 }
-
-// The application holding packets really does apply back-pressure.
-void testRetentionConsumesCapacity()
-{
-	Pool pool;
-	Rx rx(pool);
-	const auto wire = engine_frame(payload(0xF0, 2));
-
-	std::vector<Packet> retained;
-	for (std::size_t i = 0; i < kBlocks; ++i) {
-		feed(rx, wire);
-		retained.push_back(rx.pop_packet());
-	}
-	check(pool.rx_available() == 0, "retained packets consume the pool");
-
-	feed(rx, wire);
-	check(rx.stats().allocation_failure == 1,
-	      "so a further frame cannot be received while they are held");
-
-	retained.clear();
-	check(pool.rx_available() == kBlocks, "releasing them restores capacity");
-	feed(rx, wire);
-	check(static_cast<bool>(rx.pop_packet()), "and reception resumes");
-}
-
 
 /* ============================ the length field =========================== */
 
@@ -936,59 +824,6 @@ void testContractIsSelfSufficient()
 }
 
 
-/* ========================= the refcount's width ========================= */
-
-/*
- * cobs::Packet's copy constructor does `++refs` with no check, so the counter's
- * WIDTH is the only thing preventing a wrap — and a wrap is a
- * use-after-free, not a leak:
- *
- *     N copies of one reference   stored refs = (1 + N) mod 2^bits
- *     at N == 2^bits              stored refs is 1 again
- *     destroy any ONE of them     refs 1 -> 0, the packet is freed
- *     the other 2^bits handles are still alive and still pointing at it
- *
- * With a 16-bit counter that took 65536 copies of one packet, reachable
- * through nothing but the public API, and ASan called it exactly what it was.
- * The loop below is 70000 — comfortably past where the old width broke, and
- * nowhere near where the current one does.
- */
-void testRefcountDoesNotWrap()
-{
-	using LocalRef = typename RecRx::Packet;
-	RecordingHeap pool;
-	RecRx rx(pool);
-
-	const auto body = payload(0x61, 4);
-	rx.consume(std::span<const uint8_t>{cobs_test::frame(body, RecRx::length_size)});
-	LocalRef original = rx.pop_packet();
-	check(static_cast<bool>(original), "one packet, one reference");
-
-	constexpr std::size_t kCopies = 70000; // > 65536, the old wrap point
-	{
-		std::vector<LocalRef> copies;
-		copies.reserve(kCopies);
-		for (std::size_t i = 0; i < kCopies; ++i) {
-			copies.emplace_back(original);
-		}
-		check(pool.frees == 0, "70000 copies free nothing");
-
-		// The old bug fired here: dropping one reference out of 70001 freed
-		// the packet, because the stored count had wrapped back to a small
-		// number on the way up.
-		copies.pop_back();
-		check(pool.frees == 0, "and dropping one of them frees nothing either");
-
-		const auto d = original.data();
-		check(d.size() == body.size() &&
-		      std::vector<uint8_t>(d.begin(), d.end()) == body,
-		      "the original still reads its own bytes, not freed memory");
-	}
-	check(pool.frees == 0, "the packet outlives every copy but the original");
-	original = LocalRef{};
-	check(pool.frees == 1, "and is freed exactly once when the last one goes");
-}
-
 /* ==================== the widest frames the format allows =============== */
 
 /*
@@ -1053,7 +888,6 @@ int main()
 	testOversizeWithNoBody();
 	testPacketInternalsAreSealed();
 	testContractIsSelfSufficient();
-	testRefcountDoesNotWrap();
 	testWidestFrames();
 
 	group("EndToEnd");
@@ -1069,10 +903,8 @@ int main()
 	testExhaustionDropsFramesAndRecovers();
 	testGapDropsOnlyTheFrameInFlight();
 
-	group("Ownership");
-	testHandleSemantics();
+	group("Teardown");
 	testDestructorReleasesEverything();
-	testRetentionConsumesCapacity();
 
 	std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;

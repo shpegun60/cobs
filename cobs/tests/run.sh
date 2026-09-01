@@ -36,6 +36,7 @@ rm -f "$OUT/.sancheck" "$OUT/.sancheck.exe"
 #   test_block_pool      cobs::detail::BlockPool, the raw memory primitive
 #   test_storage         the storage contract, run against BOTH strategies
 #   test_receiver        the internal RX vertical, end to end
+#   test_packet          public packet lifetime/refcount via Endpoint only
 #   test_encoder         canonical in-place encoding over its own payload
 #   test_message         public message API plus coordinator-only TX transitions
 #   test_endpoint        the assembled endpoint over a fake transport, both policies
@@ -51,6 +52,7 @@ build test_decoder         "$COBS/Decoder.cpp" "$HERE/test_decoder.cpp"
 build test_block_pool      "$HERE/test_block_pool.cpp"
 build test_storage         "$HERE/test_storage.cpp"
 build test_receiver        "$COBS/Decoder.cpp" "$HERE/test_receiver.cpp"
+build test_packet          "$COBS/Decoder.cpp" "$HERE/test_packet.cpp"
 build test_encoder         "$COBS/Decoder.cpp" "$COBS/Encoder.cpp" "$HERE/test_encoder.cpp"
 build test_message         "$COBS/Encoder.cpp" "$HERE/test_message.cpp"
 build test_endpoint        "$COBS/Decoder.cpp" "$COBS/Encoder.cpp" "$HERE/test_endpoint.cpp"
@@ -69,6 +71,7 @@ build test_storage_ndebug -DNDEBUG "$HERE/test_storage.cpp"
 "$OUT/test_block_pool.exe"
 "$OUT/test_storage.exe"
 "$OUT/test_receiver.exe"
+"$OUT/test_packet.exe"
 "$OUT/test_encoder.exe"
 "$OUT/test_message.exe"
 "$OUT/test_endpoint.exe"
