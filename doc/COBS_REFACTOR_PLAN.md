@@ -1,8 +1,13 @@
 # COBS refactor plan
 
-Status: canonical plan, implementation in progress
+Status: complete
 
 Created: 2026-09-01
+
+Completed: 2026-09-01
+
+Verified implementation checkpoint:
+`cf4c66ce0a4eef01bcd21f820eae474788be6a92`
 
 Baseline: `main` at `928f223b0017d4a474df51cb9be7179f53644d47`
 
@@ -1108,3 +1113,22 @@ The following are not part of this refactor:
   forwarding to the internal registry. UART host passed 131/131; F1 legacy,
   G4 default/old-HAL/registered-callback/external-callback, H7RS D-cache, both
   probe-on targets, and disabled-probe disassembly equivalence all passed.
+- Closed the refactor against the full matrix on implementation checkpoint
+  `cf4c66ce0a4eef01bcd21f820eae474788be6a92`. MinGW and WSL each passed
+  23,035 COBS runtime checks, six diagnostic-checked expected failures, five
+  self-contained public headers, and both `NDEBUG` suites; the WSL run enabled
+  ASan and UBSan. Host layout remained `TxBlock=16`, `RxBlock=24`, `Packet=8`,
+  `Message=48`, `Decoder=48`, `Receiver=136`, `Endpoint=304`, `Heap=1`,
+  `Pool=10496`, `PoolEndpoint=10800`, sender/busy delegates `64/64`, and
+  `Stats=40` bytes. Cortex-M assertions remained `8`, `16`, `4`, `24`, `24`,
+  `80`, `168`, `1`, `10424`, `10592`, `32/32`, and `40` bytes respectively.
+  UART host passed 131/131 and the complete F1/G4/H7RS callback, legacy-IP,
+  D-cache, probe-on, and disabled-probe equivalence matrix passed with only the
+  known H7RS vendor `register` warning. Fresh out-of-tree qmake directories
+  compiled, linked, and ran the public-only COBS consumer and independently
+  compiled and linked the root Qt target. The complete application and custom
+  storage documentation examples compiled warning-clean with `-Werror`.
+  Repository whitespace checks passed; every phase checkbox and all twelve
+  acceptance criteria are satisfied. No compatibility alias, forwarding
+  header, split transport setter, duplicate ownership descriptor, or
+  undocumented migration surface remains.
