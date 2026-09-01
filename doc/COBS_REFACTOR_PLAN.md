@@ -846,8 +846,12 @@ protocol changes must never be bundled together.
 
 ### Phase 6 - tests around public boundaries
 
-- [ ] Separate codec, storage, message, packet-lifetime, endpoint, public API,
-      and compile-fail tests.
+- [x] Keep codec, storage, receiver, packet lifetime, message, and endpoint in
+      separately named executables.
+- [x] Exercise application-only use through `Cobs.h` in `test_packet` and the
+      qmake consumer.
+- [x] Add real compile-fail translation units for negative API contracts and
+      validate their diagnostic boundary.
 - [x] Permit white-box tests to include `detail` explicitly.
 - [x] Require application tests to include only `Cobs.h`.
 - [x] Add wire-equivalence fixtures across storage implementations.
@@ -1069,3 +1073,13 @@ The following are not part of this refactor:
   MinGW and WSL ASan/UBSan each passed the resulting 23,035 checks; all five
   public headers remained self-contained and the Cortex-M layout assertions
   stayed unchanged.
+- Added six genuine expected-failure translation units and a diagnostic-aware
+  runner. They lock incomplete-Storage rejection, coordinator-only
+  `Message::encode()` and `Packet::adopt()`, native-struct rejection, the
+  absence of the old `get_msg()` alias, and the absence of split
+  `set_sender()` transport binding. Both MinGW and WSL compilers reject every
+  case at the intended boundary. Together with the public-only qmake consumer
+  and `test_packet`, this completes Phase 6 without exposing a new test hook.
+  The integrated runner passed on both toolchains with 23,035 runtime checks,
+  six validated compile failures, five self-contained headers, and both
+  `NDEBUG` storage/pool suites; WSL ran with ASan and UBSan.

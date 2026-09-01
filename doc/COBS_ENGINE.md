@@ -1708,6 +1708,22 @@ These are API-contract tests, not tests of an incidental implementation detail.
 Replacing the delegates with function pointers, a `delegate_ref`-only surface,
 or a transport template would break at least one of them.
 
+### 11.8 Compile-fail boundaries
+
+Some guarantees are absences, so a successful executable cannot prove them.
+The host runner compiles dedicated translation units that must fail at the
+intended diagnostic boundary:
+
+- an incomplete storage type at the `cobs::Storage` assertion;
+- application calls to private `Message::encode()` and `Packet::adopt()`;
+- `append_native()` with a padded struct;
+- the removed `get_msg()` factory;
+- the removed split `set_sender()` transport setter.
+
+The runner checks both the non-zero compiler result and boundary-specific
+diagnostic markers. An unrelated include or syntax failure therefore cannot
+masquerade as a passing negative test.
+
 ---
 
 ## 12. Explicitly not in v1

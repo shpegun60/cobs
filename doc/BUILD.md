@@ -86,8 +86,9 @@ The default out-of-tree result is
 
 ## COBS verification
 
-MinGW host suite, including five independent public-header smoke checks and
-the `-DNDEBUG` storage guarantees:
+MinGW host suite, including five independent public-header smoke checks, six
+expected compile-fail contracts with diagnostic validation, and the
+`-DNDEBUG` storage guarantees:
 
 ```bash
 export PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH"

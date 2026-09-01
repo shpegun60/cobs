@@ -20,6 +20,9 @@ mkdir -p "$OUT"
 echo "=== self-contained public headers ==="
 CXX="$CXX" sh "$HERE/check_headers.sh"
 
+echo "=== expected compile failures ==="
+CXX="$CXX" sh "$HERE/check_compile_fail.sh"
+
 WARN="-Wall -Wextra -Wpedantic -Wshadow -Wconversion"
 SAN=""
 if echo 'int main(){return 0;}' | "$CXX" -fsanitize=address,undefined -x c++ - \

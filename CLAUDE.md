@@ -85,6 +85,12 @@ The COBS layer owns no HAL, so its suites are ordinary host programs — no fake
 PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH" sh cobs/tests/run.sh
 ```
 
+Before building runtime suites, the runner compiles all five public headers
+independently and verifies six intentional compile-fail translation units with
+boundary-specific diagnostic markers. Those negative cases lock the Storage
+concept, coordinator-only message/packet operations, serializer constraints,
+and the physical absence of old/split API names.
+
 It builds and runs nine independent binaries, so a failure names the layer without needing a stack trace (plus two of them a second time under `-DNDEBUG`, because the pool's double-free rejection is a guarantee and a guarantee that only holds in debug builds is not one):
 
 - `test_decoder` — pure COBS framing only, with no length prefix anywhere; mostly property tests (every length × pattern × span-boundary combination, ~20k checks), plus the segmented-output battery: the same wire decoded under many segmentation plans must give identical bytes.

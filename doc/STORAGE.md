@@ -481,6 +481,11 @@ Before using a custom strategy:
 - [ ] `static_assert(cobs::Storage<ThisType>)` passes.
 - [ ] Constructor used by `Endpoint` is `noexcept`.
 
+The repository also compiles `compile_fail/storage_missing_tx.cpp` expecting
+the top-level Endpoint contract diagnostic. It complements the positive
+`static_assert` and prevents a partially implemented strategy from failing
+only deep inside receiver/message templates.
+
 ### RX behavior
 
 - [ ] Requests from zero through `max_receive_size` either fully succeed or
