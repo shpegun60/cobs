@@ -807,8 +807,8 @@ is a bug:
 ```text
 capacity()   payload bytes the current block permits; granted by storage and
              returned inside the same TxBlock descriptor
-size()       payload bytes actually WRITTEN; what encode() frames
-m_wire       the encoded frame length, once encode() has run
+size()       payload bytes actually WRITTEN; what coordinator encoding frames
+m_wire       the encoded frame length, once coordinator encoding has run
 ```
 
 `make_msg(hint)` sets `size()` to zero and asks storage for `hint` bytes of
@@ -985,8 +985,9 @@ block          encoding begins here, and so does the wire frame
 
 It fits exactly: `R(H+S) <= R(H+C)` because `S <= C`, and the encoded region
 ends at `cobs::codec::raw_offset(H+C) + H + S`, at most the end of the block. So a wire
-frame need not start at `block[0]`; the transport is handed the span `encode()`
-returns, while the ALLOCATION remains the whole block and is returned as such.
+frame need not start at `block[0]`; the transport is handed the span returned
+by the private coordinator encoding step, while the ALLOCATION remains the
+whole block and is returned as such.
 Encoding copies nothing, whatever growth history the message had.
 
 The declared length is written into `frame_raw` in the last moment it is still
@@ -1118,7 +1119,7 @@ the exact returned TxBlock is later passed to release_tx()
 
 The TX obligation is **header-inclusive**: what gets encoded is
 `[length][payload]`, so a block sized for the payload alone is one or two
-bytes short and `CobsMsg::encode()` runs off the end of it. Use
+bytes short and the coordinator's encoding step runs off the end of it. Use
 `cobs::Format::tx_storage_size_for_capacity(capacity)` rather than
 open-coding it — the shared contract test does, precisely so that storage
 written against the old formula fails there instead of in the field.

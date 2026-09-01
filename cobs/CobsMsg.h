@@ -234,7 +234,6 @@ public:
 
 	[[nodiscard]] std::size_t size() const noexcept { return m_size; }
 	[[nodiscard]] std::size_t capacity() const noexcept { return m_block.capacity; }
-	[[nodiscard]] bool encoded() const noexcept { return m_state == State::Encoded; }
 
 	/* ------------------------------ building ----------------------------- */
 
@@ -332,6 +331,7 @@ public:
 		return true;
 	}
 
+private:
 	// Guards against pushing a message into a DIFFERENT engine of the same
 	// type, which would return the block to the wrong pool. The types cannot
 	// catch that: two Cobs<cobs::Pool<...>> objects are one type.
@@ -390,8 +390,6 @@ public:
 		m_state = State::Encoded;
 		return frame;
 	}
-
-private:
 	/*
 	 * The next capacity to ask for: about 1.5x the current one, but never less
 	 * than what is actually required and never more than the Format allows.

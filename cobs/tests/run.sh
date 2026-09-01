@@ -37,7 +37,7 @@ rm -f "$OUT/.sancheck" "$OUT/.sancheck.exe"
 #   test_storage         the storage contract, run against BOTH strategies
 #   test_receiver        the internal RX vertical, end to end
 #   test_encoder         canonical in-place encoding over its own payload
-#   test_cobs_msg        TX block ownership and geometry, no transport
+#   test_cobs_msg        public message API plus coordinator-only TX transitions
 #   test_cobs            the assembled engine over a fake transport, both policies
 #   test_layout          ABI snapshot for ownership-bearing public/current types
 build() {

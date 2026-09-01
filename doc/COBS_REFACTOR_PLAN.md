@@ -333,10 +333,10 @@ Application-facing `Message` should expose building and inspection operations:
 - `clear` if its exact current semantics are retained.
 
 Encoding state transitions, storage identity checks, and block surrender are
-coordinator mechanics. `encode()`, `encoded()`, `belongs_to()`, and
-`surrender_block()` should become private or detail-facing once `Endpoint` is
-the only legitimate caller. This change must be made with focused state and
-lifetime tests, not as part of a broad rename.
+coordinator mechanics. `encode()`, `belongs_to()`, and `surrender_block()` are
+private and callable only by the endpoint friend; the redundant public
+`encoded()` observer was removed. Focused compile-time boundary checks and
+coordinator-level state/lifetime tests lock this down without a test accessor.
 
 ## 8. Format and storage architecture
 
@@ -788,7 +788,7 @@ protocol changes must never be bundled together.
 ### Phase 4 - close the internal surface
 
 - [x] Move receiver and block-pool implementation under `cobs::detail`.
-- [ ] Make message encoding, ownership checks, and surrender coordinator-only.
+- [x] Make message encoding, ownership checks, and surrender coordinator-only.
 - [x] Centralize ready-queue mutations in receiver helpers.
 - [x] Keep typed ownership and private metadata.
 - [x] Verify packet/message lifetime and endpoint-destruction edges.
@@ -937,3 +937,9 @@ The following are not part of this refactor:
   left unchanged. `Receiver` no longer selects a default heap strategy; only
   the application endpoint owns that default. The RX suite now follows the
   real type as `test_receiver`.
+- Closed the message's coordinator boundary without an adapter or compatibility
+  trait: `encode()`, `belongs_to()`, and `surrender_block()` are private to
+  `Cobs<Storage>`, and the unused public `encoded()` observer was removed.
+  Message tests now prove the public boundary at compile time and observe wire
+  bytes, failed-start retry identity, growth copies, private encoded-state
+  behaviour, and encoded-message destruction through the real coordinator.

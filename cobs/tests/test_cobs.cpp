@@ -168,8 +168,8 @@ void runEngine(const char* name)
 		check(second.write_bytes(std::span<const uint8_t>{payload}), "and a second built");
 
 		check(cobs.push(second) == SendResult::Busy, "a second push while busy is refused");
-		check(static_cast<bool>(second) && !second.encoded(),
-		      "leaving the message Building, not encoded");
+		check(static_cast<bool>(second),
+		      "leaving the message owned by the caller");
 		check(cobs.tx_stats().send_refused_busy == 1, "and counted");
 
 		// Still Building, so it is still a builder: a refused push touched
@@ -199,8 +199,10 @@ void runEngine(const char* name)
 
 		t.refuse = true;
 		check(cobs.push(msg) == SendResult::Error, "a transport that will not start reports Error");
-		check(static_cast<bool>(msg) && msg.encoded(),
-		      "the message survives, already encoded");
+		check(static_cast<bool>(msg) && msg.size() == payload.size(),
+		      "the message survives with its payload identity intact");
+		check(!msg.write(uint8_t{0xFF}) && !msg.reserve(msg.capacity()),
+		      "its coordinator-owned encoded state refuses further building");
 		check(!cobs.tx_active(), "and the engine took no ownership");
 		check(cobs.tx_stats().send_failed == 1, "the failure is counted");
 
@@ -346,6 +348,8 @@ void testDefaultCapacityHint()
 		using Engine = Cobs<cobs::Heap<cobs::Format<64, 1024>>>;
 		static_assert(Engine::default_capacity_hint == 32);
 		Engine cobs;
+		FakeTransport t;
+		bind(cobs, t);
 
 		auto msg = cobs.make_msg();
 		check(msg.size() == 0 && msg.capacity() == 32,
@@ -364,8 +368,11 @@ void testDefaultCapacityHint()
 		      "make_msg(0) reserves nothing");
 		{
 			auto empty_frame = cobs.make_msg(0);
-			check(!empty_frame.encode().empty(),
+			check(cobs.push(empty_frame) == SendResult::Sent &&
+			      t.sent.back() == cobs_test::frame({}, Engine::length_size),
 			      "and pushed straight away it is the canonical empty frame");
+			t.finish();
+			cobs.proceed();
 		}
 		check(minimal.write(uint8_t{0x42}), "but it still accepts a write");
 		check(minimal.size() == 1 && minimal.capacity() >= 1,
