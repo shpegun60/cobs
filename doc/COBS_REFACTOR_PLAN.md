@@ -590,17 +590,36 @@ active borrowed TX buffer remains documented and tested where possible.
 The final application snapshot is:
 
 ```cpp
-struct Stats {
-    RxStats rx;
-    TxStats tx;
+struct Stats final {
+    struct Rx final {
+        uint32_t frames_delivered;
+        uint32_t frames_lost;
+        uint32_t allocation_failure;
+        uint32_t malformed;
+        uint32_t oversize;
+        uint32_t length_mismatch;
+        uint32_t resyncs;
+    };
+
+    struct Tx final {
+        uint32_t frames_sent;
+        uint32_t send_refused_busy;
+        uint32_t send_failed;
+    };
+
+    Rx rx;
+    Tx tx;
 };
 
 [[nodiscard]] Stats stats() const noexcept;
 ```
 
-Physical counters may remain next to the state transitions that update them.
-Pool-specific occupancy/exhaustion statistics remain storage-specific and are
-not folded into protocol statistics.
+The two records are nested to avoid adding `RxStats` and `TxStats` as separate
+top-level application concepts. Physical counters remain next to the state
+transitions that update them; `stats()` combines copies, so callers cannot
+mutate or retain references into either state machine. Pool-specific
+occupancy/exhaustion statistics remain storage-specific and are not folded
+into protocol statistics.
 
 ## 10. RX ownership transitions
 
@@ -675,6 +694,7 @@ transport.
 ```text
 cobs/
 |-- Cobs.h                 application umbrella and Endpoint
+|-- Stats.h                application counter snapshot
 |-- Format.h               protocol geometry only
 |-- Storage.h              Storage, RxBlock, TxBlock, Heap, Pool
 |-- Codec.h                low-level codec API
@@ -799,7 +819,7 @@ protocol changes must never be bundled together.
 - [x] Add explicit `unbind` with a documented active-transfer precondition.
 - [ ] Group the two delegates in private `Transport` if layout/behaviour proof
       shows no regression.
-- [ ] Return the combined `Stats` snapshot.
+- [x] Return the combined `Stats` snapshot.
 - [ ] Update examples to include only `Cobs.h`.
 
 ### Phase 6 - tests around public boundaries
@@ -961,3 +981,13 @@ The following are not part of this refactor:
   and ARM layouts stayed unchanged; UART host remained 131/131 and the full
   F1/G4/H7RS port/probe matrix passed with only the known vendor `register`
   warning.
+- Centralized the application counters in the self-contained `Stats.h` as one
+  top-level `cobs::Stats` value with nested `Rx` and `Tx` records. Receiver and
+  endpoint still own their physical counters beside the state transitions that
+  update them; `Endpoint::stats()` combines copies, and the separate endpoint
+  `rx_stats()`/`tx_stats()` references were removed without aliases. Tests prove
+  the snapshot cannot mutate engine state, and all five public headers compile
+  independently through both include roots. MinGW and WSL ASan/UBSan passed
+  23,015 COBS checks; `Stats` is 40 bytes on both recorded ABIs while Receiver
+  and Endpoint layouts remain unchanged. UART host stayed 131/131 and the full
+  F1/G4/H7RS port/probe matrix passed with only the known vendor warning.

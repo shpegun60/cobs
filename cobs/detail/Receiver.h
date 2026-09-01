@@ -28,6 +28,7 @@
 #define COBS_DETAIL_RECEIVER_H_
 
 #include "../Codec.h"
+#include "../Stats.h"
 #include "Packet.h"
 #include "../Storage.h"
 
@@ -67,16 +68,6 @@ public:
 	static_assert(max_receive_size <= UINT16_MAX, "RxBlock::size is a uint16_t");
 
 	static constexpr std::size_t length_size = Format::length_size;
-
-	struct Stats {
-		uint32_t frames_delivered   = 0;
-		uint32_t frames_lost        = 0; // every frame that did not reach the queue
-		uint32_t allocation_failure = 0;
-		uint32_t malformed          = 0; // structural COBS error
-		uint32_t oversize           = 0; // declared length above rx_max_size
-		uint32_t length_mismatch    = 0; // header absent/short, or body != declared
-		uint32_t resyncs            = 0; // times we had to hunt for a delimiter
-	};
 
 	explicit Receiver(StorageT& storage) noexcept : m_storage(storage) {}
 
@@ -148,7 +139,7 @@ public:
 	}
 
 	[[nodiscard]] bool has_packet() const noexcept { return m_readyHead != nullptr; }
-	[[nodiscard]] const Stats& stats() const noexcept { return m_stats; }
+	[[nodiscard]] const cobs::Stats::Rx& stats() const noexcept { return m_stats; }
 
 private:
 	/*
@@ -392,7 +383,7 @@ private:
 	Block* m_building  = nullptr;
 	Block* m_readyHead = nullptr;
 	Block* m_readyTail = nullptr;
-	Stats   m_stats{};
+	cobs::Stats::Rx m_stats{};
 };
 
 } // namespace cobs::detail

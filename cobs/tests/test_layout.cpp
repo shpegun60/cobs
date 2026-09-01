@@ -25,8 +25,9 @@ using Endpoint = cobs::Endpoint<Heap>;
 using PoolEndpoint = cobs::Endpoint<Pool>;
 using Sender = typename Endpoint::Sender;
 using BusyQuery = typename Endpoint::BusyQuery;
-using RxStats = typename Receiver::Stats;
-using TxStats = typename Endpoint::TxStats;
+using RxStats = cobs::Stats::Rx;
+using TxStats = cobs::Stats::Tx;
+using Stats = cobs::Stats;
 using PoolStats = cobs::detail::PoolStats;
 
 static_assert(sizeof(Packet) == sizeof(void*),
@@ -54,6 +55,7 @@ COBS_EXPECT_SIZE(Sender, 64);
 COBS_EXPECT_SIZE(BusyQuery, 64);
 COBS_EXPECT_SIZE(RxStats, 28);
 COBS_EXPECT_SIZE(TxStats, 12);
+COBS_EXPECT_SIZE(Stats, 40);
 COBS_EXPECT_SIZE(PoolStats, 16);
 #elif defined(__arm__) && INTPTR_MAX == INT32_MAX
 COBS_EXPECT_SIZE(cobs::TxBlock, 8);
@@ -70,6 +72,7 @@ COBS_EXPECT_SIZE(Sender, 32);
 COBS_EXPECT_SIZE(BusyQuery, 32);
 COBS_EXPECT_SIZE(RxStats, 28);
 COBS_EXPECT_SIZE(TxStats, 12);
+COBS_EXPECT_SIZE(Stats, 40);
 COBS_EXPECT_SIZE(PoolStats, 16);
 #endif
 
@@ -97,6 +100,7 @@ extern "C" {
 [[maybe_unused]] std::byte cobs_layout_busy_query[sizeof(BusyQuery)]{};
 [[maybe_unused]] std::byte cobs_layout_rx_stats[sizeof(RxStats)]{};
 [[maybe_unused]] std::byte cobs_layout_tx_stats[sizeof(TxStats)]{};
+[[maybe_unused]] std::byte cobs_layout_stats[sizeof(Stats)]{};
 [[maybe_unused]] std::byte cobs_layout_pool_stats[sizeof(PoolStats)]{};
 }
 
@@ -109,7 +113,7 @@ int main()
 		sizeof(Message), sizeof(Decoder), sizeof(Receiver), sizeof(Endpoint));
 	std::printf("Heap=%zu Pool=%zu PoolEndpoint=%zu sender=%zu busy=%zu\n",
 		sizeof(Heap), sizeof(Pool), sizeof(PoolEndpoint), sizeof(Sender), sizeof(BusyQuery));
-	std::printf("RxStats=%zu TxStats=%zu PoolStats=%zu\n",
-		sizeof(RxStats), sizeof(TxStats), sizeof(PoolStats));
+	std::printf("RxStats=%zu TxStats=%zu Stats=%zu PoolStats=%zu\n",
+		sizeof(RxStats), sizeof(TxStats), sizeof(Stats), sizeof(PoolStats));
 	return 0;
 }

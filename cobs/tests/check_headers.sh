@@ -15,6 +15,7 @@ HEADERS="
  Cobs.h
  Codec.h
  Format.h
+ Stats.h
  Storage.h
 "
 

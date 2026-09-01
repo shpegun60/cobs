@@ -29,6 +29,7 @@
 #define COBS_H_
 
 #include "Format.h"
+#include "Stats.h"
 #include "Storage.h"
 #include "detail/Message.h"
 #include "detail/Packet.h"
@@ -113,13 +114,6 @@ public:
 
 	using Sender = tiny::delegate<bool(std::span<const uint8_t>)>;
 	using BusyQuery = tiny::delegate<bool()>;
-
-	using RxStats = typename cobs::detail::Receiver<StorageT>::Stats;
-	struct TxStats {
-		uint32_t frames_sent       = 0;
-		uint32_t send_refused_busy = 0;
-		uint32_t send_failed       = 0;
-	};
 
 	Endpoint() noexcept = default;
 
@@ -312,8 +306,13 @@ public:
 
 	/* ----------------------------- observation --------------------------- */
 
-	[[nodiscard]] const RxStats& rx_stats() const noexcept { return m_rx.stats(); }
-	[[nodiscard]] const TxStats& tx_stats() const noexcept { return m_txStats; }
+	// A value snapshot deliberately: callers see RX and TX together but cannot
+	// mutate counters or retain references into the two state machines that own
+	// them. Storage-specific pool occupancy remains available through storage().
+	[[nodiscard]] cobs::Stats stats() const noexcept
+	{
+		return cobs::Stats{m_rx.stats(), m_txStats};
+	}
 	// Const on purpose: statistics and geometry are worth reading, but a
 	// mutable reference would let a caller allocate behind the engine's back
 	// and hand out blocks it never learns about.
@@ -327,7 +326,7 @@ private:
 	BusyQuery m_busy{};
 
 	cobs::TxBlock m_activeTx{};
-	TxStats m_txStats{};
+	cobs::Stats::Tx m_txStats{};
 };
 
 } // namespace cobs

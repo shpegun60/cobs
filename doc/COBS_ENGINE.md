@@ -47,7 +47,7 @@ only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 | TX queue | none |
 | TX completion | `poll()` invokes the bound busy query while a transfer is active |
 | CRC | not in v1, and free to add later **because** the declared length counts the whole body, trailer included |
-| Observability | counters only; no hot-path instrumentation unless a probe is enabled |
+| Observability | `cobs::Stats` value snapshots; no hot-path instrumentation unless a probe is enabled |
 
 ---
 
@@ -1558,6 +1558,22 @@ would mean new storage for every transport.
 
 Counters only — no hot-path instrumentation unless a probe is compiled in,
 following the same rule as the transport layer.
+
+The application reads them through one value snapshot:
+
+```cpp
+const cobs::Stats snapshot = endpoint.stats();
+use(snapshot.rx.frames_delivered);
+use(snapshot.tx.frames_sent);
+```
+
+`Stats` contains nested `Rx` and `Tx` records rather than adding two more
+top-level application types. `stats()` returns by value. The receiver and
+endpoint still keep their physical counters beside the transitions that update
+them, but a caller cannot mutate those counters or retain a reference into
+either state machine. The old separate `rx_stats()` and `tx_stats()` endpoint
+accessors are not part of the API. Storage-specific pool occupancy and
+exhaustion counters are deliberately not folded into this protocol snapshot.
 
 ```text
 rx: frames_delivered, frames_lost, allocation_failure,

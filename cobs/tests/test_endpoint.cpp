@@ -94,6 +94,10 @@ void runEngine(const char* name)
 	static_assert(!std::is_copy_constructible_v<Engine>, "Endpoint must not be copyable");
 	static_assert(!std::is_move_constructible_v<Engine>,
 	              "Endpoint must not be movable: cobs::Packet points into it");
+	static_assert(std::is_same_v<decltype(std::declval<const Engine&>().stats()), cobs::Stats>,
+	              "Endpoint observation is one value snapshot");
+	static_assert(!requires(const Engine& engine) { engine.rx_stats(); });
+	static_assert(!requires(const Engine& engine) { engine.tx_stats(); });
 
 	/* --- RX: bytes in, packets out ------------------------------------- */
 	{
@@ -106,7 +110,11 @@ void runEngine(const char* name)
 		}
 		cobs.consume(std::span<const uint8_t>{wire});
 
-		check(cobs.rx_stats().frames_delivered == 2, "two frames arrive through the engine");
+		auto stats = cobs.stats();
+		check(stats.rx.frames_delivered == 2, "two frames arrive through the engine");
+		stats.rx.frames_delivered = 99;
+		check(cobs.stats().rx.frames_delivered == 2,
+		      "the Stats value is a snapshot, not mutable engine state");
 		const auto r1 = cobs.pop_packet();
 		const auto r2 = cobs.pop_packet();
 		check(r1.size() == a.size() && r2.size() == b.size(),
@@ -116,7 +124,8 @@ void runEngine(const char* name)
 	{
 		Engine cobs;
 		cobs.notify_gap();
-		check(cobs.rx_stats().frames_lost == 1 && cobs.rx_stats().resyncs == 1,
+		const auto stats = cobs.stats();
+		check(stats.rx.frames_lost == 1 && stats.rx.resyncs == 1,
 		      "notify_gap forwards transport discontinuity to the receiver");
 	}
 
@@ -176,7 +185,7 @@ void runEngine(const char* name)
 		check(cobs.send(second) == cobs::SendResult::Busy, "a second send while busy is refused");
 		check(static_cast<bool>(second),
 		      "leaving the message owned by the caller");
-		check(cobs.tx_stats().send_refused_busy == 1, "and counted");
+		check(cobs.stats().tx.send_refused_busy == 1, "and counted");
 
 		// Still Building, so it is still a builder: a refused send touched
 		// nothing, and more bytes may be appended before the retry.
@@ -211,7 +220,7 @@ void runEngine(const char* name)
 		check(!msg.append_native(uint8_t{0xFF}) && !msg.reserve(msg.capacity()),
 		      "its coordinator-owned encoded state refuses further building");
 		check(!cobs.tx_active(), "and the engine took no ownership");
-		check(cobs.tx_stats().send_failed == 1, "the failure is counted");
+		check(cobs.stats().tx.send_failed == 1, "the failure is counted");
 
 		t.refuse = false;
 		check(cobs.send(msg) == cobs::SendResult::Sent, "the retry succeeds");
@@ -297,8 +306,10 @@ void runEngine(const char* name)
 
 		t.finish();
 		cobs.poll();
-		check(!cobs.tx_active() && cobs.rx_stats().frames_delivered == 1,
-		      "and both directions settle independently");
+		const auto stats = cobs.stats();
+		check(!cobs.tx_active() && stats.rx.frames_delivered == 1 &&
+		          stats.tx.frames_sent == 1,
+		      "and one snapshot reports both directions settled independently");
 	}
 }
 
@@ -584,9 +595,9 @@ void testComplementaryPeers()
 		check(msg.append_bytes(std::span<const uint8_t>{out}), "B builds another 300 bytes");
 		check(b.send(msg) == cobs::SendResult::Sent, "and sends it");
 
-		const std::size_t before = b.rx_stats().oversize;
+		const std::size_t before = b.stats().rx.oversize;
 		b.consume(std::span<const uint8_t>{tb.sent.back()}); // fed to itself
-		check(b.rx_stats().oversize == before + 1,
+		check(b.stats().rx.oversize == before + 1,
 		      "B's own RX refuses a frame its TX side was free to build");
 		check(!b.has_packet(), "and nothing is delivered");
 		tb.finish();
