@@ -72,15 +72,15 @@ typename C::Sender sender_for(FakeTransport& t)
 		[&t](std::span<const uint8_t> f) noexcept { return t.send(f); }};
 }
 template<class C>
-typename C::TxBusy busy_for(FakeTransport& t)
+typename C::BusyQuery busy_for(FakeTransport& t)
 {
-	return typename C::TxBusy{[&t]() noexcept { return t.tx_busy(); }};
+	return typename C::BusyQuery{[&t]() noexcept { return t.tx_busy(); }};
 }
 
 template<class C>
 void bind(C& cobs, FakeTransport& t)
 {
-	check(cobs.set_transport(sender_for<C>(t), busy_for<C>(t)), "the transport binds");
+	check(cobs.bind(sender_for<C>(t), busy_for<C>(t)), "the transport binds");
 }
 
 /* =================== the engine, for either storage ===================== */
@@ -113,6 +113,12 @@ void runEngine(const char* name)
 		      "and pop_packet hands them over in order");
 		check(!cobs.pop_packet(), "then the queue is empty");
 	}
+	{
+		Engine cobs;
+		cobs.notify_gap();
+		check(cobs.rx_stats().frames_lost == 1 && cobs.rx_stats().resyncs == 1,
+		      "notify_gap forwards transport discontinuity to the receiver");
+	}
 
 	/* --- TX: the happy path -------------------------------------------- */
 	{
@@ -120,25 +126,25 @@ void runEngine(const char* name)
 		FakeTransport t;
 		bind(cobs, t);
 
-		auto msg = cobs.make_msg();
-		check(static_cast<bool>(msg), "make_msg yields an empty message");
+		auto msg = cobs.make_message();
+		check(static_cast<bool>(msg), "make_message yields an empty message");
 		check(msg.size() == 0, "with nothing in it yet");
 		check(msg.capacity() >= Engine::default_capacity_hint,
 		      "but with the default reserve already in hand");
 		const auto payload = pattern(0x20, 6);
-		check(msg.write_bytes(std::span<const uint8_t>{payload}), "the payload is written");
+		check(msg.append_bytes(std::span<const uint8_t>{payload}), "the payload is appended");
 
-		check(cobs.push(msg) == cobs::SendResult::Sent, "push sends it");
+		check(cobs.send(msg) == cobs::SendResult::Sent, "send starts the transfer");
 		check(!msg, "the message surrendered its block");
 		check(cobs.tx_active(), "which the engine now holds");
 		check(t.sent.size() == 1 && t.sent[0] == cobs_test::frame(payload, Engine::length_size),
 		      "and the transport received exactly the canonical frame");
 
-		// proceed() must not free the block while the transport still reads it.
-		cobs.proceed();
-		check(cobs.tx_active(), "proceed does not reclaim it while the transport is busy");
+		// poll() must not free the block while the transport still reads it.
+		cobs.poll();
+		check(cobs.tx_active(), "poll does not reclaim it while the transport is busy");
 		t.finish();
-		cobs.proceed();
+		cobs.poll();
 		check(!cobs.tx_active(), "and reclaims it once the transport lets go");
 	}
 
@@ -148,9 +154,9 @@ void runEngine(const char* name)
 		FakeTransport t;
 		bind(cobs, t);
 		const int before = t.busy_queries;
-		for (int i = 0; i < 100; ++i) { cobs.proceed(); }
+		for (int i = 0; i < 100; ++i) { cobs.poll(); }
 		check(t.busy_queries == before,
-		      "100 idle proceed() calls never invoke tx_busy (the null check wins)");
+		      "100 idle poll() calls never invoke the busy query (the null check wins)");
 	}
 
 	/* --- Busy leaves the message Building and writable ------------------ */
@@ -159,32 +165,32 @@ void runEngine(const char* name)
 		FakeTransport t;
 		bind(cobs, t);
 
-		auto first = cobs.make_msg();
-		check(first.write(uint8_t{0x01}), "a one-byte frame is built");
-		check(cobs.push(first) == cobs::SendResult::Sent, "the first frame goes out");
+		auto first = cobs.make_message();
+		check(first.append_native(uint8_t{0x01}), "a one-byte frame is built");
+		check(cobs.send(first) == cobs::SendResult::Sent, "the first frame goes out");
 
-		auto second = cobs.make_msg(4);
+		auto second = cobs.make_message(4);
 		const auto payload = pattern(0x30, 4);
-		check(second.write_bytes(std::span<const uint8_t>{payload}), "and a second built");
+		check(second.append_bytes(std::span<const uint8_t>{payload}), "and a second built");
 
-		check(cobs.push(second) == cobs::SendResult::Busy, "a second push while busy is refused");
+		check(cobs.send(second) == cobs::SendResult::Busy, "a second send while busy is refused");
 		check(static_cast<bool>(second),
 		      "leaving the message owned by the caller");
 		check(cobs.tx_stats().send_refused_busy == 1, "and counted");
 
-		// Still Building, so it is still a builder: a refused push touched
+		// Still Building, so it is still a builder: a refused send touched
 		// nothing, and more bytes may be appended before the retry.
 		check(second.size() == payload.size(), "its payload is untouched");
-		check(second.write(uint8_t{0x34}), "and it still accepts writes");
+		check(second.append_native(uint8_t{0x34}), "and it still accepts appends");
 		check(second.size() == payload.size() + 1, "which land after what was there");
 
 		t.finish();
-		cobs.proceed();
-		check(cobs.push(second) == cobs::SendResult::Sent, "it sends once the link frees up");
+		cobs.poll();
+		check(cobs.send(second) == cobs::SendResult::Sent, "it sends once the link frees up");
 		auto expected = payload;
 		expected.push_back(0x34);
 		check(t.sent.back() == cobs_test::frame(expected, Engine::length_size),
-		      "carrying everything that was written, in order");
+		      "carrying everything that was appended, in order");
 	}
 
 	/* --- a failed start keeps the SAME frame retryable ------------------ */
@@ -193,21 +199,22 @@ void runEngine(const char* name)
 		FakeTransport t;
 		bind(cobs, t);
 
-		auto msg = cobs.make_msg(7);
+		auto msg = cobs.make_message(7);
 		const auto payload = pattern(0x40, 7);
-		check(msg.write_bytes(std::span<const uint8_t>{payload}), "a frame is built");
+		check(msg.append_bytes(std::span<const uint8_t>{payload}), "a frame is built");
 
 		t.refuse = true;
-		check(cobs.push(msg) == cobs::SendResult::Error, "a transport that will not start reports Error");
+		check(cobs.send(msg) == cobs::SendResult::Failed,
+		      "a transport that will not start reports Failed");
 		check(static_cast<bool>(msg) && msg.size() == payload.size(),
 		      "the message survives with its payload identity intact");
-		check(!msg.write(uint8_t{0xFF}) && !msg.reserve(msg.capacity()),
+		check(!msg.append_native(uint8_t{0xFF}) && !msg.reserve(msg.capacity()),
 		      "its coordinator-owned encoded state refuses further building");
 		check(!cobs.tx_active(), "and the engine took no ownership");
 		check(cobs.tx_stats().send_failed == 1, "the failure is counted");
 
 		t.refuse = false;
-		check(cobs.push(msg) == cobs::SendResult::Sent, "the retry succeeds");
+		check(cobs.send(msg) == cobs::SendResult::Sent, "the retry succeeds");
 		check(t.sent.size() == 1 && t.sent[0] == cobs_test::frame(payload, Engine::length_size),
 		      "sending the identical frame, encoded exactly once");
 	}
@@ -215,18 +222,19 @@ void runEngine(const char* name)
 	/* --- refusals that are not failures --------------------------------- */
 	{
 		Engine cobs;                       // nothing bound
-		auto msg = cobs.make_msg(kPayload);
+		auto msg = cobs.make_message(kPayload);
 		
-		check(cobs.push(msg) == cobs::SendResult::NotBound, "pushing with no transport bound is NotBound");
+		check(cobs.send(msg) == cobs::SendResult::Unbound,
+		      "sending with no transport bound reports Unbound");
 		check(static_cast<bool>(msg), "and the message is untouched");
 
 		typename Engine::Message empty;
-		check(cobs.push(empty) == cobs::SendResult::Invalid, "an empty message is Invalid");
+		check(cobs.send(empty) == cobs::SendResult::Invalid, "an empty message is Invalid");
 
 		Engine other;
-		auto foreign = other.make_msg(2);
+		auto foreign = other.make_message(2);
 		
-		check(cobs.push(foreign) == cobs::SendResult::Invalid,
+		check(cobs.send(foreign) == cobs::SendResult::Invalid,
 		      "so is a message belonging to another engine of the same type");
 	}
 
@@ -238,32 +246,37 @@ void runEngine(const char* name)
 
 		// Half a transport is refused: this is the state that made a mixed
 		// pair (sender on one link, tx_busy on another) reachable at all.
-		check(!cobs.set_transport(sender_for<Engine>(t), typename Engine::TxBusy{}),
+		check(!cobs.bind(sender_for<Engine>(t), typename Engine::BusyQuery{}),
 		      "a sender with no tx_busy is refused");
-		check(!cobs.set_transport(typename Engine::Sender{}, busy_for<Engine>(t)),
+		check(!cobs.bind(typename Engine::Sender{}, busy_for<Engine>(t)),
 		      "and a tx_busy with no sender likewise");
+		check(!cobs.bind(typename Engine::Sender{}, typename Engine::BusyQuery{}),
+		      "bind also refuses two empty delegates; unbind is explicit");
 		{
-			auto msg = cobs.make_msg(kPayload);
+			auto msg = cobs.make_message(kPayload);
 			
-			check(cobs.push(msg) == cobs::SendResult::NotBound,
+			check(cobs.send(msg) == cobs::SendResult::Unbound,
 			      "so neither half leaked into the engine");
 		}
 
 		bind(cobs, t);
-		auto msg = cobs.make_msg(kPayload);
+		auto msg = cobs.make_message(kPayload);
 		
-		check(cobs.push(msg) == cobs::SendResult::Sent, "a frame is in flight");
+		check(cobs.send(msg) == cobs::SendResult::Sent, "a frame is in flight");
 
-		check(!cobs.set_transport(sender_for<Engine>(other), busy_for<Engine>(other)),
+		check(!cobs.bind(sender_for<Engine>(other), busy_for<Engine>(other)),
 		      "the transport cannot be swapped under a live transfer — a new "
 		      "tx_busy saying 'idle' would free the block under the DMA");
+		check(!cobs.unbind(), "and cannot be unbound while that transfer is live");
 
 		t.finish();
-		cobs.proceed();
-		check(cobs.set_transport(sender_for<Engine>(other), busy_for<Engine>(other)),
+		cobs.poll();
+		check(cobs.bind(sender_for<Engine>(other), busy_for<Engine>(other)),
 		      "and may be rebound once the link is idle");
-		check(cobs.set_transport(typename Engine::Sender{}, typename Engine::TxBusy{}),
-		      "two empty delegates are a clean unbind");
+		check(cobs.unbind(), "explicit unbind succeeds once the link is idle");
+		auto after_unbind = cobs.make_message(1);
+		check(cobs.send(after_unbind) == cobs::SendResult::Unbound,
+		      "and subsequent sends report Unbound");
 	}
 
 	/* --- full duplex over one engine ------------------------------------ */
@@ -273,9 +286,9 @@ void runEngine(const char* name)
 		bind(cobs, t);
 
 		const auto out = pattern(0x60, 5);
-		auto msg = cobs.make_msg();
-		check(msg.write_bytes(std::span<const uint8_t>{out}), "a frame is built");
-		check(cobs.push(msg) == cobs::SendResult::Sent, "a frame goes out");
+		auto msg = cobs.make_message();
+		check(msg.append_bytes(std::span<const uint8_t>{out}), "a frame is built");
+		check(cobs.send(msg) == cobs::SendResult::Sent, "a frame goes out");
 
 		const auto in = pattern(0x70, 11);
 		cobs.consume(std::span<const uint8_t>{cobs_test::frame(in, Engine::length_size)});
@@ -283,7 +296,7 @@ void runEngine(const char* name)
 		check(got.size() == in.size(), "while a frame comes in on the same engine");
 
 		t.finish();
-		cobs.proceed();
+		cobs.poll();
 		check(!cobs.tx_active() && cobs.rx_stats().frames_delivered == 1,
 		      "and both directions settle independently");
 	}
@@ -299,22 +312,23 @@ void testFixedExhaustion()
 	FakeTransport t;
 	bind(cobs, t);
 
-	auto a = cobs.make_msg(4);
+	auto a = cobs.make_message(4);
 	check(static_cast<bool>(a), "the single TX block is handed out");
-	auto b = cobs.make_msg(4);
+	auto b = cobs.make_message(4);
 	check(!b, "a second message from a one-block pool is empty");
-	check(cobs.push(b) == cobs::SendResult::Invalid, "and pushing it is Invalid, not a crash");
+		check(cobs.send(b) == cobs::SendResult::Invalid,
+		      "and sending it reports Invalid rather than crashing");
 
 	
-	check(cobs.push(a) == cobs::SendResult::Sent, "the real one still sends");
+	check(cobs.send(a) == cobs::SendResult::Sent, "the real one still sends");
 
 	// The block is with the transport, so the pool is dry until it returns.
-	auto c = cobs.make_msg(4);
+	auto c = cobs.make_message(4);
 	check(!c, "the pool stays dry while the transport holds the block");
 	t.finish();
-	cobs.proceed();
-	auto d = cobs.make_msg(4);
-	check(static_cast<bool>(d), "and refills once proceed reclaims it");
+	cobs.poll();
+	auto d = cobs.make_message(4);
+	check(static_cast<bool>(d), "and refills once poll reclaims it");
 }
 
 // The destructor must return an in-flight block, or a pool-backed engine would
@@ -327,9 +341,9 @@ void testDestructorReclaimsActiveTx()
 	{
 		cobs::Endpoint<Memory> cobs;
 		bind(cobs, t);
-		auto msg = cobs.make_msg();
-		check(msg.write(uint32_t{0x01020304u}), "a frame is built");
-		check(cobs.push(msg) == cobs::SendResult::Sent, "a frame is in flight at destruction");
+		auto msg = cobs.make_message();
+		check(msg.append_native(uint32_t{0x01020304u}), "a frame is built");
+		check(cobs.send(msg) == cobs::SendResult::Sent, "a frame is in flight at destruction");
 		check(cobs.storage().tx_available() == 1, "one TX block is out");
 		// The transport is finished with it — precondition 2 is satisfied.
 		t.finish();
@@ -351,46 +365,46 @@ void testDefaultCapacityHint()
 		FakeTransport t;
 		bind(cobs, t);
 
-		auto msg = cobs.make_msg();
+		auto msg = cobs.make_message();
 		check(msg.size() == 0 && msg.capacity() == 32,
-		      "make_msg() reserves default_capacity_hint");
+		      "make_message() reserves default_capacity_hint");
 
 		bool ok = true;
-		for (int i = 0; i < 32; ++i) { ok = ok && msg.write(static_cast<uint8_t>(i)); }
+		for (int i = 0; i < 32; ++i) { ok = ok && msg.append_native(static_cast<uint8_t>(i)); }
 		check(ok && msg.capacity() == 32,
 		      "and 32 bytes go in without a single reallocation");
 
-		// make_msg(0) is a zero capacity REQUEST, not an empty-only message.
-		// Pushed straight away it is the canonical empty frame; written into,
+		// make_message(0) is a zero capacity REQUEST, not an empty-only message.
+		// Sent straight away it is the canonical empty frame; appended to,
 		// it grows like anything else.
-		auto minimal = cobs.make_msg(0);
+		auto minimal = cobs.make_message(0);
 		check(static_cast<bool>(minimal) && minimal.capacity() == 0,
-		      "make_msg(0) reserves nothing");
+		      "make_message(0) reserves nothing");
 		{
-			auto empty_frame = cobs.make_msg(0);
-			check(cobs.push(empty_frame) == cobs::SendResult::Sent &&
+			auto empty_frame = cobs.make_message(0);
+			check(cobs.send(empty_frame) == cobs::SendResult::Sent &&
 			      t.sent.back() == cobs_test::frame({}, Engine::length_size),
-			      "and pushed straight away it is the canonical empty frame");
+			      "and sent straight away it is the canonical empty frame");
 			t.finish();
-			cobs.proceed();
+			cobs.poll();
 		}
-		check(minimal.write(uint8_t{0x42}), "but it still accepts a write");
+		check(minimal.append_native(uint8_t{0x42}), "but it still accepts an append");
 		check(minimal.size() == 1 && minimal.capacity() >= 1,
 		      "growing from zero capacity like any other message");
 		const std::vector<uint8_t> more(40, 0x5A);
-		check(minimal.write_bytes(std::span<const uint8_t>{more}), "and keeps growing");
+		check(minimal.append_bytes(std::span<const uint8_t>{more}), "and keeps growing");
 		check(minimal.size() == 41, "to whatever it is given");
 	}
 	{	// A policy whose limit is BELOW the default must still work: the
-		// default is clamped, so make_msg() can never fail on its own default.
+		// default is clamped, so make_message() can never fail on its own default.
 		g_strategy = "fixed";
 		using Engine = cobs::Endpoint<cobs::Pool<cobs::Format<32, 16>, 2, 1>>;
 		static_assert(Engine::default_capacity_hint == 16,
 		              "the default must clamp to a smaller tx_max_size");
 		Engine cobs;
-		auto msg = cobs.make_msg();
+		auto msg = cobs.make_message();
 		check(static_cast<bool>(msg),
-		      "make_msg() works on a policy whose limit is below the default");
+		      "make_message() works on a policy whose limit is below the default");
 		check(msg.capacity() == 16, "reporting the slab it actually got");
 	}
 }
@@ -400,7 +414,7 @@ void testDefaultCapacityHint()
  * The reported capacity has to survive the WHOLE ownership chain, not just
  * cobs::Message:
  *
- *     cobs::Message -> surrender_block() -> Endpoint::m_activeTx -> proceed()
+ *     cobs::Message -> surrender_block() -> Endpoint::m_activeTx -> poll()
  *             -> release_tx(the same TxBlock descriptor)
  *
  * Neither shipped policy can catch a regression here. The heap one reports
@@ -460,35 +474,35 @@ void testReportedCapacitySurvivesTheEngine()
 	FakeTransport t;
 	bind(cobs, t);
 
-	auto msg = cobs.make_msg(10);
+	auto msg = cobs.make_message(10);
 	check(static_cast<bool>(msg) && msg.capacity() == 21,
 	      "the policy grants more than was asked for (10 -> 21)");
 
 	const auto payload = pattern(0x80, 12);
-	check(msg.write_bytes(std::span<const uint8_t>{payload}), "a payload is written");
-	check(cobs.push(msg) == cobs::SendResult::Sent, "and pushed");
+	check(msg.append_bytes(std::span<const uint8_t>{payload}), "a payload is appended");
+	check(cobs.send(msg) == cobs::SendResult::Sent, "and sent");
 	check(t.sent.size() == 1 && t.sent[0] == cobs_test::frame(payload, Engine::length_size),
 	      "the transport got the canonical frame");
 	check(cobs.storage().frees == 0, "nothing is freed while the transport reads");
 
 	t.finish();
-	cobs.proceed();
-	check(cobs.storage().frees == 1, "proceed reclaims the block");
+	cobs.poll();
+	check(cobs.storage().frees == 1, "poll reclaims the block");
 	check(cobs.storage().last_freed == 21,
 	      "returning it with the capacity the POLICY reported, not the 10 requested "
-	      "nor the 12 written");
+	      "nor the 12 appended");
 
 	{	// The same, after a growth: the capacity that travels to activeTx must
 		// be the CURRENT block's, not the one the message was born with.
-		auto grown = cobs.make_msg(4);
+		auto grown = cobs.make_message(4);
 		check(grown.capacity() == 9, "a second message starts at 9");
 		const auto big = pattern(0x10, 60);
-		check(grown.write_bytes(std::span<const uint8_t>{big}), "60 bytes force a growth");
+		check(grown.append_bytes(std::span<const uint8_t>{big}), "60 bytes force a growth");
 		const std::size_t after_growth = grown.capacity();
 		check(after_growth == 121, "to 121 (asked 60, granted 121)");
-		check(cobs.push(grown) == cobs::SendResult::Sent, "it sends");
+		check(cobs.send(grown) == cobs::SendResult::Sent, "it sends");
 		t.finish();
-		cobs.proceed();
+		cobs.poll();
 		check(cobs.storage().last_freed == after_growth,
 		      "and comes back with the GROWN capacity, not the original 9");
 	}
@@ -526,14 +540,14 @@ void testComplementaryPeers()
 	B b;
 	FakeTransport ta;
 	FakeTransport tb;
-	check(a.set_transport(sender_for<A>(ta), busy_for<A>(ta)), "A binds");
-	check(b.set_transport(sender_for<B>(tb), busy_for<B>(tb)), "B binds");
+	check(a.bind(sender_for<A>(ta), busy_for<A>(ta)), "A binds");
+	check(b.bind(sender_for<B>(tb), busy_for<B>(tb)), "B binds");
 
 	{	// A -> B, at A's maximum send size.
 		const auto out = pattern(0x10, A::max_send_size);
-		auto msg = a.make_msg();
-		check(msg.write_bytes(std::span<const uint8_t>{out}), "A builds a 64-byte frame");
-		check(a.push(msg) == cobs::SendResult::Sent, "and sends it");
+		auto msg = a.make_message();
+		check(msg.append_bytes(std::span<const uint8_t>{out}), "A builds a 64-byte frame");
+		check(a.send(msg) == cobs::SendResult::Sent, "and sends it");
 
 		b.consume(std::span<const uint8_t>{ta.sent.back()});
 		const auto got = b.pop_packet();
@@ -541,14 +555,14 @@ void testComplementaryPeers()
 		check(std::vector<uint8_t>(got.data().begin(), got.data().end()) == out,
 		      "byte for byte");
 		ta.finish();
-		a.proceed();
+		a.poll();
 	}
 	{	// B -> A, at a size only this direction allows: 300 bytes is legal for
 		// B to send and for A to receive, and illegal in the other direction.
 		const auto out = pattern(0x40, 300);
-		auto msg = b.make_msg();
-		check(msg.write_bytes(std::span<const uint8_t>{out}), "B builds a 300-byte frame");
-		check(b.push(msg) == cobs::SendResult::Sent, "and sends it");
+		auto msg = b.make_message();
+		check(msg.append_bytes(std::span<const uint8_t>{out}), "B builds a 300-byte frame");
+		check(b.send(msg) == cobs::SendResult::Sent, "and sends it");
 
 		a.consume(std::span<const uint8_t>{tb.sent.back()});
 		const auto got = a.pop_packet();
@@ -556,19 +570,19 @@ void testComplementaryPeers()
 		check(std::vector<uint8_t>(got.data().begin(), got.data().end()) == out,
 		      "byte for byte, in the direction that allows it");
 
-		auto too_big = a.make_msg();
+		auto too_big = a.make_message();
 		const auto over = pattern(0x50, 65);
-		check(too_big.write_bytes(std::span<const uint8_t>{over}) == false,
+		check(too_big.append_bytes(std::span<const uint8_t>{over}) == false,
 		      "while A still refuses to SEND more than 64");
 		tb.finish();
-		b.proceed();
+		b.poll();
 	}
 	{	// And the limit that is not shared: 300 bytes arriving at B, whose
 		// rx_max_size is 64, is refused before any allocation.
 		const auto out = pattern(0x60, 300);
-		auto msg = b.make_msg();
-		check(msg.write_bytes(std::span<const uint8_t>{out}), "B builds another 300 bytes");
-		check(b.push(msg) == cobs::SendResult::Sent, "and sends it");
+		auto msg = b.make_message();
+		check(msg.append_bytes(std::span<const uint8_t>{out}), "B builds another 300 bytes");
+		check(b.send(msg) == cobs::SendResult::Sent, "and sends it");
 
 		const std::size_t before = b.rx_stats().oversize;
 		b.consume(std::span<const uint8_t>{tb.sent.back()}); // fed to itself
@@ -576,7 +590,7 @@ void testComplementaryPeers()
 		      "B's own RX refuses a frame its TX side was free to build");
 		check(!b.has_packet(), "and nothing is delivered");
 		tb.finish();
-		b.proceed();
+		b.poll();
 	}
 }
 
@@ -599,21 +613,21 @@ void testStorageDoesNotChangeFormat()
 	bind(pool, pool_transport);
 
 	const std::vector<uint8_t> payload{0x11, 0x00, 0x22, 0x33, 0x00, 0x44};
-	auto heap_message = heap.make_msg(payload.size());
-	auto pool_message = pool.make_msg(payload.size());
-	check(heap_message.write_bytes(std::span<const uint8_t>{payload}),
+	auto heap_message = heap.make_message(payload.size());
+	auto pool_message = pool.make_message(payload.size());
+	check(heap_message.append_bytes(std::span<const uint8_t>{payload}),
 	      "heap message accepts the payload");
-	check(pool_message.write_bytes(std::span<const uint8_t>{payload}),
+	check(pool_message.append_bytes(std::span<const uint8_t>{payload}),
 	      "pool message accepts the same payload");
-	check(heap.push(heap_message) == cobs::SendResult::Sent, "heap sends");
-	check(pool.push(pool_message) == cobs::SendResult::Sent, "pool sends");
+	check(heap.send(heap_message) == cobs::SendResult::Sent, "heap sends");
+	check(pool.send(pool_message) == cobs::SendResult::Sent, "pool sends");
 	check(heap_transport.sent.back() == pool_transport.sent.back(),
 	      "one Format produces byte-identical frames across storage strategies");
 
 	heap_transport.finish();
 	pool_transport.finish();
-	heap.proceed();
-	pool.proceed();
+	heap.poll();
+	pool.poll();
 }
 
 } // namespace

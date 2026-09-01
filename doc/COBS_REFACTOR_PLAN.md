@@ -194,7 +194,7 @@ length prefix is written before the body
 canonical COBS frame is encoded in the same block
     |
     v
-cobs::Endpoint::push() gives the encoded span to the sender delegate
+cobs::Endpoint::send() gives the encoded span to the sender delegate
     |
     +-- refused: message retains its TxBlock
     +-- accepted: Endpoint owns the active TxBlock until busy() becomes false
@@ -510,7 +510,7 @@ Exact field migration inventory:
 | `cobs::RxBlock<Storage>` | `refs`, `size`, `next_ready`, `owner` | typed/private metadata retained unchanged |
 | `cobs::Packet` | `m_p` | final one-pointer public handle |
 | `cobs::Message` | `m_storage`, `m_block`, `m_size`, `m_wire`, `m_state` | one `cobs::TxBlock`; explicit state remains |
-| `cobs::Endpoint` | `m_storage`, `m_rx`, `m_sender`, `m_txBusy`, `m_activeTx`, `m_txStats` | storage and receiver remain; delegates may be grouped in private `Transport`; active descriptor and counters remain |
+| `cobs::Endpoint` | `m_storage`, `m_rx`, `m_sender`, `m_busy`, `m_activeTx`, `m_txStats` | storage and receiver remain; delegates may be grouped in private `Transport`; active descriptor and counters remain |
 | `cobs::Pool` | `m_rx`, `m_tx` | two independent pools retained |
 | `cobs::detail::BlockPool` | `m_blocks`, `m_free`, `m_stats` | final internal name; no public ownership role |
 
@@ -763,7 +763,7 @@ protocol changes must never be bundled together.
       old names. All repository consumers move with each real rename slice.
 - [x] Move the remaining application and detail types into
       `namespace cobs` under their final names.
-- [ ] Complete the vocabulary without changing state transitions or framing.
+- [x] Complete the vocabulary without changing state transitions or framing.
 - [x] Keep delegates exactly as currently implemented.
 
 ### Phase 2 - protocol `Format`
@@ -795,8 +795,8 @@ protocol changes must never be bundled together.
 
 ### Phase 5 - clean application API
 
-- [ ] Apply method renames from the vocabulary table.
-- [ ] Add explicit `unbind` with a documented active-transfer precondition.
+- [x] Apply method renames from the vocabulary table.
+- [x] Add explicit `unbind` with a documented active-transfer precondition.
 - [ ] Group the two delegates in private `Transport` if layout/behaviour proof
       shows no regression.
 - [ ] Return the combined `Stats` snapshot.
@@ -951,3 +951,13 @@ The following are not part of this refactor:
   removed with no aliases or forwarding shims. Their suites now follow the
   real names as `test_endpoint` and `test_message`. The serializer constraint
   also moved out of the global API as `cobs::detail::NativeScalar`.
+- Completed the application method vocabulary as physical renames, with no
+  compatibility overloads or traits: `bind`/`unbind`, `make_message`, `send`,
+  `poll`, `notify_gap`, `append_native`, and `append_bytes`. `BusyQuery`
+  replaces `TxBusy`; send outcomes are now `Sent`, `Busy`, `Unbound`, `Failed`,
+  and `Invalid`. `bind` rejects every incomplete or empty pair, while explicit
+  `unbind` and rebinding are refused until the active transfer has been polled
+  to completion. MinGW and WSL ASan/UBSan both passed 23,013 COBS checks; host
+  and ARM layouts stayed unchanged; UART host remained 131/131 and the full
+  F1/G4/H7RS port/probe matrix passed with only the known vendor `register`
+  warning.

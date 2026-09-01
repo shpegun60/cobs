@@ -4,13 +4,13 @@
  * Contract: doc/COBS_ENGINE.md §8. This type knows its own storage geometry,
  * how to grow it, and how to encode into it. It knows nothing about a
  * transport: tx_busy(), send() and the single active transfer belong to the
- * layer above, which is why pushing is cobs.push(msg) rather than msg.push().
+ * layer above, which is why sending is endpoint.send(msg), not a message method.
  * Keeping the transport out means this is not templated on it — less template
  * code, less coupling, and a message that can be built with no link present.
  *
  * States:
  *
- *     Empty  --make_msg-->  Building  --encode()-->  Encoded
+ *     Empty  --make_message-->  Building  --encode()-->  Encoded
  *
  * Transferred is not stored. When the layer above accepts the frame it takes
  * the block and the message returns to Empty: the same contract, one fewer
@@ -19,21 +19,22 @@
  * ---------------------------------------------------------------------------
  * SIZE AND CAPACITY, as in any container:
  *
- *      size()      payload bytes actually WRITTEN so far
+ *      size()      payload bytes actually APPENDED so far
  *      capacity()  payload bytes the current block permits
  *
- * A message starts at size 0 and is filled with write<T>(), write_bytes() and
- * write_array(). Capacity grows on demand, geometrically (~1.5x), so a caller
- * that cannot predict the length simply writes until it is done. The optional
- * argument to make_msg() is a capacity HINT, never an initial size.
+ * A message starts at size 0 and is filled with append_native() scalar/span
+ * overloads and append_bytes(). Capacity grows on demand, geometrically
+ * (~1.5x), so a caller that cannot predict the length simply appends until it
+ * is done. The optional argument to make_message() is a capacity HINT, never
+ * an initial size.
  *
  * There is deliberately no writable payload span in the public API. Handing
- * one out would mean handing out a pointer that the next write() may
+ * one out would mean handing out a pointer that the next append_native() may
  * invalidate, and the whole point of the builder is that ordinary callers
  * never meet that hazard.
  *
  * POINTER INVALIDATION, for the code that reaches past the builder anyway:
- * any operation that increases capacity() may move the payload. Writes that
+ * any operation that increases capacity() may move the payload. Appends that
  * fit do not, and encode() never does.
  * ---------------------------------------------------------------------------
  *
@@ -48,7 +49,7 @@
  *      +----------------------------+-------+--------------+--------------+
  *                                                          |<-- size() -->|
  *                                   ^       ^
- *                                   |       payload(), what write() fills
+ *                                   |       payload(), what append operations fill
  *                                   the decoded frame starts here
  *
  * The payload is PHYSICALLY at cobs::codec::raw_offset(H+K) + H, and moving it at
@@ -88,8 +89,8 @@ class Endpoint;
 } // namespace cobs
 
 /*
- * What write<T>() and write_array<T>() accept: the types that have a meaning
- * on a wire rather than merely a representation in this process.
+ * What the scalar and span overloads of append_native() accept: types with
+ * meaning on a wire rather than merely a representation in this process.
  *
  * A struct is deliberately NOT one of them, even though C++ would happily copy
  * its object representation. `struct { uint8_t a; uint32_t b; }` would go out
@@ -107,8 +108,8 @@ class Endpoint;
  *
  * `volatile` is excluded EXPLICITLY, and the reason is worth recording because
  * the constraint alone would not have caught it. Without this clause
- * `write(some_volatile_reg)` satisfies the concept and then fails to compile
- * inside the body, where `const volatile void*` will not convert to
+ * `append_native(some_volatile_reg)` satisfies the concept and then fails to
+ * compile inside the body, where `const volatile void*` will not convert to
  * `const void*`. A `requires` expression checks that a call is viable, not
  * that its body instantiates, so a constraint test written the obvious way
  * reports such a type as accepted right up until somebody writes one.
@@ -117,10 +118,10 @@ class Endpoint;
  * should be a visible act, not a side effect of serialization.
  *
  *     const uint32_t snapshot = reg;   // the volatile read, in the open
- *     msg.write(snapshot);
+ *     msg.append_native(snapshot);
  *
  * If raw object representation is ever genuinely needed, it belongs behind a
- * deliberately alarming name — write_object_representation() — and not behind
+ * deliberately alarming name — append_object_representation() — and not behind
  * the method everybody reaches for first.
  *
  * WHAT THIS CONCEPT DOES NOT PROMISE (COBS_ENGINE.md §8.3.1.2). It keeps out
@@ -255,10 +256,10 @@ public:
 	 * Returns false, with the message completely unchanged, if the value does
 	 * not fit the Format's limit or the growth it needs cannot be acquired.
 	 * The message remains usable — but it is now INCOMPLETE, so the result has
-	 * to be acted on before push(), or a truncated frame goes out.
+	 * to be acted on before send(), or a truncated frame goes out.
 	 */
 	template<detail::NativeScalar T>
-	[[nodiscard]] bool write(const T& value) noexcept
+	[[nodiscard]] bool append_native(const T& value) noexcept
 	{
 		// A COMPILE-TIME length, deliberately: the copy then becomes a store
 		// or two rather than a call into memcpy, which is what a serializer
@@ -267,7 +268,7 @@ public:
 	}
 
 	// Raw bytes, appended as they are.
-	[[nodiscard]] bool write_bytes(const std::span<const uint8_t> bytes) noexcept
+	[[nodiscard]] bool append_bytes(const std::span<const uint8_t> bytes) noexcept
 	{
 		return append(bytes.data(), bytes.size());
 	}
@@ -275,15 +276,15 @@ public:
 	/*
 	 * A contiguous run of values, appended as one block of object
 	 * representations — no length prefix, deliberately. A caller that needs
-	 * one writes it, which keeps the protocol's own framing visible in the
+	 * one appends it, which keeps the protocol's own framing visible in the
 	 * protocol's own code:
 	 *
-	 *     if (!msg.write<uint16_t>(count) || !msg.write_array(values)) {
-	 *         return;   // every write result has to be acted on
+	 *     if (!msg.append_native<uint16_t>(count) || !msg.append_native(values)) {
+	 *         return;   // every append result has to be acted on
 	 *     }
 	 */
 	template<detail::NativeScalar T>
-	[[nodiscard]] bool write_array(const std::span<const T> values) noexcept
+	[[nodiscard]] bool append_native(const std::span<const T> values) noexcept
 	{
 		if (values.size() > max_payload_size / sizeof(T)) {
 			return false; // checked before the multiply, so it cannot overflow
@@ -294,13 +295,13 @@ public:
 
 	/*
 	 * Makes room for `required` payload bytes in total, growing if needed.
-	 * Rarely called directly — the write methods call it — but useful to a
+	 * Rarely called directly — the append methods call it — but useful to a
 	 * caller that learns the final length after the message exists and wants
 	 * to skip the incremental growths.
 	 *
 	 * It does not save the FIRST allocation: the message already has a block
 	 * by the time anyone can call this. A caller who knows the length up front
-	 * should say so where it costs nothing — make_msg(length).
+	 * should say so where it costs nothing — make_message(length).
 	 *
 	 * On failure NOTHING changes: the old block, its capacity, its size and
 	 * its contents all survive intact. That is what lets a caller treat a
@@ -339,7 +340,7 @@ public:
 	}
 
 private:
-	// Guards against pushing a message into a DIFFERENT engine of the same
+	// Guards against sending a message through a DIFFERENT endpoint of the same
 	// type, which would return the block to the wrong pool. The types cannot
 	// catch that: two Endpoint<cobs::Pool<...>> objects are one type.
 	[[nodiscard]] bool belongs_to(const StorageT& storage) const noexcept
@@ -351,7 +352,7 @@ private:
 
 	/*
 	 * Encodes the payload in place and returns the wire frame. Building ends
-	 * here: writes and reserve() are refused afterwards, because the raw bytes
+	 * here: appends and reserve() are refused afterwards, because the raw bytes
 	 * they would append to no longer exist.
 	 *
 	 * Idempotent: calling it on an already-encoded message returns the same
@@ -428,10 +429,10 @@ private:
 		return (target > max_payload_size) ? max_payload_size : target;
 	}
 
-	// Bounds and growth, shared by every write. Leaves the message untouched
+	// Bounds and growth, shared by every append. Leaves the message untouched
 	// on any failure — which makes a false return safe to RECOVER from, not
 	// safe to ignore: the message is intact, but it is also incomplete, and
-	// pushing it anyway puts a truncated frame on the wire.
+	// sending it anyway puts a truncated frame on the wire.
 	[[nodiscard]] bool make_room(const std::size_t n) noexcept
 	{
 		if (m_state != State::Building) {
@@ -524,7 +525,7 @@ private:
 
 	StorageT*     m_storage = nullptr;
 	TxBlock       m_block{};
-	std::size_t   m_size  = 0; // payload bytes written; <= m_block.capacity
+	std::size_t   m_size  = 0; // payload bytes appended; <= m_block.capacity
 	std::size_t   m_wire  = 0; // encoded frame length, once Encoded
 	State         m_state = State::Empty;
 };

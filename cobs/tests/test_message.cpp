@@ -9,7 +9,7 @@
  *   - Ownership, through TX pool occupancy and through a counting policy. A
  *     message that leaks a block or frees one twice shows up as the wrong
  *     number of available blocks, never as a field read out of the object.
- *   - Payload contents, through Endpoint::push() and the reference encoder.
+ *   - Payload contents, through Endpoint:.send() and the reference encoder.
  *     cobs::Message hands out no payload span or encoding hook, so a wrong byte, a
  *     lost byte or a botched growth copy surfaces at the coordinator boundary.
  */
@@ -58,7 +58,7 @@ std::vector<uint8_t> fill(M& m, const std::size_t n, const uint8_t tag)
 	for (std::size_t i = 0; i < n; ++i) {
 		expected[i] = static_cast<uint8_t>(tag + i);
 	}
-	if (!m.write_bytes(std::span<const uint8_t>{expected})) {
+	if (!m.append_bytes(std::span<const uint8_t>{expected})) {
 		expected.clear(); // the caller's assertion will notice
 	}
 	return expected;
@@ -88,11 +88,11 @@ struct CaptureTransport {
 template<class Engine>
 bool bindTransport(Engine& endpoint, CaptureTransport& transport)
 {
-	return endpoint.set_transport(
+	return endpoint.bind(
 		typename Engine::Sender{[&transport](const std::span<const uint8_t> wire) noexcept {
 			return transport.send(wire);
 		}},
-		typename Engine::TxBusy{[&transport]() noexcept {
+		typename Engine::BusyQuery{[&transport]() noexcept {
 			return transport.tx_busy();
 		}});
 }
@@ -102,13 +102,13 @@ bool sendsAs(Engine& endpoint, CaptureTransport& transport,
 	         typename Engine::Message& message, const std::vector<uint8_t>& expected)
 {
 	const std::size_t before = transport.accepted.size();
-	if (endpoint.push(message) != cobs::SendResult::Sent) {
+	if (endpoint.send(message) != cobs::SendResult::Sent) {
 		return false;
 	}
 	const bool matches = transport.accepted.size() == before + 1u &&
 		transport.accepted.back() == cobs_test::frame(expected, Engine::length_size);
 	transport.finish();
-	endpoint.proceed();
+	endpoint.poll();
 	return matches && !endpoint.tx_active();
 }
 
@@ -129,7 +129,7 @@ void testAcquireAndRelease()
 	{	// A default-constructed message owns nothing and must not free anything.
 		Message empty;
 		check(!empty, "a default-constructed message is empty");
-		check(empty.write<uint8_t>(1) == false, "and accepts no writes");
+		check(empty.append_native<uint8_t>(1) == false, "and accepts no appends");
 		check(empty.size() == 0 && empty.capacity() == 0, "and exposes zero geometry");
 	}
 	check(pool.tx_available() == kTxBlocks && pool.tx_stats().rejected == 0,
@@ -147,7 +147,7 @@ void testExhaustionAndConcurrentMessages()
 
 	Message c{pool};
 	check(!c, "a further message from a dry pool is empty rather than a failure code");
-	check(c.write<uint8_t>(0) == false, "and stays unusable");
+	check(c.append_native<uint8_t>(0) == false, "and stays unusable");
 
 	{	// Distinct blocks, or two messages would encode over each other.
 		const auto ea = fill(a, 8, 0x10);
@@ -310,7 +310,7 @@ void testIntermediateOverallocation()
 		// Fifteen bytes must fit with no reallocation, even though only seven
 		// were ever asked for.
 		const std::vector<uint8_t> body(15, 0x2A);
-		check(m.write_bytes(std::span<const uint8_t>{body}), "the whole grant is usable");
+		check(m.append_bytes(std::span<const uint8_t>{body}), "the whole grant is usable");
 		check(pool.allocations == 1, "with no reallocation");
 		check(m.size() == body.size(), "and uses the whole reported geometry");
 	}
@@ -323,7 +323,7 @@ void testIntermediateOverallocation()
 		cobs::Message<SizeClassStorage> m{grow, 4};
 		check(m.capacity() == 9, "4 -> 9");
 		const std::vector<uint8_t> body(20, 0x3B);
-		check(m.write_bytes(std::span<const uint8_t>{body}), "20 bytes need a growth");
+		check(m.append_bytes(std::span<const uint8_t>{body}), "20 bytes need a growth");
 		// target = max(20, 9 + 4) = 20; the policy answers 41.
 		check(m.capacity() == 41, "the container asked for 20 and was granted 41");
 		check(grow.allocations == 2 && grow.frees == 1, "in exactly one reallocation");
@@ -374,13 +374,13 @@ void testGrowthSequence()
 	std::vector<std::size_t> caps;
 	bool writes_ok = true;
 	for (std::size_t i = 0; i < 10; ++i) {
-		writes_ok = writes_ok && m.write<uint8_t>(static_cast<uint8_t>(i));
+		writes_ok = writes_ok && m.append_native<uint8_t>(static_cast<uint8_t>(i));
 		caps.push_back(m.capacity());
 	}
 	check(writes_ok, "ten single-byte appends all succeed");
 	const std::vector<std::size_t> expected{1, 2, 3, 4, 6, 6, 9, 9, 9, 13};
 	check(caps == expected, "capacity follows 0 -> 1 -> 2 -> 3 -> 4 -> 6 -> 9 -> 13");
-	check(m.size() == 10, "and the size is the number of bytes actually written");
+	check(m.size() == 10, "and the size is the number of bytes actually appended");
 
 	// Every growth is one allocation and one release; nothing accumulates.
 	check(spy.frees == spy.allocations - 1,
@@ -398,7 +398,7 @@ void testLargeJumpIsOneAllocation()
 	check(m.capacity() == 64 && spy.allocations == 1, "starting from a 64-byte hint");
 
 	const std::vector<uint8_t> body(500, 0x5A);
-	check(m.write_bytes(std::span<const uint8_t>{body}), "a 500-byte append succeeds");
+	check(m.append_bytes(std::span<const uint8_t>{body}), "a 500-byte append succeeds");
 	check(m.capacity() == 500,
 	      "asking for exactly what is required, not walking 96 -> 144 -> 216");
 	check(spy.allocations == 2 && spy.last_request == 500,
@@ -413,8 +413,8 @@ void testNoGrowthWhenItFits()
 	const std::size_t after_create = spy.allocations;
 
 	bool ok = true;
-	for (int i = 0; i < 64; ++i) { ok = ok && m.write<uint32_t>(0x11223344u); }
-	check(ok, "256 bytes written into a 256-byte capacity");
+	for (int i = 0; i < 64; ++i) { ok = ok && m.append_native<uint32_t>(0x11223344u); }
+	check(ok, "256 bytes appended into a 256-byte capacity");
 	check(m.size() == 256 && m.capacity() == 256, "filling it exactly");
 	check(spy.allocations == after_create && spy.frees == 0,
 	      "with no reallocation and no release at all");
@@ -424,13 +424,13 @@ void testNoGrowthWhenItFits()
 	Message fixed{pool};
 	bool fill_ok = true;
 	for (std::size_t i = 0; i < kMaxDecoded; ++i) {
-		fill_ok = fill_ok && fixed.write<uint8_t>(static_cast<uint8_t>(i));
+		fill_ok = fill_ok && fixed.append_native<uint8_t>(static_cast<uint8_t>(i));
 	}
 	check(fill_ok && fixed.size() == kMaxDecoded,
-	      "fixed: a whole tx_max_size payload written one byte at a time");
+	      "fixed: a whole tx_max_size payload appended one byte at a time");
 	check(pool.tx_available() == kTxBlocks - 1,
 	      "still on the one block it started with — no growth ever happened");
-	check(fixed.write<uint8_t>(0) == false, "and one byte past the limit is refused");
+	check(fixed.append_native<uint8_t>(0) == false, "and one byte past the limit is refused");
 	check(fixed.size() == kMaxDecoded, "leaving the message exactly as it was");
 }
 
@@ -445,7 +445,8 @@ void testFailedGrowthChangesNothing()
 	const std::size_t frees = spy.frees;
 	spy.refuse_next = true;
 
-	check(m.write<uint32_t>(0xDEADBEEFu) == false, "a write needing growth fails");
+	check(m.append_native<uint32_t>(0xDEADBEEFu) == false,
+	      "an append needing growth fails");
 	check(m.size() == 8 && m.capacity() == 8, "leaving size and capacity untouched");
 	check(spy.frees == frees, "and releasing nothing — the old block is still ours");
 	check(spy.allocations == allocations, "with no allocation having succeeded");
@@ -454,7 +455,7 @@ void testFailedGrowthChangesNothing()
 	check(m.size() == 8 && m.capacity() == 8, "and changes nothing either");
 
 	spy.refuse_next = false;
-	check(m.write<uint8_t>(0x71),
+	check(m.append_native<uint8_t>(0x71),
 	      "the message remains writable after the failed growth");
 }
 
@@ -487,7 +488,7 @@ void testSerializers()
 	Engine endpoint;
 	CaptureTransport transport;
 	check(bindTransport(endpoint, transport), "the serializer coordinator binds");
-	auto m = endpoint.make_msg(0);
+	auto m = endpoint.make_message(0);
 
 	// Everything is appended in target byte order, so the oracle is built the
 	// same way — through memcpy of the same objects, never by hand-guessing
@@ -499,42 +500,42 @@ void testSerializers()
 	};
 
 	bool ok = true;
-	const uint8_t  u8  = 0x11;         ok = ok && m.write(u8);  expect(&u8, 1);
-	const int8_t   i8  = -2;           ok = ok && m.write(i8);  expect(&i8, 1);
-	const uint16_t u16 = 0x1234;       ok = ok && m.write(u16); expect(&u16, 2);
-	const int16_t  i16 = -300;         ok = ok && m.write(i16); expect(&i16, 2);
-	const uint32_t u32 = 0xDEADBEEFu;  ok = ok && m.write(u32); expect(&u32, 4);
-	const int32_t  i32 = -70000;       ok = ok && m.write(i32); expect(&i32, 4);
+	const uint8_t  u8  = 0x11;         ok = ok && m.append_native(u8);  expect(&u8, 1);
+	const int8_t   i8  = -2;           ok = ok && m.append_native(i8);  expect(&i8, 1);
+	const uint16_t u16 = 0x1234;       ok = ok && m.append_native(u16); expect(&u16, 2);
+	const int16_t  i16 = -300;         ok = ok && m.append_native(i16); expect(&i16, 2);
+	const uint32_t u32 = 0xDEADBEEFu;  ok = ok && m.append_native(u32); expect(&u32, 4);
+	const int32_t  i32 = -70000;       ok = ok && m.append_native(i32); expect(&i32, 4);
 	const uint64_t u64 = 0x0102030405060708ull;
-	                                   ok = ok && m.write(u64); expect(&u64, 8);
-	const int64_t  i64 = -1;           ok = ok && m.write(i64); expect(&i64, 8);
-	const float    f   = 1.5f;         ok = ok && m.write(f);   expect(&f, sizeof f);
-	const double   d   = -2.25;        ok = ok && m.write(d);   expect(&d, sizeof d);
-	const Op       op  = Op::Pong;     ok = ok && m.write(op);  expect(&op, sizeof op);
+	                                   ok = ok && m.append_native(u64); expect(&u64, 8);
+	const int64_t  i64 = -1;           ok = ok && m.append_native(i64); expect(&i64, 8);
+	const float    f   = 1.5f;         ok = ok && m.append_native(f);   expect(&f, sizeof f);
+	const double   d   = -2.25;        ok = ok && m.append_native(d);   expect(&d, sizeof d);
+	const Op       op  = Op::Pong;     ok = ok && m.append_native(op);  expect(&op, sizeof op);
 	check(ok, "every scalar, enum and floating-point value appends");
 
-	{	// A flag goes out as the byte the caller chose, because write<T> does
+	{	// A flag goes out as the byte the caller chose, because append_native<T> does
 		// not accept bool at all (see cobs::detail::NativeScalar).
 		const uint8_t flag = 1;
-		ok = m.write(flag);
+		ok = m.append_native(flag);
 		expect(&flag, 1);
 		const std::byte raw_byte{0xA5};
-		ok = ok && m.write(raw_byte);
+		ok = ok && m.append_native(raw_byte);
 		expect(&raw_byte, 1);
 		check(ok, "and std::byte goes through as itself");
 	}
 	{	// A byte span, then an array of a wider type.
 		const std::vector<uint8_t> blob{0x00, 0xFF, 0x00, 0x7F};
-		ok = m.write_bytes(std::span<const uint8_t>{blob});
+		ok = m.append_bytes(std::span<const uint8_t>{blob});
 		expect(blob.data(), blob.size());
 
 		const uint16_t words[] = {0x0001, 0x0200, 0xFFFF};
-		ok = ok && m.write_array(std::span<const uint16_t>{words});
+		ok = ok && m.append_native(std::span<const uint16_t>{words});
 		expect(words, sizeof words);
 		check(ok, "so do a byte span and an array of a wider type");
 	}
 
-	check(m.size() == expected.size(), "the size is the sum of everything written");
+	check(m.size() == expected.size(), "the size is the sum of everything appended");
 	check(sendsAs(endpoint, transport, m, expected),
 	      "and the frame is exactly those bytes, canonically encoded (" +
 	          std::to_string(expected.size()) + " payload bytes)");
@@ -546,20 +547,21 @@ void testSerializerFailuresLeaveTheMessageUsable()
 	Engine endpoint;
 	CaptureTransport transport;
 	check(bindTransport(endpoint, transport), "the failure-recovery coordinator binds");
-	auto m = endpoint.make_msg(4);
-	check(m.write<uint32_t>(0x01020304u), "four bytes fit");
+	auto m = endpoint.make_message(4);
+	check(m.append_native<uint32_t>(0x01020304u), "four bytes fit");
 
 	endpoint.storage().refuse_next = true;
-	check(m.write<uint64_t>(0) == false, "an eight-byte write that cannot grow fails");
+	check(m.append_native<uint64_t>(0) == false,
+	      "an eight-byte append that cannot grow fails");
 	const uint8_t blob[16] = {};
-	check(m.write_bytes(std::span<const uint8_t>{blob}) == false, "so does a span");
+	check(m.append_bytes(std::span<const uint8_t>{blob}) == false, "so does a span");
 	const uint32_t words[8] = {};
-	check(m.write_array(std::span<const uint32_t>{words}) == false, "so does an array");
+	check(m.append_native(std::span<const uint32_t>{words}) == false, "so does an array");
 	check(m.size() == 4, "and none of them moved the size");
 
 	endpoint.storage().refuse_next = false;
-	check(m.write<uint8_t>(0x05), "the message still works once memory is available");
-	check(m.size() == 5, "appending after a failed write, not on top of it");
+	check(m.append_native<uint8_t>(0x05), "the message still works once memory is available");
+	check(m.size() == 5, "appending after a failed append, not on top of it");
 
 	// The uint32 went out in target order, so build the oracle the same way.
 	std::vector<uint8_t> oracle(5);
@@ -574,16 +576,16 @@ void testOversizeIsRefusedNotClamped()
 	SpyStorage spy;
 	cobs::Message<SpyStorage> m{spy};
 	const std::vector<uint8_t> huge(SpyStorage::Format::max_send_size + 1, 0x33);
-	check(m.write_bytes(std::span<const uint8_t>{huge}) == false,
+	check(m.append_bytes(std::span<const uint8_t>{huge}) == false,
 	      "a payload past tx_max_size is refused");
-	check(m.size() == 0 && spy.allocations == 1, "with nothing written and nothing allocated");
+	check(m.size() == 0 && spy.allocations == 1, "with nothing appended and nothing allocated");
 
 	const std::vector<uint8_t> exact(SpyStorage::Format::max_send_size, 0x44);
-	check(m.write_bytes(std::span<const uint8_t>{exact}),
+	check(m.append_bytes(std::span<const uint8_t>{exact}),
 	      "while exactly tx_max_size is accepted");
 	check(m.size() == SpyStorage::Format::max_send_size && m.capacity() == SpyStorage::Format::max_send_size,
 	      "filling the message to its limit");
-	check(m.write<uint8_t>(0) == false, "after which nothing more fits");
+	check(m.append_native<uint8_t>(0) == false, "after which nothing more fits");
 }
 
 /* ================================ encode ================================ */
@@ -598,17 +600,17 @@ void testCoordinatorEncoding()
 	// Every interesting length, cross-checked against the reference encoder.
 	for (const std::size_t n : {std::size_t{0}, std::size_t{1}, std::size_t{2},
 	                            kMaxDecoded - 1, kMaxDecoded}) {
-		auto m = endpoint.make_msg(n);
+		auto m = endpoint.make_message(n);
 		const auto expected = fill(m, n, 0x30);
 		check(sendsAs(endpoint, transport, m, expected),
 		      "payload of " + std::to_string(n) + " bytes encodes canonically in place");
 	}
 
 	{	// A failed start leaves an encoded block in the message until its lifetime ends.
-		auto m = endpoint.make_msg(8);
+		auto m = endpoint.make_message(8);
 		(void)fill(m, 8, 0x20);
 		transport.refuse = true;
-		check(endpoint.push(m) == cobs::SendResult::Error,
+		check(endpoint.send(m) == cobs::SendResult::Failed,
 		      "a failed start leaves the encoded message owned by the caller");
 		check(endpoint.storage().tx_available() == kTxBlocks - 1,
 		      "and its block remains live");
@@ -618,22 +620,22 @@ void testCoordinatorEncoding()
 	transport.refuse = false;
 
 	{	// A refused start retains the private Encoded state for a byte-identical retry.
-		auto m = endpoint.make_msg(kMaxDecoded);
+		auto m = endpoint.make_message(kMaxDecoded);
 		const auto expected = fill(m, kMaxDecoded, 0x40);
 		transport.refuse = true;
-		check(endpoint.push(m) == cobs::SendResult::Error,
+		check(endpoint.send(m) == cobs::SendResult::Failed,
 		      "a refused transport start leaves the message with the coordinator");
-		check(static_cast<bool>(m) && !m.write(uint8_t{0xFF}) && !m.reserve(m.capacity()),
+		check(static_cast<bool>(m) && !m.append_native(uint8_t{0xFF}) && !m.reserve(m.capacity()),
 		      "the private Encoded state refuses public building operations");
 		transport.refuse = false;
-		check(endpoint.push(m) == cobs::SendResult::Sent,
+		check(endpoint.send(m) == cobs::SendResult::Sent,
 		      "the same message can be retried");
 		check(transport.attempts.size() >= 2u &&
 		      transport.attempts[transport.attempts.size() - 2u] == transport.attempts.back() &&
 		      transport.accepted.back() == cobs_test::frame(expected, Engine::length_size),
 		      "and both attempts use one byte-identical canonical frame");
 		transport.finish();
-		endpoint.proceed();
+		endpoint.poll();
 	}
 	check(endpoint.storage().tx_available() == kTxBlocks,
 	      "every coordinated message released its block");
@@ -659,19 +661,19 @@ void testCoordinatorEncodingAcrossGrowthHistories()
 		}
 
 		{	// Grown one byte at a time: many reallocations.
-			auto m = endpoint.make_msg(0);
+			auto m = endpoint.make_message(0);
 			bool ok = true;
-			for (const uint8_t b : body) { ok = ok && m.write(b); }
+			for (const uint8_t b : body) { ok = ok && m.append_native(b); }
 			all_ok = all_ok && ok && sendsAs(endpoint, transport, m, body);
 		}
 		{	// Grown once, from a hint just short of the length.
-			auto m = endpoint.make_msg(n / 2);
-			all_ok = all_ok && m.write_bytes(std::span<const uint8_t>{body}) &&
+			auto m = endpoint.make_message(n / 2);
+			all_ok = all_ok && m.append_bytes(std::span<const uint8_t>{body}) &&
 			         sendsAs(endpoint, transport, m, body);
 		}
 		{	// Never grown: reserved up front.
-			auto m = endpoint.make_msg(n);
-			all_ok = all_ok && m.write_bytes(std::span<const uint8_t>{body}) &&
+			auto m = endpoint.make_message(n);
+			all_ok = all_ok && m.append_bytes(std::span<const uint8_t>{body}) &&
 			         sendsAs(endpoint, transport, m, body);
 		}
 	}
@@ -700,10 +702,10 @@ enum class WireOp : uint16_t { Ping = 1, Pong = 2 }; // the spelling a wire want
 enum class BoolBackedEnum : bool { No, Yes };        // legal C++, not a wire type
 
 template<class M, class T>
-concept CanWrite = requires(M& m, const T& v) { m.write(v); };
+concept CanAppendNative = requires(M& m, const T& v) { m.append_native(v); };
 
 template<class M, class T>
-concept CanWriteArray = requires(M& m, std::span<const T> s) { m.write_array(s); };
+concept CanAppendSpan = requires(M& m, std::span<const T> s) { m.append_native(s); };
 
 template<class M>
 concept HasPublicEncode = requires(M& m) { m.encode(); };
@@ -734,46 +736,47 @@ void testTypeConstraints()
 	using M = cobs::Message<TxPool>;
 
 	// Accepted: the types that mean something on a wire.
-	static_assert(CanWrite<M, uint8_t>);
-	static_assert(CanWrite<M, int8_t>);
-	static_assert(CanWrite<M, uint16_t>);
-	static_assert(CanWrite<M, int32_t>);
-	static_assert(CanWrite<M, uint64_t>);
-	static_assert(CanWrite<M, float>);
-	static_assert(CanWrite<M, double>);
-	static_assert(CanWrite<M, char>);
-	static_assert(CanWrite<M, Op>);          // enum
-	static_assert(CanWrite<M, std::byte>);
+	static_assert(CanAppendNative<M, uint8_t>);
+	static_assert(CanAppendNative<M, int8_t>);
+	static_assert(CanAppendNative<M, uint16_t>);
+	static_assert(CanAppendNative<M, int32_t>);
+	static_assert(CanAppendNative<M, uint64_t>);
+	static_assert(CanAppendNative<M, float>);
+	static_assert(CanAppendNative<M, double>);
+	static_assert(CanAppendNative<M, char>);
+	static_assert(CanAppendNative<M, Op>);          // enum
+	static_assert(CanAppendNative<M, std::byte>);
 	check(true, "scalars, enums and std::byte are accepted");
 
 	// Refused, each for its own reason.
-	static_assert(!CanWrite<M, PaddedStruct>,   // padding + field order + ABI
+	static_assert(!CanAppendNative<M, PaddedStruct>,   // padding + field order + ABI
 	              "a struct must not be silently blitted onto the wire");
-	static_assert(!CanWrite<M, bool>,           // true is any non-zero pattern
+	static_assert(!CanAppendNative<M, bool>,           // true is any non-zero pattern
 	              "bool has no fixed object representation");
-	static_assert(!CanWrite<M, const char*>,    // meaningless to the receiver
+	static_assert(!CanAppendNative<M, const char*>,    // meaningless to the receiver
 	              "a pointer value must not be sendable");
-	static_assert(!CanWrite<M, uint32_t PaddedStruct::*>,
+	static_assert(!CanAppendNative<M, uint32_t PaddedStruct::*>,
 	              "a member pointer must not be sendable");
-	static_assert(!CanWrite<M, std::span<const uint8_t>>,
-	              "a span is not a scalar; write_bytes takes those");
-	check(true, "structs, bool, pointers, member pointers and spans are refused");
+	static_assert(CanAppendNative<M, std::span<const uint8_t>>,
+	              "a native-scalar span selects the span overload");
+	check(true, "structs, bool, pointers and member pointers are refused");
 
 	/* volatile deserves its own assertion, because the constraint alone did
 	 * NOT catch it. Before the concept excluded volatile explicitly,
-	 * cobs::detail::NativeScalar<volatile uint32_t> was true and this very CanWrite reported
+	 * cobs::detail::NativeScalar<volatile uint32_t> was true and this very
+	 * CanAppendNative reported
 	 * the type as writable — a requires-expression checks that a call is
 	 * viable, not that its body instantiates, and the body failed on
 	 * `const volatile void*` -> `const void*`. The assertion below is the one
 	 * that would have failed then. */
 	static_assert(!cobs::detail::NativeScalar<volatile uint32_t>,
 	              "volatile must not satisfy the concept");
-	static_assert(!CanWrite<M, volatile uint32_t>,
+	static_assert(!CanAppendNative<M, volatile uint32_t>,
 	              "and a volatile value must not be writable");
-	static_assert(!CanWrite<M, volatile Op>);
-	static_assert(!CanWriteArray<M, volatile uint32_t>,
+	static_assert(!CanAppendNative<M, volatile Op>);
+	static_assert(!CanAppendSpan<M, volatile uint32_t>,
 	              "nor an array of them");
-	static_assert(CanWrite<M, const uint32_t>,
+	static_assert(CanAppendNative<M, const uint32_t>,
 	              "while plain const is still perfectly writable");
 	check(true, "volatile is refused, so an MMIO read has to be written out loud");
 
@@ -782,22 +785,22 @@ void testTypeConstraints()
 	 * wire-format hazard this layer enforces rather than documents. The rest
 	 * of them (unsized enums under -fshort-enums, size_t, long double) are a
 	 * documented rule, since enforcing them would mean banning `int`. */
-	static_assert(CanWrite<M, WireOp>, "an enum with an explicit width is fine");
-	static_assert(!CanWrite<M, BoolBackedEnum>,
+	static_assert(CanAppendNative<M, WireOp>, "an enum with an explicit width is fine");
+	static_assert(!CanAppendNative<M, BoolBackedEnum>,
 	              "but an enum backed by bool must not smuggle one through");
-	static_assert(!CanWriteArray<M, BoolBackedEnum>);
+	static_assert(!CanAppendSpan<M, BoolBackedEnum>);
 	check(true, "an enum whose underlying type is bool is refused too");
 
-	// write_array shares the SAME contract, deliberately — one rule to
+	// append_native shares the SAME contract, deliberately — one rule to
 	// explain, not two nearly identical ones.
-	static_assert(CanWriteArray<M, uint16_t>);
-	static_assert(CanWriteArray<M, int64_t>);
-	static_assert(CanWriteArray<M, Op>);
-	static_assert(CanWriteArray<M, std::byte>);
-	static_assert(!CanWriteArray<M, PaddedStruct>);
-	static_assert(!CanWriteArray<M, bool>);
-	static_assert(!CanWriteArray<M, const char*>);
-	check(true, "and write_array accepts and refuses exactly the same types");
+	static_assert(CanAppendSpan<M, uint16_t>);
+	static_assert(CanAppendSpan<M, int64_t>);
+	static_assert(CanAppendSpan<M, Op>);
+	static_assert(CanAppendSpan<M, std::byte>);
+	static_assert(!CanAppendSpan<M, PaddedStruct>);
+	static_assert(!CanAppendSpan<M, bool>);
+	static_assert(!CanAppendSpan<M, const char*>);
+	check(true, "and append_native accepts and refuses exactly the same types");
 }
 
 /* ===================== the default reserve pays off ===================== */
@@ -810,7 +813,7 @@ void testDefaultHintAvoidsTheLadder()
 	                                 const std::size_t payload) {
 		cobs::Message<SpyStorage> m{spy, hint};
 		for (std::size_t i = 0; i < payload; ++i) {
-			if (!m.write(static_cast<uint8_t>(i))) { return false; }
+			if (!m.append_native(static_cast<uint8_t>(i))) { return false; }
 		}
 		return m.size() == payload;
 	};
@@ -818,11 +821,11 @@ void testDefaultHintAvoidsTheLadder()
 	{	// From zero: the whole geometric ladder, which is what the default
 		// exists to avoid.
 		SpyStorage spy;
-		check(buildByteAtATime(spy, 0, 100), "100 bytes written from a zero hint");
+		check(buildByteAtATime(spy, 0, 100), "100 bytes appended from a zero hint");
 		check(spy.allocations == 14,
 		      "costing 14 allocations — the ladder 0,1,2,3,4,6,9,13,19,...");
 	}
-	{	// From 32, which is what make_msg() reserves.
+	{	// From 32, which is what make_message() reserves.
 		SpyStorage spy;
 		check(buildByteAtATime(spy, 32, 100), "the same 100 bytes from a hint of 32");
 		check(spy.allocations == 4, "costing four: 32 -> 48 -> 72 -> 108");
@@ -876,11 +879,11 @@ void testLengthPrefixIsHiddenAndCorrect()
 		Engine endpoint;
 		CaptureTransport transport;
 		check(bindTransport(endpoint, transport), "the one-byte-format coordinator binds");
-		auto m = endpoint.make_msg(16);
+		auto m = endpoint.make_message(16);
 		check(m.size() == 0 && m.capacity() == 16,
 		      "size() and capacity() count application bytes only");
 		const auto body = std::vector<uint8_t>{0x11, 0x22, 0x33};
-		check(m.write_bytes(std::span<const uint8_t>{body}), "three bytes are written");
+		check(m.append_bytes(std::span<const uint8_t>{body}), "three bytes are appended");
 		check(m.size() == 3, "and the header is not one of them");
 		check(sendsAs(endpoint, transport, m, body), "while the wire carries [length][body]");
 	}
@@ -890,7 +893,7 @@ void testLengthPrefixIsHiddenAndCorrect()
 		Engine endpoint;
 		CaptureTransport transport;
 		check(bindTransport(endpoint, transport), "the two-byte-format coordinator binds");
-		auto m = endpoint.make_msg(0);
+		auto m = endpoint.make_message(0);
 		const auto body = [] {
 			std::vector<uint8_t> v(300);
 			for (std::size_t i = 0; i < v.size(); ++i) {
@@ -898,7 +901,7 @@ void testLengthPrefixIsHiddenAndCorrect()
 			}
 			return v;
 		}();
-		check(m.write_bytes(std::span<const uint8_t>{body}), "a 300-byte payload is written");
+		check(m.append_bytes(std::span<const uint8_t>{body}), "a 300-byte payload is appended");
 		check(m.size() == 300, "counted in application bytes");
 		check(sendsAs(endpoint, transport, m, body),
 		      "and framed with a two-byte little-endian length");
@@ -931,8 +934,8 @@ void testHeaderShiftsTheCobsBoundaries()
 			for (std::size_t i = 0; i < S; ++i) {
 				body[i] = static_cast<uint8_t>(1 + (i % 255));
 			}
-			auto m = endpoint.make_msg(0);
-			ok = ok && m.write_bytes(std::span<const uint8_t>{body}) &&
+			auto m = endpoint.make_message(0);
+			ok = ok && m.append_bytes(std::span<const uint8_t>{body}) &&
 			     sendsAs(endpoint, transport, m, body);
 			++cases;
 
@@ -941,8 +944,8 @@ void testHeaderShiftsTheCobsBoundaries()
 			for (std::size_t i = 0; i < S; ++i) {
 				zeros[i] = static_cast<uint8_t>((i % 3 == 0) ? 0 : (1 + (i % 250)));
 			}
-			auto m2 = endpoint.make_msg(0);
-			ok = ok && m2.write_bytes(std::span<const uint8_t>{zeros}) &&
+			auto m2 = endpoint.make_message(0);
+			ok = ok && m2.append_bytes(std::span<const uint8_t>{zeros}) &&
 			     sendsAs(endpoint, transport, m2, zeros);
 			++cases;
 		}

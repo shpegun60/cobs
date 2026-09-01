@@ -24,7 +24,7 @@ only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 
 | Question | Decision |
 | --- | --- |
-| Transport binding | delegates, bound as a PAIR by `set_transport`, so `cobs::Endpoint` is templated on storage alone |
+| Transport binding | delegates, bound as a PAIR by `bind`; `unbind` removes the pair explicitly, so `cobs::Endpoint` is templated on storage alone |
 | Frame format | every engine frame is `COBS([length][body]) 00`; the length is fixed-width, little-endian, and counts only the body after it |
 | Length width | 1 byte if `max(rx_max_size, tx_max_size) <= 255`, else 2. One width per engine, both directions; peers must agree |
 | Decoder | standalone **non-template** class, no storage, no transport |
@@ -45,7 +45,7 @@ only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 | Transport busy before encoding | message stays `Building` |
 | `send()` failure after encoding | message stays `Encoded`, the same wire frame is retryable |
 | TX queue | none |
-| TX completion | `proceed()` polls `tx_busy()` |
+| TX completion | `poll()` invokes the bound busy query while a transfer is active |
 | CRC | not in v1, and free to add later **because** the declared length counts the whole body, trailer included |
 | Observability | counters only; no hot-path instrumentation unless a probe is enabled |
 
@@ -75,19 +75,19 @@ The transport is attached with delegates, not as a template parameter — both
 at once, never separately:
 
 ```cpp
-cobs.set_transport(
+cobs.bind(
     tiny::delegate<bool(std::span<const uint8_t>)>{...},   // send()
     tiny::delegate<bool()>{...});                          // tx_busy()
 ```
 
 Two independent setters would make an inconsistent pair reachable while the
-link is idle — a sender bound to one transport and a `tx_busy` still answering
-for another. A `push()` would then start a transfer on one link while
-`proceed()` asked the other, which reports idle, and the block would be freed
+link is idle — a sender bound to one transport and a busy query still answering
+for another. A `send()` would then start a transfer on one link while
+`poll()` asked the other, which reports idle, and the block would be freed
 while it is still being read. Taking both together makes that unrepresentable,
-including the half-bound states: a sender with an empty `tx_busy` is refused,
-and two empty delegates are a clean unbind. Rebinding is refused outright
-while a transfer is in flight.
+including the half-bound states: `bind()` refuses either empty delegate.
+`unbind()` is the sole explicit removal operation. Binding, rebinding, and
+unbinding are all refused while a transfer is in flight.
 
 Because the transport is not a template parameter, `cobs::Endpoint` is templated on
 storage alone, and one instantiation works above a UART, a TCP socket or a
@@ -731,20 +731,33 @@ would re-open the ordering problem that the transport layer already solved.
 `cobs::Message` is move-only.
 
 ```text
-Empty  --make_msg()-->  Building  --push()-->  Encoded  --send() ok-->  Transferred
-                           ^                      |
-                           |                      | send() failed
-                           +--- transport busy ---+  (stays Encoded, retryable)
+Empty  --make_message()-->  Building
+Building --append/reserve-----------------------------> Building
+Building --send(): Busy or Unbound-------------------> Building
+Building --send(): encode, sender refuses-----------> Encoded
+Encoded  --send(): Busy, Unbound, or sender refuses--> Encoded
+Building/Encoded --send(): sender accepts-----------> Empty
+                                                      + Endpoint::activeTx owns block
 ```
 
-The `Encoded` state is load-bearing rather than decorative. `push()` first
-checks `tx_busy()`, and a busy transport leaves the message `Building`,
-untouched and still writable. But once encoding has run — in place, over the
-caller's own bytes — the raw payload no longer exists. If `send()` then fails
+The `Encoded` state is load-bearing rather than decorative. `send()` first
+checks the busy query, and a busy transport leaves the message `Building`,
+untouched and still appendable. But once encoding has run — in place, over the
+caller's own bytes — the raw payload no longer exists. If the sender then fails
 to start the hardware, there is nothing to undo and nothing to re-encode:
-the message stays `Encoded` and `push()` may retry the *same* wire frame.
+the message stays `Encoded` and `send()` may retry the *same* wire frame.
 
-Every builder method — `write<T>()`, `write_bytes()`, `write_array()`,
+`Endpoint::send(Message&)` reports the ownership transition precisely:
+
+| Result | Meaning | Message after return |
+|---|---|---|
+| `Sent` | the sender accepted the frame | empty; `Endpoint` owns the block |
+| `Busy` | an active transfer exists or the busy query reports busy | unchanged in its current state |
+| `Unbound` | no complete sender/busy-query pair is bound | unchanged |
+| `Failed` | the sender refused after encoding | owns the same retryable `Encoded` frame |
+| `Invalid` | empty message or a message from another endpoint | unchanged |
+
+Every builder method — both `append_native()` overloads, `append_bytes()`, and
 `reserve()` — returns `false` once the message is `Encoded`: the raw bytes they
 would have appended to no longer exist.
 
@@ -756,7 +769,7 @@ When `send()` succeeds, ownership moves:
 cobs::Message  →  cobs::Endpoint::activeTx        (cobs::Message becomes empty)
 ```
 
-and `proceed()` does only this:
+and `poll()` does only this:
 
 ```cpp
 if (activeTx && !transport.tx_busy()) {
@@ -804,7 +817,7 @@ application bytes only. Every piece of geometry below is therefore in
 ```text
 block size  = cobs::codec::max_wire_size(H + C)
 frame_raw   = block + cobs::codec::raw_offset(H + C)      where the length goes
-payload     = frame_raw + H                       what write() fills
+payload     = frame_raw + H                       what append operations fill
 ```
 
 Both quantities come from the size functions of §4.2 rather than from a magic
@@ -817,21 +830,21 @@ is a bug:
 ```text
 capacity()   payload bytes the current block permits; granted by storage and
              returned inside the same TxBlock descriptor
-size()       payload bytes actually WRITTEN; what coordinator encoding frames
+size()       payload bytes actually APPENDED; what coordinator encoding frames
 m_wire       the encoded frame length, once coordinator encoding has run
 ```
 
-`make_msg(hint)` sets `size()` to zero and asks storage for `hint` bytes of
+`make_message(hint)` sets `size()` to zero and asks storage for `hint` bytes of
 capacity. The hint is a hint: it spares growths, and nothing else. Bytes arrive
-through `write<T>()`, `write_bytes()` and `write_array()`, each of which grows
-the block when it has to.
+through `append_native(value)`, `append_native(span)`, and `append_bytes()`,
+each of which grows the block when it has to.
 
 ```text
-make_msg()     cobs::Endpoint::default_capacity_hint — a practical reserve
-make_msg(0)    a zero initial capacity REQUEST; pushed straight away it
-               sends the canonical empty frame, but it may still be
-               written into and grown like any other message
-make_msg(N)    the caller knows a useful number
+make_message()     cobs::Endpoint::default_capacity_hint — a practical reserve
+make_message(0)    a zero initial capacity REQUEST; sent straight away it
+                   sends the canonical empty frame, but it may still accept
+                   appends and grow like any other message
+make_message(N)    the caller knows a useful number
 ```
 
 `default_capacity_hint` is **32**, and not zero, for a measured reason. A
@@ -840,7 +853,7 @@ below; with `cobs::Heap` that is 14 allocations and 453 requested bytes for a
 100-byte payload. From 32 the same payload costs four allocations, and a
 typical short frame costs one. It is free with `cobs::Pool`, which
 reports `tx_max_size` whatever it was asked for. The value is clamped to
-`tx_max_size`, so `make_msg()` can never fail because of its own default.
+`tx_max_size`, so `make_message()` can never fail because of its own default.
 
 An API that performs well only when the caller remembered to pass a hint is a
 trap with good documentation.
@@ -898,14 +911,14 @@ capacity. Headroom itself is never copied.
 
 ### 8.3.1.1 What the serializers accept
 
-`write<T>()` and `write_array<T>()` share ONE internal constraint —
-`cobs::detail::NativeScalar` — so there is one rule to explain rather than two
-nearly identical ones:
+The scalar and span overloads of `append_native()` share ONE internal
+constraint — `cobs::detail::NativeScalar` — so there is one rule to explain
+rather than two nearly identical ones:
 
 ```text
-write<T>        arithmetic (except bool), enumerations, std::byte
-write_array<T>  a contiguous run of the same
-write_bytes()   arbitrary bytes
+append_native(value)  arithmetic (except bool), enumerations, std::byte
+append_native(span)   a contiguous run of the same
+append_bytes()        arbitrary bytes
 ```
 
 Everything else is a compile error, deliberately:
@@ -916,30 +929,30 @@ Everything else is a compile error, deliberately:
   reproduce all three accidents. A comment about this protects only the people
   who read comments.
 - **`bool`.** `true` is permitted to be any non-zero bit pattern, so its object
-  representation is the compiler's private business. Write
+  representation is the compiler's private business. Append
   `uint8_t{flag ? 1u : 0u}`.
 - **Pointers and member pointers**, which fall out of the concept for free:
   neither is arithmetic nor an enumeration, and neither means anything at the
   other end of a link.
 
-`write_array()` adds no length prefix. A caller who needs one writes it, which
-keeps the protocol's framing visible in the protocol's own code:
+`append_native(span)` adds no length prefix. A caller who needs one appends it,
+which keeps the protocol's framing visible in the protocol's own code:
 
 ```cpp
-if (!msg.write<uint16_t>(count) || !msg.write_array(values)) {
-    return;   // every write result has to be acted on
+if (!msg.append_native<uint16_t>(count) || !msg.append_native(values)) {
+    return;   // every append result has to be acted on
 }
 ```
 
 If raw object representation is ever genuinely required, it belongs behind a
-deliberately alarming name — `write_object_representation()` — so that nobody
+deliberately alarming name — `append_object_representation()` — so that nobody
 mistakes it for ordinary wire serialization.
 
 #### 8.3.1.2 `detail::NativeScalar` is not a stable-wire promise
 
 The concept keeps out the types with no sane representation. It does NOT, and
 cannot, guarantee that what it lets through means the same thing on both ends
-of a link. `write<T>` is a **native-representation serializer**, and the
+of a link. `append_native<T>` is a **native-representation serializer**, and the
 protocol's stability is the protocol author's job. Three ways to lose, all
 measured rather than imagined:
 
@@ -1402,10 +1415,10 @@ The second case matters because "queue depth plus one" over-states the need:
 ownership of the same block simply moves from the queued `cobs::Message` to
 `cobs::Endpoint::activeTx`.
 
-> An empty result from `make_msg()` is the back-pressure signal that the
+> An empty result from `make_message()` is the back-pressure signal that the
 > configured TX storage has been exhausted; callers must handle it.
 
-It is not a silent failure — `make_msg()` returns an honest empty message — but
+It is not a silent failure — `make_message()` returns an honest empty message — but
 an upper layer is perfectly capable of ignoring the result and inventing its
 own mystery.
 

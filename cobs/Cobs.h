@@ -21,7 +21,7 @@
  *  2. An Endpoint object must not be destroyed while a transfer is in flight
  *     (`tx_active()` true and the transport still busy). The transport is
  *     physically reading a block that is about to stop existing. Check
- *     `tx_active()` and drain with `proceed()` before letting it go.
+ *     `tx_active()` and drain with `poll()` before letting it go.
  * ---------------------------------------------------------------------------
  */
 
@@ -46,8 +46,8 @@ namespace cobs {
 enum class SendResult : uint8_t {
 	Sent,     // the transport accepted the frame; Endpoint now holds the block
 	Busy,     // a transfer is already in flight; the message is untouched
-	NotBound, // no sender / tx_busy delegate has been set
-	Error,    // the transport refused to start; the message stays Encoded
+	Unbound,  // no sender / busy-query delegate pair has been bound
+	Failed,   // the transport refused to start; the message stays Encoded
 	Invalid,  // the message owns no block, or belongs to another engine
 };
 
@@ -90,7 +90,7 @@ public:
 	using LengthType = typename Format::LengthType;
 
 	/*
-	 * What make_msg() reserves when the caller gives no hint (§8.3.1).
+	 * What make_message() reserves when the caller gives no hint (§8.3.1).
 	 *
 	 * Not zero, and the reason is measured rather than aesthetic: a message
 	 * built field by field from a capacity of zero walks the whole geometric
@@ -102,17 +102,17 @@ public:
 	 *
 	 * It costs nothing on Pool, which reports max_send_size
 	 * whatever it was asked for. A caller who wants no reserve at all says
-	 * make_msg(0) — a zero capacity REQUEST, not an empty-only message: it
-	 * can be written into and grown like any other.
+	 * make_message(0) — a zero capacity REQUEST, not an empty-only message: it
+	 * can accept appends and grow like any other.
 	 *
 	 * Clamped, because a Format may declare a limit below this default, and
-	 * make_msg() must never fail merely because of its own default.
+	 * make_message() must never fail merely because of its own default.
 	 */
 	static constexpr std::size_t default_capacity_hint =
 		(max_send_size < 32u) ? max_send_size : 32u;
 
 	using Sender = tiny::delegate<bool(std::span<const uint8_t>)>;
-	using TxBusy = tiny::delegate<bool()>;
+	using BusyQuery = tiny::delegate<bool()>;
 
 	using RxStats = typename cobs::detail::Receiver<StorageT>::Stats;
 	struct TxStats {
@@ -156,39 +156,50 @@ public:
 	 * genuine DMA mine reachable while the link was IDLE, so the previous
 	 * "no rebinding during a transfer" guard was necessary but not enough:
 	 *
-	 *     set_sender(uartB);            // and the tx_busy setter is skipped,
+	 *     set_sender(uartB);            // and the busy-query setter is skipped,
 	 *                                   // fails, or simply comes later
-	 *     -> sender = B, tx_busy = A
-	 *     push()    starts DMA on B
-	 *     proceed() asks A, which is idle
+	 *     -> sender = B, busy query = A
+	 *     send()    starts DMA on B
+	 *     poll() asks A, which is idle
 	 *     -> the block is freed while B is still reading it
 	 *
 	 * A pairing this important is not something to document and hope for.
 	 * Taking both at once makes the mixed states unrepresentable, and the
-	 * half-bound ones too: a set sender with an empty tx_busy is refused.
+	 * half-bound ones too: a sender with an empty busy query is refused.
 	 *
-	 * Two empty delegates are a clean unbind. Refused outright while a
+	 * Empty delegates are refused: removing a transport is the separate,
+	 * explicit unbind() operation below. Both operations are refused while a
 	 * transfer is in flight — the old transport is still reading the active
-	 * block, and a new tx_busy() answering "idle" would have proceed() free it
+	 * block, and a new busy query answering "idle" would have poll() free it
 	 * out from under the DMA.
 	 */
-	[[nodiscard]] bool set_transport(Sender sender, TxBusy tx_busy) noexcept
+	[[nodiscard]] bool bind(Sender sender, BusyQuery busy) noexcept
 	{
 		if (m_activeTx.memory != nullptr) {
 			return false;
 		}
-		if (static_cast<bool>(sender) != static_cast<bool>(tx_busy)) {
-			return false; // half a transport is worse than none
+		if (!sender || !busy) {
+			return false;
 		}
 		m_sender = static_cast<Sender&&>(sender);
-		m_txBusy = static_cast<TxBusy&&>(tx_busy);
+		m_busy = static_cast<BusyQuery&&>(busy);
+		return true;
+	}
+
+	[[nodiscard]] bool unbind() noexcept
+	{
+		if (m_activeTx.memory != nullptr) {
+			return false;
+		}
+		m_sender = nullptr;
+		m_busy = nullptr;
 		return true;
 	}
 
 	/* --------------------------------- RX -------------------------------- */
 
 	void consume(std::span<const uint8_t> bytes) noexcept { m_rx.consume(bytes); }
-	void gap() noexcept { m_rx.gap(); }
+	void notify_gap() noexcept { m_rx.gap(); }
 
 	[[nodiscard]] Packet pop_packet() noexcept { return m_rx.pop_packet(); }
 	[[nodiscard]] bool has_packet() const noexcept { return m_rx.has_packet(); }
@@ -200,16 +211,16 @@ public:
 	 * it constructs an owning object and may allocate; there is nothing to
 	 * "get".
 	 *
-	 *     auto msg = cobs.make_msg();
+	 *     auto msg = cobs.make_message();
 	 *     if (!msg ||
-	 *         !msg.write<uint16_t>(id) ||
-	 *         !msg.write_bytes(body)) {
+	 *         !msg.append_native<uint16_t>(id) ||
+	 *         !msg.append_bytes(body)) {
 	 *         return;               // exhausted, or the payload will not fit
 	 *     }
-	 *     const SendResult result = cobs.push(msg);
+	 *     const SendResult result = cobs.send(msg);
 	 *
-	 * Every write result has to be acted on. A failed write leaves the message
-	 * intact and still usable, but also INCOMPLETE — pushing it anyway sends a
+	 * Every append result has to be acted on. A failed append leaves the message
+	 * intact and still usable, but also INCOMPLETE — sending it anyway transmits a
 	 * truncated frame, which is memory-safe and protocol-nonsense. That is why
 	 * they are [[nodiscard]], and why this example does not quietly cast the
 	 * results away.
@@ -217,22 +228,22 @@ public:
 	 * The argument is a capacity hint, NOT an initial size: size() starts at
 	 * zero either way, and the hint only spares growths for a caller who knows
 	 * roughly how much is coming. Capacity then grows geometrically as the
-	 * message is written (§8.3.1), so a caller who cannot predict the length
+	 * message is built (§8.3.1), so a caller who cannot predict the length
 	 * does not have to.
 	 *
-	 *     make_msg()     default_capacity_hint, a practical reserve
-	 *     make_msg(0)    a zero capacity REQUEST; pushed straight away it
+	 *     make_message()     default_capacity_hint, a practical reserve
+	 *     make_message(0)    a zero capacity REQUEST; sent straight away it
 	 *                    sends the canonical empty frame, but it may still
-	 *                    be written into and grown like any other message
-	 *     make_msg(N)    the caller knows a useful number
+	 *                    accept appends and grow like any other message
+	 *     make_message(N)    the caller knows a useful number
 	 *
 	 * An EMPTY result is the back-pressure signal that the configured TX
 	 * storage is exhausted, and callers must handle it; Message is already a
 	 * nullable owner, so there is nothing for an optional to add.
 	 */
-	[[nodiscard]] Message make_msg() noexcept { return make_msg(default_capacity_hint); }
+	[[nodiscard]] Message make_message() noexcept { return make_message(default_capacity_hint); }
 
-	[[nodiscard]] Message make_msg(const std::size_t capacity_hint) noexcept
+	[[nodiscard]] Message make_message(const std::size_t capacity_hint) noexcept
 	{
 		if (capacity_hint > max_send_size) {
 			return {};
@@ -245,18 +256,18 @@ public:
 	 * every outcome except Sent the caller keeps it and retries (§8.1):
 	 *
 	 *   Busy   -> still Building, raw payload untouched and still writable
-	 *   Error  -> still Encoded, and push() may retry the SAME wire frame
+	 *   Failed  -> still Encoded, and send() may retry the SAME wire frame
 	 *   Sent   -> the block moved here; the message is Empty again
 	 */
-	[[nodiscard]] SendResult push(Message& msg) noexcept
+	[[nodiscard]] SendResult send(Message& msg) noexcept
 	{
 		if (!msg || !msg.belongs_to(m_storage)) {
 			return SendResult::Invalid;
 		}
-		if (!m_sender || !m_txBusy) {
-			return SendResult::NotBound;
+		if (!m_sender || !m_busy) {
+			return SendResult::Unbound;
 		}
-		if (m_activeTx.memory != nullptr || m_txBusy()) {
+		if (m_activeTx.memory != nullptr || m_busy()) {
 			++m_txStats.send_refused_busy;
 			return SendResult::Busy;
 		}
@@ -267,7 +278,7 @@ public:
 		}
 		if (!m_sender(wire)) {
 			++m_txStats.send_failed;
-			return SendResult::Error; // message stays Encoded, frame retryable
+			return SendResult::Failed; // message stays Encoded, frame retryable
 		}
 
 		// Ownership moves only AFTER the transport has accepted the frame:
@@ -288,9 +299,9 @@ public:
 	// tx_busy() == false means only that the transport stopped borrowing the
 	// buffer — never that the frame was delivered (§8.2). Delivery outcome is
 	// the transport's business, reported through its own counters.
-	void proceed() noexcept
+	void poll() noexcept
 	{
-		if (m_activeTx.memory != nullptr && !m_txBusy()) {
+		if (m_activeTx.memory != nullptr && !m_busy()) {
 			// The capacity storage reported travels with the pointer, so a
 			// strategy that segregates by size class knows where the block
 			// belongs without searching (§9.1).
@@ -313,7 +324,7 @@ private:
 	cobs::detail::Receiver<StorageT> m_rx{m_storage};
 
 	Sender m_sender{};
-	TxBusy m_txBusy{};
+	BusyQuery m_busy{};
 
 	cobs::TxBlock m_activeTx{};
 	TxStats m_txStats{};
