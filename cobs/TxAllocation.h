@@ -23,9 +23,9 @@
  * from, so it is worth being exact. What gets COBS-encoded is the decoded
  * frame — [length][payload] — not the payload alone, so the requirement is
  *
- *      cobs_max_wire_size(length_size + capacity)
+ *      cobs::codec::max_wire_size(length_size + capacity)
  *
- * and a policy sized with cobs_max_wire_size(capacity) is one or two bytes
+ * and a policy sized with cobs::codec::max_wire_size(capacity) is one or two bytes
  * short of every block it hands out. Ask the format rather than open-coding
  * it: an earlier revision of this comment stated the payload-only formula,
  * which was correct before the length prefix existed and was, afterwards,

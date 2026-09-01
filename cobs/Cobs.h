@@ -5,7 +5,7 @@
  * down; what is here is the transport handshake and the single active
  * transfer.
  *
- *     RX:  bytes -> CobsDecoder -> policy -> RxPacket -> PacketRef
+ *     RX:  bytes -> cobs::codec::Decoder -> policy -> RxPacket -> PacketRef
  *     TX:  CobsMsg -> encoder -> sender delegate -> activeTx -> policy
  *
  * ---------------------------------------------------------------------------

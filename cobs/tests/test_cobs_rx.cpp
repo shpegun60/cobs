@@ -1,7 +1,7 @@
 /*
  * End-to-end verification of the RX vertical:
  *
- *   encoded bytes -> CobsDecoder -> allocator policy -> RxPacket
+ *   encoded bytes -> cobs::codec::Decoder -> allocator policy -> RxPacket
  *                 -> intrusive ready queue -> PacketRef -> release -> pool
  *
  * PacketRef's own semantics (copy, move, assignment, self-assignment) are

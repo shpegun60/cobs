@@ -54,12 +54,12 @@ only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 ## 2. Component split
 
 ```text
-CobsDecoder            pure framing state machine
+cobs::codec::Decoder            pure framing state machine
                        no allocator, no transport, no ownership
                        writes into a caller-supplied span
 
 Cobs<Allocator>        ownership, allocation, ready queue, TX state
-                       thin glue over CobsDecoder; transport by delegate
+                       thin glue over cobs::codec::Decoder; transport by delegate
 ```
 
 The split is not cosmetic. `Cobs` is templated on the allocator, so an
@@ -195,7 +195,7 @@ two zero bytes plus the delimiter. It remains distinct from the no-op above.
 Note the consequence, which is a deliberate break with the pure-COBS layer
 underneath: `01 00` — a structurally valid COBS frame with an EMPTY decoded
 body — is no longer a valid engine frame, because it contains no length field.
-`CobsDecoder` still accepts it as a zero-byte decoded frame; `CobsRx` counts it
+`cobs::codec::Decoder` still accepts it as a zero-byte decoded frame; `CobsRx` counts it
 as a length mismatch. The two layers are answering different questions, and
 that is the point of keeping them apart.
 
@@ -240,8 +240,8 @@ RX   the declared body length N, known from the header before the body
 
 TX   the capacity C granted for that allocation, C <= tx_max_size
 
-     block size  = cobs_max_wire_size(length_size + C)
-     headroom    = cobs_raw_offset(length_size + C)
+     block size  = cobs::codec::max_wire_size(length_size + C)
+     headroom    = cobs::codec::raw_offset(length_size + C)
 ```
 
 Both formulas are header-inclusive because the header is part of what gets
@@ -326,7 +326,7 @@ because they hold different things:
 ```text
 RX block   sizeof(RxPacket) + rx_max_size      1048 bytes on x86-64,
                                                1036 on Cortex-M, for 1024
-TX block   cobs_max_wire_size(length_size
+TX block   cobs::codec::max_wire_size(length_size
              + tx_max_size)                    1032 bytes anywhere, since
                                                it contains no C++ object
 ```
@@ -338,14 +338,14 @@ decides.
 ### 4.2 Encoded size
 
 ```cpp
-constexpr std::size_t cobs_max_encoded_size(std::size_t n) noexcept
+constexpr std::size_t cobs::codec::max_encoded_size(std::size_t n) noexcept
 {
     return n == 0 ? 1u : n + (n + 253u) / 254u;   // n + ceil(n / 254)
 }
 
-constexpr std::size_t cobs_max_wire_size(std::size_t n) noexcept
+constexpr std::size_t cobs::codec::max_wire_size(std::size_t n) noexcept
 {
-    return cobs_max_encoded_size(n) + 1u;         // + delimiter
+    return cobs::codec::max_encoded_size(n) + 1u;         // + delimiter
 }
 ```
 
@@ -787,7 +787,7 @@ COBS expansion in front of it:
  block_start             frame_raw    raw_start                 block_end
       |                      |            |                         |
       +----------------------+------------+-------------------------+
-      | cobs_raw_offset(H+C) |     H      |  C, the granted capacity|
+      | cobs::codec::raw_offset(H+C) |     H      |  C, the granted capacity|
       +----------------------+------------+-------------------------+
       ^                      ^            ^
       encoder writes here    length header, written just before encoding
@@ -800,8 +800,8 @@ application bytes only. Every piece of geometry below is therefore in
 `H + C`, not `C`:
 
 ```text
-block size  = cobs_max_wire_size(H + C)
-frame_raw   = block + cobs_raw_offset(H + C)      where the length goes
+block size  = cobs::codec::max_wire_size(H + C)
+frame_raw   = block + cobs::codec::raw_offset(H + C)      where the length goes
 payload     = frame_raw + H                       what write() fills
 ```
 
@@ -890,8 +890,8 @@ nothing:
 5. install the new pointer and the new capacity
 ```
 
-The copy crosses two different offsets — `cobs_raw_offset(old)` to
-`cobs_raw_offset(new)` — because the headroom a block needs depends on its
+The copy crosses two different offsets — `cobs::codec::raw_offset(old)` to
+`cobs::codec::raw_offset(new)` — because the headroom a block needs depends on its
 capacity. Headroom itself is never copied.
 
 ### 8.3.1.1 What the serializers accept
@@ -979,7 +979,7 @@ happens. The hazard exists in the implementation and is confined to it.
 
 ### 8.3.3 Encoding geometry
 
-The payload is physically at `cobs_raw_offset(H+C) + H` for the current
+The payload is physically at `cobs::codec::raw_offset(H+C) + H` for the current
 capacity `C`, and moving it at encode time would end the zero-copy story, so
 encoding a payload of size `S` — a decoded region of `H + S` bytes — begins
 further into the block:
@@ -992,7 +992,7 @@ block          encoding begins here, and so does the wire frame
 ```
 
 It fits exactly: `R(H+S) <= R(H+C)` because `S <= C`, and the encoded region
-ends at `cobs_raw_offset(H+C) + H + S`, at most the end of the block. So a wire
+ends at `cobs::codec::raw_offset(H+C) + H + S`, at most the end of the block. So a wire
 frame need not start at `block[0]`; the transport is handed the span `encode()`
 returns, while the ALLOCATION remains the whole block and is returned as such.
 Encoding copies nothing, whatever growth history the message had.
@@ -1006,8 +1006,8 @@ start retryable byte-for-byte.
 In terms of the granted capacity `C` and the header width `H`:
 
 ```text
-wire_capacity = cobs_max_wire_size(H + C)
-              = cobs_max_encoded_size(H + C) + 1
+wire_capacity = cobs::codec::max_wire_size(H + C)
+              = cobs::codec::max_encoded_size(H + C) + 1
 
 raw_offset    = wire_capacity - (H + C)
               = ceil((H + C) / 254) + 1               (for H + C > 0)
@@ -1123,7 +1123,7 @@ Obligations on a non-null TX allocation:
 
 ```text
 requested <= capacity <= tx_max_size
-the block holds at least cobs_max_wire_size(length_size + capacity) bytes
+the block holds at least cobs::codec::max_wire_size(length_size + capacity) bytes
 deallocate_tx() is called with exactly the capacity that was reported
 ```
 
@@ -1258,7 +1258,7 @@ length, allocates exactly that, and the body decodes straight into its final
 home — one pass, no staging buffer, no copy.
 
 On the heap policy a 20-byte frame therefore costs 20 payload bytes, and a
-seven-byte TX capacity REQUEST costs ten (`cobs_max_wire_size(1 + 7)`, or
+seven-byte TX capacity REQUEST costs ten (`cobs::codec::max_wire_size(1 + 7)`, or
 eleven with a two-byte header) rather than the worst case of the largest frame
 allowed. A single-slab pool still spends a whole block in both directions,
 which is that policy being deterministic — exactly what an STM32 target
@@ -1274,7 +1274,7 @@ it; `CobsHeapAllocator` does, since sized `operator delete` is an ABI- and
 runtime-dependent optimisation whose value belongs in a benchmark rather than
 in a contract argument.
 
-A block sized for capacity `C` is `cobs_max_wire_size(length_size + C)` bytes:
+A block sized for capacity `C` is `cobs::codec::max_wire_size(length_size + C)` bytes:
 the tight worst case for that decoded length, not the exact encoding of those
 particular bytes.
 Knowing the latter would need a pre-scan of the payload, i.e. another pass. Not
@@ -1611,7 +1611,7 @@ split between the last data byte and the delimiter
 ### 11.4 Round trip
 
 `decode(encode(x)) == x` for every length × pattern × boundary combination,
-and `encode` output length `<= cobs_max_encoded_size(len)`, with the
+and `encode` output length `<= cobs::codec::max_encoded_size(len)`, with the
 all-non-zero payloads attaining it for every length (other payloads may attain
 it too — see §4.2).
 

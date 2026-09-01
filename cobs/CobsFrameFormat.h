@@ -49,7 +49,7 @@
 #ifndef COBS_FRAME_FORMAT_H_
 #define COBS_FRAME_FORMAT_H_
 
-#include "CobsEncoder.h"
+#include "Codec.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -108,7 +108,7 @@ struct CobsFrameFormat final {
 	[[nodiscard]] static constexpr std::size_t tx_storage_size_for_capacity(
 		const std::size_t capacity) noexcept
 	{
-		return cobs_max_wire_size(decoded_size_for_payload(capacity));
+		return cobs::codec::max_wire_size(decoded_size_for_payload(capacity));
 	}
 
 	// Where the LENGTH FIELD sits inside such a block; the payload begins
@@ -116,13 +116,13 @@ struct CobsFrameFormat final {
 	[[nodiscard]] static constexpr std::size_t raw_offset_for_capacity(
 		const std::size_t capacity) noexcept
 	{
-		return cobs_raw_offset(decoded_size_for_payload(capacity));
+		return cobs::codec::raw_offset(decoded_size_for_payload(capacity));
 	}
 
 	// The guard of §4.2 still applies, now to the header-inclusive size.
-	static_assert(cobs_size_arithmetic_fits(decoded_size_for_payload(RxMaxSize)),
+	static_assert(cobs::codec::size_arithmetic_fits(decoded_size_for_payload(RxMaxSize)),
 		"rx_max_size plus the length header overflows the COBS size arithmetic");
-	static_assert(cobs_size_arithmetic_fits(decoded_size_for_payload(TxMaxSize)),
+	static_assert(cobs::codec::size_arithmetic_fits(decoded_size_for_payload(TxMaxSize)),
 		"tx_max_size plus the length header overflows the COBS size arithmetic");
 };
 

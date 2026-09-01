@@ -1,6 +1,8 @@
-#include "CobsDecoder.h"
+#include "Codec.h"
 
-void CobsDecoder::attach_output(const std::span<uint8_t> output) noexcept
+namespace cobs::codec {
+
+void Decoder::attach_output(const std::span<uint8_t> output) noexcept
 {
 	// Only meaningful as the answer to NeedOutput. While discarding there is
 	// no frame to decode into, and accepting a buffer would strand it.
@@ -19,13 +21,13 @@ void CobsDecoder::attach_output(const std::span<uint8_t> output) noexcept
 	m_hasOutput = true;
 }
 
-void CobsDecoder::discard_until_delimiter() noexcept
+void Decoder::discard_until_delimiter() noexcept
 {
 	dropFrame();
 	m_state = State::DropUntilDelimiter;
 }
 
-CobsDecoder::Result CobsDecoder::consume(const std::span<const uint8_t> input) noexcept
+Decoder::Result Decoder::consume(const std::span<const uint8_t> input) noexcept
 {
 	std::size_t i = 0;
 
@@ -116,3 +118,5 @@ CobsDecoder::Result CobsDecoder::consume(const std::span<const uint8_t> input) n
 
 	return {i, 0, Event::None};
 }
+
+} // namespace cobs::codec

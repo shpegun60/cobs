@@ -1,6 +1,6 @@
 #!/bin/sh
 # Host verification for the COBS layer. No HAL, no allocator fakes, no
-# transport — every suite here is an ordinary program.
+# transport â€” every suite here is an ordinary program.
 #
 # Sanitizers are used when the toolchain has them: a bounds error in a decoder
 # must fail loudly here, not become a discussion about why a test only fails on
@@ -47,19 +47,19 @@ build() {
 	"$CXX" -std=gnu++20 -O1 -g $WARN $SAN -I"$COBS" -I"$HERE" -I"$PROJ/libs/delegate" "$@" -o "$OUT/$name.exe"
 }
 
-build test_decoder         "$COBS/CobsDecoder.cpp" "$HERE/test_decoder.cpp"
+build test_decoder         "$COBS/Decoder.cpp" "$HERE/test_decoder.cpp"
 build test_block_pool      "$HERE/test_block_pool.cpp"
 build test_allocators      "$HERE/test_allocators.cpp"
-build test_cobs_rx         "$COBS/CobsDecoder.cpp" "$HERE/test_cobs_rx.cpp"
-build test_encoder         "$COBS/CobsDecoder.cpp" "$COBS/CobsEncoder.cpp" "$HERE/test_encoder.cpp"
-build test_cobs_msg        "$COBS/CobsEncoder.cpp" "$HERE/test_cobs_msg.cpp"
-build test_cobs            "$COBS/CobsDecoder.cpp" "$COBS/CobsEncoder.cpp" "$HERE/test_cobs.cpp"
+build test_cobs_rx         "$COBS/Decoder.cpp" "$HERE/test_cobs_rx.cpp"
+build test_encoder         "$COBS/Decoder.cpp" "$COBS/Encoder.cpp" "$HERE/test_encoder.cpp"
+build test_cobs_msg        "$COBS/Encoder.cpp" "$HERE/test_cobs_msg.cpp"
+build test_cobs            "$COBS/Decoder.cpp" "$COBS/Encoder.cpp" "$HERE/test_cobs.cpp"
 build test_layout          "$HERE/test_layout.cpp"
 
 # The release build is a DIFFERENT build, so it is tested as one. The pool's
 # double-free and foreign-pointer rejection used to be compiled out by NDEBUG,
 # which meant the shipped configuration had weaker safety semantics than the
-# one every test ran against — a guarantee that evaporates under -DNDEBUG is a
+# one every test ran against â€” a guarantee that evaporates under -DNDEBUG is a
 # debugging aid with good manners. COBS_POOL_CHECKS now defaults to on
 # regardless, and these two prove it rather than assuming it.
 build test_block_pool_ndebug -DNDEBUG "$HERE/test_block_pool.cpp"

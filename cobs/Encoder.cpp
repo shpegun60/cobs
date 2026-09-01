@@ -1,22 +1,24 @@
-#include "CobsEncoder.h"
+#include "Codec.h"
 
-std::span<const uint8_t> cobs_encode_in_place(
+namespace cobs::codec {
+
+std::span<const uint8_t> encode_in_place(
 	const std::span<uint8_t> storage,
-	const std::size_t raw_offset,
+	const std::size_t offset,
 	const std::size_t raw_size) noexcept
 {
 	// The payload must actually be inside the storage...
-	if (raw_offset > storage.size() || raw_size > storage.size() - raw_offset) {
+	if (offset > storage.size() || raw_size > storage.size() - offset) {
 		return {};
 	}
 	// ...the storage must be able to hold the worst-case frame...
-	if (storage.size() < cobs_max_wire_size(raw_size)) {
+	if (storage.size() < max_wire_size(raw_size)) {
 		return {};
 	}
 	// ...and the headroom must satisfy the overlap invariant of §8.4. Checked
 	// rather than assumed: this is the one precondition whose violation would
 	// corrupt the payload silently instead of failing.
-	if (raw_offset < cobs_raw_offset(raw_size)) {
+	if (offset < raw_offset(raw_size)) {
 		return {};
 	}
 
@@ -26,7 +28,7 @@ std::span<const uint8_t> cobs_encode_in_place(
 	bool last_block_was_ff = false;
 
 	for (std::size_t i = 0; i < raw_size; ++i) {
-		const uint8_t b = storage[raw_offset + i];
+		const uint8_t b = storage[offset + i];
 		if (b != 0u) {
 			storage[w] = b;
 			++w;
@@ -60,3 +62,5 @@ std::span<const uint8_t> cobs_encode_in_place(
 	++w;
 	return storage.first(w);
 }
+
+} // namespace cobs::codec

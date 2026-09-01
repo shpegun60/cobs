@@ -27,7 +27,7 @@
 #ifndef COBS_RX_H_
 #define COBS_RX_H_
 
-#include "CobsDecoder.h"
+#include "Codec.h"
 #include "CobsFrameFormat.h"
 #include "CobsHeapAllocator.h"
 #include "PacketRef.h"
@@ -109,7 +109,7 @@ public:
 	void consume(std::span<const uint8_t> bytes) noexcept
 	{
 		while (!bytes.empty()) {
-			const CobsDecoder::Result r = m_decoder.consume(bytes);
+			const cobs::codec::Decoder::Result r = m_decoder.consume(bytes);
 			bytes = bytes.subspan(r.consumed);
 
 			// Progress is guaranteed even when r.consumed is 0. That happens
@@ -118,15 +118,15 @@ public:
 			// next segment or switches the decoder to discarding, so the state
 			// changes either way.
 			switch (r.event) {
-			case CobsDecoder::Event::None:
+			case cobs::codec::Decoder::Event::None:
 				return;
-			case CobsDecoder::Event::NeedOutput:
+			case cobs::codec::Decoder::Event::NeedOutput:
 				onNeedOutput();
 				break;
-			case CobsDecoder::Event::FrameComplete:
+			case cobs::codec::Decoder::Event::FrameComplete:
 				onFrameComplete(r.decoded_size);
 				break;
-			case CobsDecoder::Event::Malformed:
+			case cobs::codec::Decoder::Event::Malformed:
 				++m_stats.malformed;
 				// The delimiter that exposed it already resynchronized the
 				// stream (§5.4), so this costs a frame but no resync.
@@ -373,7 +373,7 @@ private:
 		resetFrame();
 	}
 
-	CobsDecoder m_decoder{};
+	cobs::codec::Decoder m_decoder{};
 	Allocator&  m_allocator;
 
 	std::array<uint8_t, Format::length_size> m_lengthBytes{};

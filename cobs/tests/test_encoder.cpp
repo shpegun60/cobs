@@ -1,9 +1,9 @@
 /*
- * Host verification for cobs_encode_in_place.
+ * Host verification for cobs::codec::encode_in_place.
  *
  * The encoder overlaps its own input, so most of this battery is about the
  * geometry rather than the framing: every case runs with the MINIMUM legal
- * headroom (cobs_raw_offset), which is where the overlap invariant has its
+ * headroom (cobs::codec::raw_offset), which is where the overlap invariant has its
  * single byte of margin, and every case is surrounded by sentinel bytes.
  * An overlapping encoder tested only on round numbers has a remarkable talent
  * for working until the first 254-byte customer packet.
@@ -11,10 +11,9 @@
  * Two independent oracles are used, because an encoder checked only against
  * its own decoder can share a misunderstanding with it:
  *   - the canonical reference encoder (byte-for-byte comparison), and
- *   - CobsDecoder (round trip).
+ *   - cobs::codec::Decoder (round trip).
  */
-#include "CobsDecoder.h"
-#include "CobsEncoder.h"
+#include "Codec.h"
 #include "reference_encoder.h"
 
 #include <cstdio>
@@ -81,7 +80,7 @@ Encoded encodeInPlace(const std::vector<uint8_t>& payload, const std::size_t raw
 	}
 
 	const std::span<uint8_t> storage{arena.data() + kGuard, block};
-	const auto frame = cobs_encode_in_place(storage, raw_offset, payload.size());
+	const auto frame = cobs::codec::encode_in_place(storage, raw_offset, payload.size());
 
 	Encoded r;
 	r.refused = frame.empty();
@@ -93,10 +92,10 @@ Encoded encodeInPlace(const std::vector<uint8_t>& payload, const std::size_t raw
 	return r;
 }
 
-// Decodes a wire frame with CobsDecoder — the independent round-trip oracle.
+// Decodes a wire frame with cobs::codec::Decoder — the independent round-trip oracle.
 std::vector<uint8_t> decodeFrame(const std::vector<uint8_t>& wire, bool& ok)
 {
-	CobsDecoder d;
+	cobs::codec::Decoder d;
 	std::vector<uint8_t> out(4096, 0);
 	std::vector<uint8_t> result;
 	std::size_t pos = 0;
@@ -106,14 +105,14 @@ std::vector<uint8_t> decodeFrame(const std::vector<uint8_t>& wire, bool& ok)
 		const auto r = d.consume(std::span<const uint8_t>{wire.data() + pos, wire.size() - pos});
 		pos += r.consumed;
 		switch (r.event) {
-		case CobsDecoder::Event::NeedOutput:
+		case cobs::codec::Decoder::Event::NeedOutput:
 			d.attach_output(std::span<uint8_t>{out});
 			break;
-		case CobsDecoder::Event::FrameComplete:
+		case cobs::codec::Decoder::Event::FrameComplete:
 			result.assign(out.begin(), out.begin() + static_cast<std::ptrdiff_t>(r.decoded_size));
 			ok = true;
 			break;
-		case CobsDecoder::Event::None:
+		case cobs::codec::Decoder::Event::None:
 			return result;
 		default:
 			return result;
@@ -129,7 +128,7 @@ void testCanonicalEndings()
 	{	// 254 non-zero bytes end exactly on a full 0xFF block, which owes no
 		// implicit zero: no trailing 01.
 		const std::vector<uint8_t> p(254, 0x41);
-		const auto e = encodeInPlace(p, cobs_raw_offset(p.size()));
+		const auto e = encodeInPlace(p, cobs::codec::raw_offset(p.size()));
 		check(e.wire.size() == 256, "254 non-zero bytes encode to FF + 254 + delimiter");
 		check(e.wire.front() == 0xFF, "starting with the full block");
 		check(e.wire[255] == 0x00 && e.wire[254] == 0x41,
@@ -138,7 +137,7 @@ void testCanonicalEndings()
 	{	// A payload ending in a zero needs that final 01 — it is what
 		// materializes the zero on decode. Looks the same, is not.
 		const std::vector<uint8_t> p{0x11, 0x00};
-		const auto e = encodeInPlace(p, cobs_raw_offset(p.size()));
+		const auto e = encodeInPlace(p, cobs::codec::raw_offset(p.size()));
 		const std::vector<uint8_t> expected{0x02, 0x11, 0x01, 0x00};
 		check(e.wire == expected,
 		      "a payload ending in 00 DOES get the final 01 (got " + hex(e.wire) + ")");
@@ -150,7 +149,7 @@ void testCanonicalEndings()
 		// normal block, so FF, then 01 for the zero, then the final 01.
 		std::vector<uint8_t> p(254, 0x41);
 		p.push_back(0x00);
-		const auto e = encodeInPlace(p, cobs_raw_offset(p.size()));
+		const auto e = encodeInPlace(p, cobs::codec::raw_offset(p.size()));
 		check(e.wire.size() == 258 && e.wire[0] == 0xFF &&
 		      e.wire[255] == 0x01 && e.wire[256] == 0x01 && e.wire[257] == 0x00,
 		      "254 non-zeros then a zero: FF block, 01 for the zero, final 01");
@@ -158,7 +157,7 @@ void testCanonicalEndings()
 		check(decodeFrame(e.wire, ok) == p && ok, "and round-trips");
 	}
 	{	// The empty packet.
-		const auto e = encodeInPlace({}, cobs_raw_offset(0));
+		const auto e = encodeInPlace({}, cobs::codec::raw_offset(0));
 		check(e.wire == std::vector<uint8_t>({0x01, 0x00}), "the empty payload encodes to 01 00");
 	}
 }
@@ -168,7 +167,7 @@ void testCanonicalEndings()
 void testInvalidLayoutsAreRefused()
 {
 	const std::vector<uint8_t> p(300, 0x41);
-	const std::size_t need = cobs_raw_offset(p.size());
+	const std::size_t need = cobs::codec::raw_offset(p.size());
 
 	{	// One byte less headroom than the invariant requires.
 		const auto e = encodeInPlace(p, need - 1);
@@ -182,13 +181,13 @@ void testInvalidLayoutsAreRefused()
 	}
 	{	// A payload that does not fit its own storage.
 		std::vector<uint8_t> arena(64, 0);
-		const auto frame = cobs_encode_in_place(std::span<uint8_t>{arena}, 32, 64);
+		const auto frame = cobs::codec::encode_in_place(std::span<uint8_t>{arena}, 32, 64);
 		check(frame.empty(), "a payload running past the storage is refused");
 	}
 	{	// Storage one byte short of the worst-case frame. Two payload bytes
 		// need code + 2 + delimiter = 4, so three bytes cannot work...
 		std::vector<uint8_t> small(3, 0);
-		check(cobs_encode_in_place(std::span<uint8_t>{small}, 1, 2).empty(),
+		check(cobs::codec::encode_in_place(std::span<uint8_t>{small}, 1, 2).empty(),
 		      "storage one byte short of the worst case is refused");
 
 		// ...and exactly four must, or the refusal above would just be
@@ -196,12 +195,12 @@ void testInvalidLayoutsAreRefused()
 		std::vector<uint8_t> exact(4, 0);
 		exact[2] = 0x11;
 		exact[3] = 0x22;
-		const auto frame = cobs_encode_in_place(std::span<uint8_t>{exact}, 2, 2);
+		const auto frame = cobs::codec::encode_in_place(std::span<uint8_t>{exact}, 2, 2);
 		check(frame.size() == 4 && frame[0] == 0x03 && frame[3] == 0x00,
-		      "a storage of exactly cobs_max_wire_size() is accepted");
+		      "a storage of exactly cobs::codec::max_wire_size() is accepted");
 	}
 	{	// A zero-length storage cannot even hold 01 00.
-		const auto frame = cobs_encode_in_place(std::span<uint8_t>{}, 0, 0);
+		const auto frame = cobs::codec::encode_in_place(std::span<uint8_t>{}, 0, 0);
 		check(frame.empty(), "empty storage is refused");
 	}
 }
@@ -253,7 +252,7 @@ void testAgainstBothOracles()
 	bool guards_ok = true;
 	for (const std::size_t n : lengths) {
 		for (const auto& p : patterns(n)) {
-			const std::size_t need = cobs_raw_offset(n);
+			const std::size_t need = cobs::codec::raw_offset(n);
 			// Minimum headroom, and one byte of slack: both must work, and
 			// must produce identical output.
 			for (const std::size_t offset : {need, need + 1}) {
@@ -265,12 +264,12 @@ void testAgainstBothOracles()
 				expect(e.wire == cobs_test::encode(p),
 				       "matches the reference encoder at n=" + std::to_string(n) +
 				       " (got " + hex(e.wire) + ")");
-				expect(e.wire.size() - 1u <= cobs_max_encoded_size(n),
+				expect(e.wire.size() - 1u <= cobs::codec::max_encoded_size(n),
 				       "within the size bound at n=" + std::to_string(n));
 
 				bool ok = false;
 				expect(decodeFrame(e.wire, ok) == p && ok,
-				       "round trips through CobsDecoder at n=" + std::to_string(n));
+				       "round trips through cobs::codec::Decoder at n=" + std::to_string(n));
 				++cases;
 			}
 		}
@@ -292,7 +291,7 @@ void testOverlapDoesNotEatItsInput()
 		for (std::size_t i = 0; i < n; ++i) {
 			p[i] = static_cast<uint8_t>(1 + (i % 255)); // no zeros: worst case
 		}
-		const auto e = encodeInPlace(p, cobs_raw_offset(n));
+		const auto e = encodeInPlace(p, cobs::codec::raw_offset(n));
 		bool ok = false;
 		all_ok = all_ok && e.guards_intact && decodeFrame(e.wire, ok) == p && ok;
 	}

@@ -13,8 +13,7 @@ WARN="-Wall -Wextra -Wpedantic -Wshadow -Wconversion"
 
 HEADERS="
 Cobs.h
-CobsDecoder.h
-CobsEncoder.h
+Codec.h
 CobsFixedAllocator.h
 CobsFrameFormat.h
 CobsHeapAllocator.h

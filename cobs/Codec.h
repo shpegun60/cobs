@@ -1,5 +1,5 @@
 /*
- * CobsDecoder — the COBS framing state machine, and nothing else.
+ * cobs::codec — the non-template COBS framing primitives.
  *
  * Contract: doc/COBS_ENGINE.md. This class deliberately knows no allocator,
  * no transport and no ownership: it decodes into a span the owner supplies,
@@ -53,14 +53,16 @@
  * required to be canonical.
  */
 
-#ifndef COBS_DECODER_H_
-#define COBS_DECODER_H_
+#ifndef COBS_CODEC_H_
+#define COBS_CODEC_H_
 
 #include <cstddef>
 #include <cstdint>
 #include <span>
 
-class CobsDecoder final {
+namespace cobs::codec {
+
+class Decoder final {
 public:
 	enum class Event : uint8_t {
 		None,          // the input ran out; nothing for the owner to do
@@ -150,4 +152,55 @@ private:
 	bool m_hasOutput = false; // NOT m_output.empty(): see attach_output()
 };
 
-#endif /* COBS_DECODER_H_ */
+/*
+ * Canonical in-place encoding and its storage geometry.
+ *
+ * The raw decoded bytes begin at raw_offset(N) inside the caller's block. The
+ * encoder writes forward from block[0] while reading ahead from that offset.
+ * The extra headroom preserves the reviewed overlap invariant:
+ *
+ *     written <= consumed + raw_offset(N) - 1
+ *
+ * max_encoded_size() excludes the delimiter; max_wire_size() and the span
+ * returned from encode_in_place() include it.
+ */
+
+[[nodiscard]] constexpr std::size_t max_encoded_size(const std::size_t size) noexcept
+{
+	return (size == 0u) ? 1u : size + (size + 253u) / 254u;
+}
+
+[[nodiscard]] constexpr std::size_t max_wire_size(const std::size_t size) noexcept
+{
+	return max_encoded_size(size) + 1u;
+}
+
+[[nodiscard]] constexpr std::size_t raw_offset(const std::size_t max_decoded) noexcept
+{
+	return max_wire_size(max_decoded) - max_decoded;
+}
+
+[[nodiscard]] constexpr bool size_arithmetic_fits(const std::size_t size) noexcept
+{
+	// Compute overhead separately so the guard itself cannot wrap while
+	// deciding whether size + overhead is representable.
+	if (size == 0u) {
+		return true;
+	}
+	const std::size_t overhead =
+		size / 254u + ((size % 254u != 0u) ? 1u : 0u) + 1u;
+	return size <= static_cast<std::size_t>(-1) - overhead;
+}
+
+// Returns an empty span when the raw range is outside storage, storage is too
+// small for the worst case, or offset violates the overlap invariant. A valid
+// result is canonical: no redundant 01 follows a final full FF block, while a
+// payload ending in zero retains the final 01 that materializes that zero.
+[[nodiscard]] std::span<const uint8_t> encode_in_place(
+	std::span<uint8_t> storage,
+	std::size_t offset,
+	std::size_t raw_size) noexcept;
+
+} // namespace cobs::codec
+
+#endif /* COBS_CODEC_H_ */

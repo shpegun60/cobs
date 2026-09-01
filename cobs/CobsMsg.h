@@ -41,8 +41,8 @@
  * the wire length header (CobsFrameFormat). The header is INSIDE the block,
  * ahead of the payload, and is invisible to size() and capacity():
  *
- *      block, cobs_max_wire_size(H + K) bytes
- *      |<-- cobs_raw_offset(H+K) -->|<- H ->|<------------ K ------------>|
+ *      block, cobs::codec::max_wire_size(H + K) bytes
+ *      |<-- cobs::codec::raw_offset(H+K) -->|<- H ->|<------------ K ------------>|
  *      +----------------------------+-------+-----------------------------+
  *      | encoder headroom           | length| payload area                |
  *      +----------------------------+-------+--------------+--------------+
@@ -51,7 +51,7 @@
  *                                   |       payload(), what write() fills
  *                                   the decoded frame starts here
  *
- * The payload is PHYSICALLY at cobs_raw_offset(H+K) + H, and moving it at
+ * The payload is PHYSICALLY at cobs::codec::raw_offset(H+K) + H, and moving it at
  * encode time would end the zero-copy story, so encoding a payload of size S
  * simply starts further in — the decoded region being H + S bytes:
  *
@@ -60,7 +60,7 @@
  *      block          encoding begins here, and so does the wire frame
  *
  * It fits exactly: R(H+S) <= R(H+K) because S <= K, and the encoded region
- * ends at cobs_raw_offset(H+K) + H + S, at most the end of the block. So the
+ * ends at cobs::codec::raw_offset(H+K) + H + S, at most the end of the block. So the
  * frame need not start at block[0]; the transport is handed the span encode()
  * returns, while the ALLOCATION remains the whole block and is returned as
  * such. Encoding copies nothing, and the length header is written in place
@@ -70,7 +70,7 @@
 #ifndef COBS_MSG_H_
 #define COBS_MSG_H_
 
-#include "CobsEncoder.h"
+#include "Codec.h"
 #include "CobsFrameFormat.h"
 #include "Storage.h"
 #include "TxAllocation.h"
@@ -379,11 +379,11 @@ public:
 		// The decoded frame is [length][payload], so all the geometry below is
 		// in H + size, never size alone. The frame's raw region starts H bytes
 		// before the payload, and a smaller logical size needs only
-		// cobs_raw_offset(H + size) of headroom — so encoding begins further
+		// cobs::codec::raw_offset(H + size) of headroom — so encoding begins further
 		// into the block rather than at its start. Moving the payload instead
 		// would be a copy, which is the one thing this path refuses to do.
 		const std::size_t decoded = Format::decoded_size_for_payload(m_size);
-		const std::size_t enc_offset = cobs_raw_offset(decoded);
+		const std::size_t enc_offset = cobs::codec::raw_offset(decoded);
 		uint8_t* const frame_raw = raw() - Format::length_size;
 		uint8_t* const begin = frame_raw - enc_offset;
 
@@ -397,8 +397,8 @@ public:
 		// The last moment the header is still plain bytes.
 		Format::store_length(frame_raw, m_size);
 
-		const auto frame = cobs_encode_in_place(
-			std::span<uint8_t>{begin, cobs_max_wire_size(decoded)}, enc_offset, decoded);
+		const auto frame = cobs::codec::encode_in_place(
+			std::span<uint8_t>{begin, cobs::codec::max_wire_size(decoded)}, enc_offset, decoded);
 		if (frame.empty()) {
 			return {}; // the geometry above makes this unreachable
 		}

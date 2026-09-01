@@ -139,7 +139,7 @@ regression clues for those ABIs, not universal ABI promises:
 | `RxPacket<CobsHeapAllocator<...>>` | 24 bytes | 16 bytes |
 | `PacketRef<...>` | 8 bytes | 4 bytes |
 | `CobsMsg<...>` | 48 bytes | 24 bytes |
-| `CobsDecoder` | 48 bytes | 24 bytes |
+| `cobs::codec::Decoder` | 48 bytes | 24 bytes |
 | `CobsRx<...>` | 136 bytes | 80 bytes |
 | `Cobs<CobsHeapAllocator<...>>` | 304 bytes | 168 bytes |
 | `CobsHeapAllocator<...>` | 1 byte | 1 byte |
@@ -494,7 +494,7 @@ Exact field migration inventory:
 
 | Current owner | Current fields | Target decision |
 |---|---|---|
-| `CobsDecoder` | `m_state`, `m_output`, `m_written`, `m_decodedBefore`, `m_blockRemaining`, `m_pendingZero`, `m_hasOutput` | retain all; rename only with the codec namespace move |
+| `cobs::codec::Decoder` | `m_state`, `m_output`, `m_written`, `m_decodedBefore`, `m_blockRemaining`, `m_pendingZero`, `m_hasOutput` | retained unchanged by the completed codec namespace move |
 | `CobsRx` | `m_decoder`, `m_allocator`, `m_lengthBytes`, `m_declared`, `m_stage`, `m_headerAttached`, `m_building`, `m_readyHead`, `m_readyTail`, `m_stats` | retain all; `m_allocator` becomes storage vocabulary and queue writes become private helpers |
 | `RxPacket` | `refs`, `size`, `next_ready`, `owner` | retain typed/private metadata; target type is `RxBlock<Storage>` |
 | `PacketRef` | `m_p` | retain the one-pointer handle; target type is `Packet<Storage>` |
@@ -745,11 +745,15 @@ protocol changes must never be bundled together.
 
 ### Phase 1 - namespace and vocabulary skeleton
 
-- [ ] Introduce `namespace cobs` and the final public vocabulary.
-- [ ] Decide explicitly whether old names are temporary aliases or whether the
-      repository takes a clean API break. There are no in-repository production
-      consumers, but external consumers must be considered.
-- [ ] Rename/move only; do not change state transitions or framing.
+- [x] Physically move the non-template codec to `cobs::codec::Decoder`,
+      `cobs::codec::encode_in_place`, and the concise geometry names in
+      `Codec.h`; rename the implementation files to `Decoder.cpp` and
+      `Encoder.cpp`.
+- [x] Take a clean API break: do not add compatibility aliases or traits for
+      old names. All repository consumers move with each real rename slice.
+- [ ] Move the remaining application, storage, and detail types into
+      `namespace cobs` under their final names.
+- [ ] Complete the vocabulary without changing state transitions or framing.
 - [ ] Keep delegates exactly as currently implemented.
 
 ### Phase 2 - protocol `Format`
@@ -896,7 +900,11 @@ The following are not part of this refactor:
   WSL, 131 UART host checks, and the complete F1/G4/H7RS port/probe matrix.
 - The two existing COBS test `-Wshadow` warnings and the STM32 H7RS vendor
   `register` warning remain; no new warnings were introduced.
-- Added a persistent smoke pass that compiles all 12 current public COBS
-  headers independently.
+- Added a persistent smoke pass that compiles every current public COBS header
+  independently (11 after the two codec headers became one `Codec.h`).
 - Added exact x86-64 and ARM EABI layout assertions plus an inspectable
   Cortex-M object probe. Phase 0 characterization is now complete.
+- Physically replaced the old decoder/encoder files and symbols with
+  `Codec.h`, `Decoder.cpp`, `Encoder.cpp`, and real `cobs::codec` definitions.
+  No aliases or compatibility traits were retained; object layouts and all
+  codec/engine checks remained identical.

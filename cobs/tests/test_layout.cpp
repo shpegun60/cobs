@@ -27,7 +27,7 @@ using Fixed = CobsFixedAllocator<1024, 8, 1024, 2>;
 using Packet = RxPacket<Heap>;
 using Ref = PacketRef<Heap>;
 using Message = CobsMsg<Heap>;
-using Decoder = CobsDecoder;
+using Decoder = cobs::codec::Decoder;
 using Receiver = CobsRx<Heap>;
 using Endpoint = Cobs<Heap>;
 using FixedEndpoint = Cobs<Fixed>;
@@ -113,7 +113,7 @@ int main()
 	std::printf("\n[Layout]\n");
 	std::printf("pointer=%zu size_t=%zu TxAllocation=%zu RxPacket=%zu PacketRef=%zu\n",
 		sizeof(void*), sizeof(std::size_t), sizeof(TxAllocation), sizeof(Packet), sizeof(Ref));
-	std::printf("CobsMsg=%zu CobsDecoder=%zu CobsRx=%zu CobsHeap=%zu\n",
+	std::printf("CobsMsg=%zu Decoder=%zu CobsRx=%zu CobsHeap=%zu\n",
 		sizeof(Message), sizeof(Decoder), sizeof(Receiver), sizeof(Endpoint));
 	std::printf("Heap=%zu Fixed=%zu CobsFixed=%zu sender=%zu busy=%zu\n",
 		sizeof(Heap), sizeof(Fixed), sizeof(FixedEndpoint), sizeof(Sender), sizeof(BusyQuery));

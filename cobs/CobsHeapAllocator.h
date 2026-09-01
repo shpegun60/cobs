@@ -17,7 +17,7 @@
 #ifndef COBS_HEAP_ALLOCATOR_H_
 #define COBS_HEAP_ALLOCATOR_H_
 
-#include "CobsEncoder.h"
+#include "Codec.h"
 #include "CobsFrameFormat.h"
 #include "RxPacket.h"
 #include "TxAllocation.h"
@@ -38,7 +38,7 @@ public:
 	// A policy defends its own geometry at compile time (§9.1.2), and that
 	// includes the arithmetic it is built on. Both of these are unreachable
 	// for any sane limit and both are silent corruption if they ever hold.
-	static_assert(cobs_size_arithmetic_fits(tx_max_size),
+	static_assert(cobs::codec::size_arithmetic_fits(tx_max_size),
 		"tx_max_size is too large for the COBS size arithmetic to stay within size_t");
 	static_assert(rx_max_size <= static_cast<std::size_t>(-1) - sizeof(Packet),
 		"rx_max_size plus a packet header overflows size_t");
@@ -86,7 +86,7 @@ public:
 	 * plus the length header, which shares the block and is part of what gets
 	 * encoded. This is where the sized TX contract pays: with a two-byte
 	 * header, a seven-byte CAPACITY REQUEST costs 11 bytes here
-	 * (cobs_max_wire_size(2 + 7)) rather than the 1032 a block for the largest
+	 * (cobs::codec::max_wire_size(2 + 7)) rather than the 1032 a block for the largest
 	 * frame would take. The request, not the message: a seven-byte payload
 	 * built through make_msg() lives in whatever reserve its capacity hint
 	 * asked for.

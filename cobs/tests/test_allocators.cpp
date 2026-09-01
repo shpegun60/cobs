@@ -140,7 +140,7 @@ void runContract(const char* name)
 	 *
 	 * That last line is HEADER-INCLUSIVE, and it is the whole reason this
 	 * check exists. The encoded frame is [length][payload], so a policy that
-	 * still sizes its blocks with cobs_max_wire_size(capacity) — correct
+	 * still sizes its blocks with cobs::codec::max_wire_size(capacity) — correct
 	 * before the length prefix, one or two bytes short after it — would sail
 	 * through a test written the old way and then have CobsMsg::encode() run
 	 * off the end of the block. Asking Format for the number is what makes
@@ -295,14 +295,14 @@ void testHeapGrantsExactlyWhatWasAsked()
 	{	// Zero capacity still needs real storage — and more of it than it used
 		// to. The canonical empty ENGINE frame is not `01 00` any more: its
 		// decoded content is the length field, so the block must hold
-		// cobs_max_wire_size(length_size), three bytes for a one-byte header
+		// cobs::codec::max_wire_size(length_size), three bytes for a one-byte header
 		// and four for a two-byte one.
 		using Fmt = CobsFormatFor<Allocator>;
 		const TxAllocation t = a.allocate_tx(0);
 		check(t.memory != nullptr && t.capacity == 0,
 		      "a zero request yields a real block of zero payload capacity");
 		const std::size_t needed = Fmt::tx_storage_size_for_capacity(0);
-		check(needed == cobs_max_wire_size(Fmt::length_size),
+		check(needed == cobs::codec::max_wire_size(Fmt::length_size),
 		      "sized for the length field alone, delimiter included");
 		auto* const bytes = reinterpret_cast<uint8_t*>(t.memory);
 		for (std::size_t i = 0; i < needed; ++i) { bytes[i] = static_cast<uint8_t>(0xA0 + i); }
@@ -356,7 +356,7 @@ void testFixedGeometryIsAbiIndependent()
 
 /*
  * The size arithmetic is unsigned, so a pathological limit wraps: at
- * n = SIZE_MAX, cobs_max_wire_size() returns 0 and cobs_raw_offset() returns
+ * n = SIZE_MAX, cobs::codec::max_wire_size() returns 0 and cobs::codec::raw_offset() returns
  * 1 — a block smaller than the payload meant to go in it, and a headroom
  * below the encoder's minimum. Nobody writes tx_max_size = SIZE_MAX on
  * purpose, but "surely nobody would" is not a correctness argument, so the
@@ -367,19 +367,19 @@ void testSizeArithmeticGuard()
 	g_policy = "arithmetic";
 	constexpr std::size_t kMax = static_cast<std::size_t>(-1);
 
-	static_assert(cobs_size_arithmetic_fits(0));
-	static_assert(cobs_size_arithmetic_fits(1));
-	static_assert(cobs_size_arithmetic_fits(1024));
-	static_assert(cobs_size_arithmetic_fits(1u << 20));
+	static_assert(cobs::codec::size_arithmetic_fits(0));
+	static_assert(cobs::codec::size_arithmetic_fits(1));
+	static_assert(cobs::codec::size_arithmetic_fits(1024));
+	static_assert(cobs::codec::size_arithmetic_fits(1u << 20));
 	check(true, "every plausible limit passes the guard");
 
-	static_assert(!cobs_size_arithmetic_fits(kMax));
-	static_assert(!cobs_size_arithmetic_fits(kMax - 1u));
-	static_assert(!cobs_size_arithmetic_fits(kMax / 255u * 254u));
+	static_assert(!cobs::codec::size_arithmetic_fits(kMax));
+	static_assert(!cobs::codec::size_arithmetic_fits(kMax - 1u));
+	static_assert(!cobs::codec::size_arithmetic_fits(kMax / 255u * 254u));
 	// Note that kMax / 2 does NOT wrap and is correctly accepted: half of
 	// size_t plus its own 1/254 still fits. The guard rejects what actually
 	// overflows, not everything that merely looks alarming.
-	static_assert(cobs_size_arithmetic_fits(kMax / 2u));
+	static_assert(cobs::codec::size_arithmetic_fits(kMax / 2u));
 	check(true, "the values whose arithmetic wraps are rejected, and only those");
 
 	// The guard must be exactly at the boundary, not conservatively early, so
@@ -394,22 +394,22 @@ void testSizeArithmeticGuard()
 			// the very first step of a search over the whole of size_t and
 			// leaves the loop spinning on mid == lo forever.
 			const std::size_t mid = hi - (hi - lo) / 2u;
-			if (cobs_size_arithmetic_fits(mid)) { lo = mid; } else { hi = mid - 1u; }
+			if (cobs::codec::size_arithmetic_fits(mid)) { lo = mid; } else { hi = mid - 1u; }
 		}
 		return lo;
 	}();
-	static_assert(cobs_size_arithmetic_fits(kLargest));
-	static_assert(!cobs_size_arithmetic_fits(kLargest + 1u),
+	static_assert(cobs::codec::size_arithmetic_fits(kLargest));
+	static_assert(!cobs::codec::size_arithmetic_fits(kLargest + 1u),
 	              "the guard is tight, not conservative");
-	static_assert(cobs_max_wire_size(kLargest) > kLargest,
+	static_assert(cobs::codec::max_wire_size(kLargest) > kLargest,
 	              "an accepted limit still yields a block larger than its payload");
-	static_assert(cobs_raw_offset(kLargest) >= 2u,
+	static_assert(cobs::codec::raw_offset(kLargest) >= 2u,
 	              "and headroom at least the encoder's minimum");
 	check(true, "the boundary is exact, and its geometry is still sane");
 
 	// And the policies really do carry the assertion.
-	static_assert(cobs_size_arithmetic_fits(CobsHeapAllocator<64, 1024>::tx_max_size));
-	static_assert(cobs_size_arithmetic_fits(
+	static_assert(cobs::codec::size_arithmetic_fits(CobsHeapAllocator<64, 1024>::tx_max_size));
+	static_assert(cobs::codec::size_arithmetic_fits(
 		CobsFixedAllocator<64, 2, 1024, 2>::tx_max_size));
 	check(true, "both shipped policies assert it on their own limits");
 }

@@ -1,5 +1,5 @@
 /*
- * Host verification for cobs/CobsDecoder.
+ * Host verification for cobs/cobs::codec::Decoder.
  *
  * The decoder holds no allocator and no transport, so this whole battery is a
  * plain host binary: bytes in, bytes out, no HAL anywhere.
@@ -9,7 +9,7 @@
  * (doc/COBS_ENGINE.md §8.3) is a different piece of code and gets its own
  * tests when it exists.
  */
-#include "CobsDecoder.h"
+#include "Codec.h"
 #include "reference_encoder.h"
 
 #include <algorithm>
@@ -62,7 +62,7 @@ struct Decoded {
 // Feeds the decoder in slices, acting as the owner would: answering
 // NeedOutput from a scratch buffer and collecting completed frames.
 // `deny_first` refuses allocation for that many frames, then behaves normally.
-Decoded drive(CobsDecoder& dec, const std::vector<uint8_t>& wire,
+Decoded drive(cobs::codec::Decoder& dec, const std::vector<uint8_t>& wire,
               const std::vector<std::size_t>& cuts, const std::size_t capacity,
               const int deny_first = 0)
 {
@@ -79,9 +79,9 @@ Decoded drive(CobsDecoder& dec, const std::vector<uint8_t>& wire,
 			const auto res = dec.consume(in);
 			pos += res.consumed;
 			switch (res.event) {
-			case CobsDecoder::Event::None:
+			case cobs::codec::Decoder::Event::None:
 				break;
-			case CobsDecoder::Event::NeedOutput:
+			case cobs::codec::Decoder::Event::NeedOutput:
 				++r.need_output;
 				if (r.need_output <= deny_first) {
 					++r.alloc_denied;
@@ -100,17 +100,17 @@ Decoded drive(CobsDecoder& dec, const std::vector<uint8_t>& wire,
 					attached = true;
 				}
 				break;
-			case CobsDecoder::Event::FrameComplete:
+			case cobs::codec::Decoder::Event::FrameComplete:
 				r.frames.emplace_back(scratch.begin(),
 				                      scratch.begin() + static_cast<std::ptrdiff_t>(res.decoded_size));
 				attached = false;
 				break;
-			case CobsDecoder::Event::Malformed:
+			case cobs::codec::Decoder::Event::Malformed:
 				++r.malformed;
 				attached = false;
 				break;
 			}
-			if (res.consumed == 0 && res.event == CobsDecoder::Event::None) {
+			if (res.consumed == 0 && res.event == cobs::codec::Decoder::Event::None) {
 				break; // defensive: never spin
 			}
 		}
@@ -118,7 +118,7 @@ Decoded drive(CobsDecoder& dec, const std::vector<uint8_t>& wire,
 	return r;
 }
 
-Decoded driveWhole(CobsDecoder& dec, const std::vector<uint8_t>& wire,
+Decoded driveWhole(cobs::codec::Decoder& dec, const std::vector<uint8_t>& wire,
                    const std::size_t capacity)
 {
 	return drive(dec, wire, {}, capacity);
@@ -142,26 +142,26 @@ void testWireSemantics()
 	const std::size_t cap = 512;
 
 	{	// The empty packet is a real packet.
-		CobsDecoder d;
+		cobs::codec::Decoder d;
 		const auto r = driveWhole(d, {0x01, 0x00}, cap);
 		check(r.frames.size() == 1 && r.frames[0].empty(),
 		      "01 00 delivers one empty packet");
 		check(r.need_output == 1, "and it allocates, like any other frame");
 	}
 	{	// A bare delimiter is not a packet.
-		CobsDecoder d;
+		cobs::codec::Decoder d;
 		const auto r = driveWhole(d, {0x00, 0x00, 0x00, 0x00}, cap);
 		check(r.frames.empty() && r.need_output == 0,
 		      "a run of bare delimiters delivers nothing and allocates nothing");
 	}
 	{	// A leading delimiter must be free.
-		CobsDecoder d;
+		cobs::codec::Decoder d;
 		const auto r = driveWhole(d, {0x00, 0x03, 0x11, 0x22, 0x00}, cap);
 		check(r.frames.size() == 1 && r.frames[0] == std::vector<uint8_t>({0x11, 0x22}),
 		      "a leading delimiter is harmless");
 	}
 	{	// The implicit zero, materialized only when the frame continues.
-		CobsDecoder d;
+		cobs::codec::Decoder d;
 		const auto r = driveWhole(d, {0x01, 0x01, 0x00}, cap);
 		check(r.frames.size() == 1 && r.frames[0] == std::vector<uint8_t>({0x00}),
 		      "01 01 00 decodes to a single zero byte");
@@ -170,7 +170,7 @@ void testWireSemantics()
 		std::vector<uint8_t> wire{0xFF};
 		for (int i = 0; i < 254; ++i) { wire.push_back(0x41); }
 		wire.push_back(0x00);
-		CobsDecoder d;
+		cobs::codec::Decoder d;
 		const auto r = driveWhole(d, wire, cap);
 		check(r.frames.size() == 1 && r.frames[0].size() == 254,
 		      "an FF block yields 254 bytes with no trailing zero");
@@ -180,13 +180,13 @@ void testWireSemantics()
 		for (int i = 0; i < 254; ++i) { wire.push_back(0x41); }
 		wire.push_back(0x01); // redundant empty block
 		wire.push_back(0x00);
-		CobsDecoder d;
+		cobs::codec::Decoder d;
 		const auto r = driveWhole(d, wire, cap);
 		check(r.frames.size() == 1 && r.frames[0].size() == 254,
 		      "a redundant-but-valid trailing block decodes identically");
 	}
 	{	// Several frames in one span.
-		CobsDecoder d;
+		cobs::codec::Decoder d;
 		const auto r = driveWhole(d, {0x03, 0x11, 0x22, 0x00, 0x02, 0xAA, 0x00, 0x01, 0x00}, cap);
 		check(r.frames.size() == 3, "three frames in one span are all delivered");
 		check(r.frames[0] == std::vector<uint8_t>({0x11, 0x22}) &&
@@ -200,28 +200,28 @@ void testWireSemantics()
 void testNeedOutputSeam()
 {
 	{	// The code byte that starts a frame is consumed exactly once.
-		CobsDecoder d;
+		cobs::codec::Decoder d;
 		const std::vector<uint8_t> wire{0x03, 0x11, 0x22, 0x00};
 		const auto r1 = d.consume(std::span<const uint8_t>{wire});
-		check(r1.event == CobsDecoder::Event::NeedOutput, "a frame start asks for output");
+		check(r1.event == cobs::codec::Decoder::Event::NeedOutput, "a frame start asks for output");
 		check(r1.consumed == 1, "having consumed exactly the code byte");
 
 		std::vector<uint8_t> out(64, 0xCC);
 		d.attach_output(std::span<uint8_t>{out});
 		const auto r2 = d.consume(std::span<const uint8_t>{wire.data() + 1, 3});
-		check(r2.event == CobsDecoder::Event::FrameComplete && r2.decoded_size == 2,
+		check(r2.event == cobs::codec::Decoder::Event::FrameComplete && r2.decoded_size == 2,
 		      "the remainder completes the frame without re-feeding the code byte");
 	}
 	{	// Ignoring NeedOutput must not corrupt anything: the decoder asks again.
-		CobsDecoder d;
+		cobs::codec::Decoder d;
 		const std::vector<uint8_t> wire{0x03, 0x11, 0x22, 0x00};
 		(void)d.consume(std::span<const uint8_t>{wire});
 		const auto r = d.consume(std::span<const uint8_t>{wire.data() + 1, 3});
-		check(r.event == CobsDecoder::Event::NeedOutput && r.consumed == 0,
+		check(r.event == cobs::codec::Decoder::Event::NeedOutput && r.consumed == 0,
 		      "an unanswered NeedOutput is repeated, writing nowhere");
 	}
 	{	// Refusing to allocate costs exactly one frame.
-		CobsDecoder d;
+		cobs::codec::Decoder d;
 		const std::vector<uint8_t> wire{0x03, 0x11, 0x22, 0x00, 0x02, 0xAA, 0x00};
 		const auto r = drive(d, wire, {}, 64, 1); // deny the very first frame
 		check(r.alloc_denied == 1, "the first frame is denied");
@@ -236,7 +236,7 @@ void testMalformed()
 {
 	const std::size_t cap = 512;
 	{
-		CobsDecoder d;
+		cobs::codec::Decoder d;
 		// 0x04 promises three data bytes; a zero arrives as the second.
 		const auto r = driveWhole(d, {0x04, 0x11, 0x00, 0x02, 0xAA, 0x00}, cap);
 		check(r.malformed == 1, "a delimiter inside a block is malformed");
@@ -252,7 +252,7 @@ void testMalformed()
 			for (const uint8_t b : {uint8_t{0x02}, uint8_t{0xAA}, uint8_t{0x00}}) {
 				wire.push_back(b);
 			}
-			CobsDecoder d;
+			cobs::codec::Decoder d;
 			const auto r = driveWhole(d, wire, cap);
 			all_ok = all_ok && r.malformed == 1 && r.frames.size() == 1 &&
 			         r.frames[0] == std::vector<uint8_t>({0xAA});
@@ -264,7 +264,7 @@ void testMalformed()
 void testDoesNotFit()
 {
 	{	// A data byte that does not fit.
-		CobsDecoder d;
+		cobs::codec::Decoder d;
 		const std::vector<uint8_t> wire{0x05, 0x11, 0x22, 0x33, 0x00, 0x02, 0xAA, 0x00};
 		const auto r = drive(d, wire, {}, 2); // capacity 2, frame needs 4
 		check(r.refused == 1, "a frame larger than the owner's buffer is refused by the owner");
@@ -272,13 +272,13 @@ void testDoesNotFit()
 		      "and the next frame still decodes");
 	}
 	{	// Exactly full must NOT be oversize.
-		CobsDecoder d;
+		cobs::codec::Decoder d;
 		const auto r = drive(d, {0x04, 0x11, 0x22, 0x33, 0x00}, {}, 3);
 		check(r.refused == 0 && r.frames.size() == 1 && r.frames[0].size() == 3,
 		      "a frame that exactly fills the output is accepted, with no further request");
 	}
 	{	// One byte too small must be.
-		CobsDecoder d;
+		cobs::codec::Decoder d;
 		const auto r = drive(d, {0x05, 0x11, 0x22, 0x33, 0x44, 0x00}, {}, 3);
 		check(r.refused == 1 && r.frames.empty(),
 		      "one byte too many asks for another segment");
@@ -287,23 +287,23 @@ void testDoesNotFit()
 		// follows the owed zero, BEFORE that byte is taken — so when a span
 		// happens to begin exactly there, consumed is 0. That must not
 		// livelock, because the state has already changed.
-		CobsDecoder d;
+		cobs::codec::Decoder d;
 		// Payload 11 22 00 33: two blocks with an implicit zero between them.
 		const std::vector<uint8_t> wire{0x03, 0x11, 0x22, 0x02, 0x33, 0x00};
 		std::vector<uint8_t> out(2, 0xCC); // room for 11 22, none for the zero
 
 		const auto r1 = d.consume(std::span<const uint8_t>{wire.data(), 1});
-		check(r1.event == CobsDecoder::Event::NeedOutput && r1.consumed == 1,
+		check(r1.event == cobs::codec::Decoder::Event::NeedOutput && r1.consumed == 1,
 		      "frame starts");
 		d.attach_output(std::span<uint8_t>{out});
 
 		const auto r2 = d.consume(std::span<const uint8_t>{wire.data() + 1, 2});
-		check(r2.event == CobsDecoder::Event::None && r2.consumed == 2,
+		check(r2.event == cobs::codec::Decoder::Event::None && r2.consumed == 2,
 		      "the two data bytes fill the output exactly");
 
 		// This span BEGINS with the code byte whose implicit zero needs room.
 		const auto r3 = d.consume(std::span<const uint8_t>{wire.data() + 3, 3});
-		check(r3.event == CobsDecoder::Event::NeedOutput,
+		check(r3.event == cobs::codec::Decoder::Event::NeedOutput,
 		      "the implicit zero that does not fit asks for another segment");
 		check(r3.consumed == 0, "reported without consuming the code byte that triggered it");
 
@@ -311,7 +311,7 @@ void testDoesNotFit()
 		std::vector<uint8_t> more(4, 0xEE);
 		d.attach_output(std::span<uint8_t>{more});
 		const auto r4 = d.consume(std::span<const uint8_t>{wire.data() + 3, 3});
-		check(r4.event == CobsDecoder::Event::FrameComplete && r4.decoded_size == 4,
+		check(r4.event == cobs::codec::Decoder::Event::FrameComplete && r4.decoded_size == 4,
 		      "and the frame completes with all four decoded bytes");
 		check(out[0] == 0x11 && out[1] == 0x22 && more[0] == 0x00 && more[1] == 0x33,
 		      "the implicit zero landed at the head of the second segment");
@@ -324,7 +324,7 @@ void testGaps()
 {
 	const std::size_t cap = 512;
 	{	// A gap while Synced still requires a delimiter before decoding.
-		CobsDecoder d;
+		cobs::codec::Decoder d;
 		d.discard_until_delimiter();
 		const auto r = driveWhole(d, {0x03, 0x11, 0x22, 0x00, 0x02, 0xAA, 0x00}, cap);
 		check(r.frames.size() == 1 && r.frames[0] == std::vector<uint8_t>({0xAA}),
@@ -336,7 +336,7 @@ void testGaps()
 		const std::vector<uint8_t> wire{0x03, 0x11, 0x22, 0x00, 0x04, 0x33, 0x44, 0x55, 0x00};
 		bool all_ok = true;
 		for (std::size_t cut = 0; cut <= wire.size(); ++cut) {
-			CobsDecoder d;
+			cobs::codec::Decoder d;
 			const std::vector<uint8_t> head(wire.begin(), wire.begin() + static_cast<std::ptrdiff_t>(cut));
 			const std::vector<uint8_t> tail(wire.begin() + static_cast<std::ptrdiff_t>(cut), wire.end());
 			(void)drive(d, head, {}, cap);
@@ -411,7 +411,7 @@ void testRoundTrip()
 
 			// Whole, then every possible single split, then byte by byte.
 			for (std::size_t cut = 0; cut <= wire.size(); ++cut) {
-				CobsDecoder d;
+				cobs::codec::Decoder d;
 				const auto r = drive(d, wire, {cut}, kMax);
 				expect(r.frames.size() == 1 && r.frames[0] == payload,
 				       "round trip n=" + std::to_string(n) + " cut=" + std::to_string(cut) +
@@ -421,7 +421,7 @@ void testRoundTrip()
 			{	// one byte per span
 				std::vector<std::size_t> cuts;
 				for (std::size_t k = 1; k < wire.size(); ++k) { cuts.push_back(k); }
-				CobsDecoder d;
+				cobs::codec::Decoder d;
 				const auto r = drive(d, wire, cuts, kMax);
 				expect(r.frames.size() == 1 && r.frames[0] == payload,
 				       "round trip byte-by-byte n=" + std::to_string(n));
@@ -448,7 +448,7 @@ void testStreamingBoundaries()
 
 	bool all_ok = true;
 	for (std::size_t cut = 0; cut <= wire.size(); ++cut) {
-		CobsDecoder d;
+		cobs::codec::Decoder d;
 		const auto r = drive(d, wire, {cut}, 1024);
 		all_ok = all_ok && r.frames.size() == 2 &&
 		         r.frames[0] == payload_a && r.frames[1] == payload_b;
@@ -484,7 +484,7 @@ Segmented driveSegmented(const std::vector<uint8_t>& wire,
                          const std::size_t tail = 64)
 {
 	Segmented r;
-	CobsDecoder d;
+	cobs::codec::Decoder d;
 	std::vector<std::vector<uint8_t>> segments;
 	std::size_t next = 0;
 
@@ -494,7 +494,7 @@ Segmented driveSegmented(const std::vector<uint8_t>& wire,
 		const auto res = d.consume(
 			std::span<const uint8_t>{wire.data() + pos, wire.size() - pos});
 		pos += res.consumed;
-		if (res.event == CobsDecoder::Event::NeedOutput) {
+		if (res.event == cobs::codec::Decoder::Event::NeedOutput) {
 			++r.need_output;
 			const std::size_t n = (next < plan.size()) ? plan[next] : tail;
 			++next;
@@ -502,12 +502,12 @@ Segmented driveSegmented(const std::vector<uint8_t>& wire,
 			d.attach_output(std::span<uint8_t>{segments.back()});
 			continue;
 		}
-		if (res.event == CobsDecoder::Event::FrameComplete) {
+		if (res.event == cobs::codec::Decoder::Event::FrameComplete) {
 			r.total = res.decoded_size;
 			r.complete = true;
 			break;
 		}
-		if (res.event == CobsDecoder::Event::None) {
+		if (res.event == cobs::codec::Decoder::Event::None) {
 			break;
 		}
 		break; // Malformed
@@ -577,30 +577,30 @@ void testSegmentedOutput()
 
 	{	// NeedOutput for a full segment must not consume the byte that still
 		// needs a home, or the stream loses a byte per boundary.
-		CobsDecoder d;
+		cobs::codec::Decoder d;
 		const std::vector<uint8_t> w{0x04, 0xAA, 0xBB, 0xCC, 0x00};
 		std::vector<uint8_t> a(1, 0), b(4, 0);
 
 		auto res = d.consume(std::span<const uint8_t>{w});
-		check(res.event == CobsDecoder::Event::NeedOutput && res.consumed == 1,
+		check(res.event == cobs::codec::Decoder::Event::NeedOutput && res.consumed == 1,
 		      "the frame starts");
 		d.attach_output(std::span<uint8_t>{a});
 
 		res = d.consume(std::span<const uint8_t>{w.data() + 1, 4});
-		check(res.event == CobsDecoder::Event::NeedOutput && res.consumed == 1,
+		check(res.event == cobs::codec::Decoder::Event::NeedOutput && res.consumed == 1,
 		      "one byte fits, then the segment is full");
 		check(a[0] == 0xAA, "with that byte written");
 		d.attach_output(std::span<uint8_t>{b});
 
 		res = d.consume(std::span<const uint8_t>{w.data() + 2, 3});
-		check(res.event == CobsDecoder::Event::FrameComplete && res.decoded_size == 3,
+		check(res.event == cobs::codec::Decoder::Event::FrameComplete && res.decoded_size == 3,
 		      "and the rest lands in the next segment");
 		check(b[0] == 0xBB && b[1] == 0xCC, "with nothing lost at the boundary");
 	}
 
 	{	// Attaching over a segment that still has room would strand the bytes
 		// already in it, so it is ignored.
-		CobsDecoder d;
+		cobs::codec::Decoder d;
 		const std::vector<uint8_t> w{0x03, 0xAA, 0xBB, 0x00};
 		std::vector<uint8_t> a(8, 0), b(8, 0);
 		(void)d.consume(std::span<const uint8_t>{w.data(), 1});
@@ -608,7 +608,7 @@ void testSegmentedOutput()
 		(void)d.consume(std::span<const uint8_t>{w.data() + 1, 1});
 		d.attach_output(std::span<uint8_t>{b}); // refused: `a` is not full
 		const auto res = d.consume(std::span<const uint8_t>{w.data() + 2, 2});
-		check(res.event == CobsDecoder::Event::FrameComplete && res.decoded_size == 2,
+		check(res.event == cobs::codec::Decoder::Event::FrameComplete && res.decoded_size == 2,
 		      "attaching over a segment with room left is ignored");
 		check(a[0] == 0xAA && a[1] == 0xBB && b[0] == 0,
 		      "and the bytes stay where they were going");

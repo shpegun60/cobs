@@ -19,7 +19,7 @@
 #ifndef COBS_FIXED_ALLOCATOR_H_
 #define COBS_FIXED_ALLOCATOR_H_
 
-#include "CobsEncoder.h"
+#include "Codec.h"
 #include "CobsFrameFormat.h"
 #include "RxPacket.h"
 #include "TxAllocation.h"
@@ -46,7 +46,7 @@ public:
 
 	// Checked before the pool types below are even formed, since both derive
 	// their block sizes from exactly this arithmetic.
-	static_assert(cobs_size_arithmetic_fits(tx_max_size),
+	static_assert(cobs::codec::size_arithmetic_fits(tx_max_size),
 		"tx_max_size is too large for the COBS size arithmetic to stay within size_t");
 	static_assert(rx_max_size <= static_cast<std::size_t>(-1) - sizeof(Packet),
 		"rx_max_size plus a packet header overflows size_t");
