@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Endpoint — the assembled engine. RX vertical, TX vertical, one storage strategy.
  *
  * Contract: doc/ARCHITECTURE.md. Wire details are in doc/PROTOCOL.md and the

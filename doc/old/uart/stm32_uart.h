@@ -1,3 +1,8 @@
+/*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
 /*************************************************************************//**
  * @file
  * @brief       This file is part of the AFBR-S50 API.

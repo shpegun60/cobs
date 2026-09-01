@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * tools.h
  *
  *  Created on: Nov 22, 2024

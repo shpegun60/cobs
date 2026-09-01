@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * RS485Engine.h
  *
  *  Created on: May 21, 2025

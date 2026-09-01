@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Public COBS counter snapshot.
  *
  * Counters stay physically beside the state machines that update them:

@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * setBaudRate(): reconfiguring the line speed of a running engine.
  * Included by test_uart.cpp.
  *

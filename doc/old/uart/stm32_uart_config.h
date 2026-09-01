@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * stm32_uart_config.h
  *
  *  Created on: Jun 30, 2024

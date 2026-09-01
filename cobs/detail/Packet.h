@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Packet — the application's handle on a decoded RX packet.
  *
  * Contract: doc/COBS_ENGINE.md §6.3–§6.5. An intrusive shared handle: the

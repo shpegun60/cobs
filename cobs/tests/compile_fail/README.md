@@ -1,3 +1,8 @@
+<!--
+Author: shpegun60
+SPDX-License-Identifier: MIT
+-->
+
 # Expected compile failures
 
 Every `.cpp` file in this directory is intentionally invalid. They are not

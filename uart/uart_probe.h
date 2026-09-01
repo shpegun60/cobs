@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * uart_probe.h — benchmark instrumentation for uart/Uart.h. NOT part of the
  * UART API: in a normal build (UART_ENGINE_PROBE=0, the default) this file
  * compiles to absolutely nothing — no fields in Uart, no RAM, no instructions

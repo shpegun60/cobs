@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Encoding is a coordinator transition, not an application Message method.
  */
 #include "Cobs.h"

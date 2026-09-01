@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Randomized state-machine torture. Included by test_uart.cpp.
  *
  * The generator is STATE-AWARE: it only offers operations that make sense for

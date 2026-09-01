@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * End-to-end verification of the RX vertical:
  *
  *   encoded bytes -> cobs::codec::Decoder -> storage -> cobs::RxBlock

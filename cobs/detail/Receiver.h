@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * cobs::detail::Receiver — the RX vertical, assembled.
  *
  * Contract: doc/COBS_ENGINE.md §5–§7. Everything hard already lives one layer

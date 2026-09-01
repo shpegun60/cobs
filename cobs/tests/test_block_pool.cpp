@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Host verification for cobs::detail::BlockPool, the raw memory primitive
  * both allocator policies are built on. No packets, no decoder, no policy —
  * if something here goes red, the culprit is the block pool and nothing else.

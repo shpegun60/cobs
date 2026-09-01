@@ -1,4 +1,7 @@
 #!/bin/sh
+# Author: shpegun60
+# SPDX-License-Identifier: MIT
+
 # Out-of-tree qmake proof for cobs/cobs.pri. QMAKE and MAKE may override the
 # Windows defaults; COBS_QMAKE_BUILD_DIR may select another build directory.
 

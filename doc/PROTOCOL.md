@@ -1,3 +1,8 @@
+<!--
+Author: shpegun60
+SPDX-License-Identifier: MIT
+-->
+
 # COBS wire protocol
 
 This document is the normative wire contract for the current COBS engine.

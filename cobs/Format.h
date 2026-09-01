@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * cobs::Format — protocol geometry, independent of memory strategy.
  *
  * Contract: doc/PROTOCOL.md. Every engine frame carries a fixed-width decoded

@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * IrqGuard.h - scoped PRIMASK ownership for UART internals.
  */
 

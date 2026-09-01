@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Host stand-in for the CMSIS compiler header: a PRIMASK that actually
  * behaves like one. Interrupts raised while PRIMASK is set do NOT run — they
  * become pending and are dispatched when PRIMASK is restored to 0, exactly as

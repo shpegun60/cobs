@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * An independent oracle for the ENGINE wire format, for tests only.
  *
  * doc/PROTOCOL.md: an engine frame is a COBS-encoded [length][body],

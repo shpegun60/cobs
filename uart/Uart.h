@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Uart.h — zero-copy STM32 UART byte transport (always-DMA, buffer switching)
  *
  * Current contract: this header, doc/UART_PARANOID_AUDIT.md, and the

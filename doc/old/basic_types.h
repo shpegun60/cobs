@@ -1,4 +1,7 @@
 ﻿/*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ *
  * basic_types.h - Standard basic type aliases for supported targets
  *
  * This file defines a full set of integer, floating-point, and platform-native

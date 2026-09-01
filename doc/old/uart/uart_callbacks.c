@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * uart_callbacks.c
  *
  *  Created on: Jul 15, 2024

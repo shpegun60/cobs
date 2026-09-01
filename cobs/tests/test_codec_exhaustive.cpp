@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Exhaustive differential proof for the non-template codec core.
  *
  * The ordinary decoder/encoder suites carry the readable boundary cases.

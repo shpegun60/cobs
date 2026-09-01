@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * The assembled engine, end to end, over a fake transport built from the same
  * delegates a real one would supply.
  *

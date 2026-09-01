@@ -1,4 +1,7 @@
 #!/bin/sh
+# Author: shpegun60
+# SPDX-License-Identifier: MIT
+
 # Negative API contracts. Every source below is intentionally invalid.
 #
 # Merely observing a non-zero compiler exit is too weak: a broken include path

@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * uart_bench.h — C-compatible half of the H7S hardware bench.
  *
  * The full-IRQ counters live here as a plain C struct (not uart_probe::Counter)

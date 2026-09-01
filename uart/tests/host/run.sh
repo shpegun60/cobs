@@ -1,4 +1,7 @@
 #!/bin/sh
+# Author: shpegun60
+# SPDX-License-Identifier: MIT
+
 # Host verification for uart/Uart.h: builds the driver against the fake HAL in
 # this directory and RUNS the suite. Unlike tests/port (compile-only), this
 # executes the interleavings.

@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Real qmake consumer for cobs/cobs.pri.
  *
  * This is intentionally application-shaped: only Cobs.h is included. Both

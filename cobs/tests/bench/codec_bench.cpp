@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Repeatable host microbenchmarks for the two byte-hot COBS codec loops.
  *
  * This is not a pass/fail timing test. It reports best-of-N throughput so a

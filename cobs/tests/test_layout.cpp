@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Layout characterization for the ownership-bearing COBS types.
  *
  * Exact ABI snapshots are intentionally kept here, next to the executable

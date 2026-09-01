@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * UartRegs.h - typed USART register-map helpers for UART internals.
  *
  * Detection follows CMSIS bit definitions rather than STM32 family names:

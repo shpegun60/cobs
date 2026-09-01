@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * A storage extension without both TX operations must fail where Endpoint
  * applies the public cobs::Storage contract.
  */

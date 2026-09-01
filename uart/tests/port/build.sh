@@ -1,4 +1,7 @@
 #!/bin/sh
+# Author: shpegun60
+# SPDX-License-Identifier: MIT
+
 # Portability build matrix for uart/Uart.h (compile-only, no linking).
 # Targets: F1 (legacy USART IP, classic DMA, CM3, no cache)
 #          G4 (new USART IP, classic DMA, CM4, no cache)

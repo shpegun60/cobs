@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Behaviour of the fake HAL. It deliberately models the REAL HAL quirks we
  * verified in the F1/G4/H7RS sources, not a convenient version of them:
  *   - IDLE and TC both END the reception and set RxState READY BEFORE the

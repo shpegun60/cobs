@@ -1,4 +1,7 @@
 #!/bin/sh
+# Author: shpegun60
+# SPDX-License-Identifier: MIT
+
 # Every currently supported COBS header must compile as the first and only
 # project include in a translation unit. This catches accidental dependence on
 # include order across the staged namespace/file migration.

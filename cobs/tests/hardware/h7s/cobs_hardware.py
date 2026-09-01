@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Author: shpegun60
+# SPDX-License-Identifier: MIT
+
 """Independent PC-side driver for the H7S COBS + UART hardware harness."""
 
 from __future__ import annotations

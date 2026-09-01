@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Test-facing controls of the fake HAL: inject bus events, inject faults, and
  * read back the ownership model the fake DMA maintains.
  */

@@ -1,4 +1,7 @@
 #!/bin/sh
+# Author: shpegun60
+# SPDX-License-Identifier: MIT
+
 # Reproducible CLI build of the end-to-end COBS/UART harness against the local
 # Cube-generated NUCLEO-H7S3L8 scaffold. Output stays in the ignored Cube tree.
 set -e

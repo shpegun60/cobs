@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * mcu_core.h
  *
  *  Created on: Sep 15, 2025

@@ -1,3 +1,8 @@
+<!--
+Author: shpegun60
+SPDX-License-Identifier: MIT
+-->
+
 # H7S hardware bench for `uart/Uart.h`
 
 Measures the driver on real silicon (STM32H7S3L8, USART3 = ST-LINK VCP,

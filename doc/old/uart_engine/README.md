@@ -1,3 +1,8 @@
+<!--
+Author: shpegun60
+SPDX-License-Identifier: MIT
+-->
+
 # UART Engine (STM32) — коротка документація
 
 Універсальна легка бібліотека для прийому/передачі по UART/USART на STM32 з підтримкою IT, DMA та DMA Circular (ReceiveToIdle), внутрішньою буферизацією і колбеками. Додатково є обгортка для RS-485 з автоматичним керуванням лінією DE.

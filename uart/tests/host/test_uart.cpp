@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Executable verification for uart/Uart.h, organised by the GUARANTEE under
  * test rather than by HAL function, so the suite survives refactoring inside
  * the driver.

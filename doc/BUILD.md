@@ -1,3 +1,8 @@
+<!--
+Author: shpegun60
+SPDX-License-Identifier: MIT
+-->
+
 # Building and verifying COBS on Windows (MinGW)
 
 The repository has two qmake targets with different jobs:

@@ -1,3 +1,6 @@
+# Author: shpegun60
+# SPDX-License-Identifier: MIT
+
 # Reusable qmake fragment for the COBS library.
 #
 # Normal consumers include only Cobs.h. The fragment owns the complete source

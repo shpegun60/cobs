@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Public cobs::Packet lifetime contract.
  *
  * Only Cobs.h is included from production. A Packet can be created only by

@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Native serialization must not silently copy padding and ABI field layout.
  */
 #include "Cobs.h"

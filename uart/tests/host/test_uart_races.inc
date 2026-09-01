@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Deterministic cross-direction and failure cases. Included by test_uart.cpp.
  *
  * Note what is deliberately NOT here: "TxHandler calls send() again". The

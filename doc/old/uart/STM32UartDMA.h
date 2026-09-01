@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * STM32UartDMA.h
  *
  *  Created on: Aug 8, 2024

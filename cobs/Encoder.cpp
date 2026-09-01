@@ -1,3 +1,8 @@
+/*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
 #include "Codec.h"
 
 namespace cobs::codec {

@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Host verification for cobs/cobs::codec::Decoder.
  *
  * The decoder holds no allocator and no transport, so this whole battery is a

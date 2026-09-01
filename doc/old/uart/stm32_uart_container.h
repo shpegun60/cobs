@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * stm32_uart_container.h
  *
  *  Created on: Jun 30, 2024

@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * End-to-end RX/TX hot-path microbenchmark over deterministic fixed storage.
  * Timing is informational; correctness is proved by the normal suites.
  */

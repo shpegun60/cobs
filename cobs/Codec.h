@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * cobs::codec — the non-template COBS framing primitives.
  *
  * Contract: doc/PROTOCOL.md. The detailed derivation and overlap proof remain

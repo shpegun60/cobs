@@ -1,3 +1,8 @@
+<!--
+Author: shpegun60
+SPDX-License-Identifier: MIT
+-->
+
 # COBS architecture
 
 This is the canonical entry point for the current COBS implementation.

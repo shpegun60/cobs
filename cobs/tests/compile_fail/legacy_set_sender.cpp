@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Split transport setters are physically absent. Sender and BusyQuery are
  * installed transactionally through bind(sender, busy).
  */

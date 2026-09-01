@@ -1,3 +1,8 @@
+<!--
+Author: shpegun60
+SPDX-License-Identifier: MIT
+-->
+
 # NUCLEO-H7S3L8 COBS + UART hardware integration test
 
 Status: audited on real silicon, 2026-09-01

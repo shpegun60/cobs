@@ -1,3 +1,8 @@
+<!--
+Author: shpegun60
+SPDX-License-Identifier: MIT
+-->
+
 # UART + COBS Transport Architecture (historical sketch)
 
 > **ARCHIVED — NOT A CURRENT API OR IMPLEMENTATION CONTRACT**

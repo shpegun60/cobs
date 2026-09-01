@@ -1,4 +1,7 @@
 #!/bin/sh
+# Author: shpegun60
+# SPDX-License-Identifier: MIT
+
 # Compile-only Cortex-M layout guard. Exact assertions live in test_layout.cpp;
 # the nm output is retained as human-readable evidence without running target
 # code. ARM_CXX may override the recorded CubeIDE toolchain.

@@ -1,3 +1,6 @@
+# Author: shpegun60
+# SPDX-License-Identifier: MIT
+
 TEMPLATE = app
 TARGET = cobs_pri_consumer
 

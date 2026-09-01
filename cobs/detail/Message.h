@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Message — exclusive owner of one TX block, and a builder for what goes in it.
  *
  * Contract: doc/COBS_ENGINE.md §8. This type knows its own storage geometry,

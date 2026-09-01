@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * A canonical/minimal COBS encoder for TESTS ONLY.
  *
  * Straightforward and allocating, precisely because the production in-place

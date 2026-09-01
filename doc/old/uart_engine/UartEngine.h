@@ -1,3 +1,8 @@
+/*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
 #ifndef __STM32_UARTENGINE_H__
 #define __STM32_UARTENGINE_H__
 

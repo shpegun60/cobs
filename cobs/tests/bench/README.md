@@ -1,3 +1,8 @@
+<!--
+Author: shpegun60
+SPDX-License-Identifier: MIT
+-->
+
 # COBS hot-path benchmarks
 
 Run from the repository root:

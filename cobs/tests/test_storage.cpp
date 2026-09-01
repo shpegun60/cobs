@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * The storage contract (doc/STORAGE.md), run against both built-in
  * strategies from one test body.
  *

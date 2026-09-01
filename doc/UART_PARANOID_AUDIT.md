@@ -1,3 +1,8 @@
+<!--
+Author: shpegun60
+SPDX-License-Identifier: MIT
+-->
+
 # UART paranoid correctness and hot-path audit
 
 Status: automated audit, implementation, and fresh H7S3 silicon validation

@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * End-to-end COBS + UART hardware harness for NUCLEO-H7S3L8.
  *
  * The Cube scaffold supplies USART3, its two GPDMA channels, the instrumented

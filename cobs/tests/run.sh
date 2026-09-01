@@ -1,4 +1,7 @@
 #!/bin/sh
+# Author: shpegun60
+# SPDX-License-Identifier: MIT
+
 # Host verification for the COBS layer. No HAL, no allocator fakes, no
 # transport -- every suite here is an ordinary program.
 #

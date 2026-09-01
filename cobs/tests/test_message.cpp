@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Host verification for cobs::Message: block ownership, public container semantics,
  * the growth rule and the serializers. Encoding is deliberately observed only
  * through the real Endpoint coordinator; applications cannot invoke its internal

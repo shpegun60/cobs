@@ -1,3 +1,8 @@
+/*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
 /**
 * @file IRQGuard.h
 * @brief A class for managing interrupt state using RAII.

@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Host verification for cobs::codec::encode_in_place.
  *
  * The encoder overlaps its own input, so most of this battery is about the

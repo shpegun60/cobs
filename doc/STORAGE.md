@@ -1,3 +1,8 @@
+<!--
+Author: shpegun60
+SPDX-License-Identifier: MIT
+-->
+
 # COBS storage contract
 
 This document is the canonical extension guide for memory strategies used by

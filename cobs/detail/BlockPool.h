@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * cobs::detail::BlockPool — fixed blocks in static storage, and nothing
  * else. No heap, no virtuals, no mutex, O(1) acquire. Checked release is
  * O(BlockCount); see COBS_POOL_CHECKS below.

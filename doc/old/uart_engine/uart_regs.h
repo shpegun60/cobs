@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * uart_regs.h
  *
  *  Created on: Jun 9, 2025

@@ -1,3 +1,6 @@
+# Author: shpegun60
+# SPDX-License-Identifier: MIT
+
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]

@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Test fixture: a driver instance wired to the fake HAL, with a valid CubeMX-
  * shaped configuration that init() must accept, plus the handlers that record
  * what the application layer actually observes.

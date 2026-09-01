@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Author: shpegun60
+# SPDX-License-Identifier: MIT
+
 """
 PC driver for the H7S UART bench (uart_bench.cpp over the ST-LINK VCP).
 

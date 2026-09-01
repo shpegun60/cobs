@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * cobs storage extension surface.
  *
  * Contract: doc/STORAGE.md. The checked concept below covers syntax; the

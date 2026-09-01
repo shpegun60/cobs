@@ -1,3 +1,8 @@
+<!--
+Author: shpegun60
+SPDX-License-Identifier: MIT
+-->
+
 # COBS Engine — detailed design record
 
 > Current documentation is split by boundary: `ARCHITECTURE.md` is the

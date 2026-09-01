@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Host stand-in for the CubeMX "main.h": just enough of the STM32 HAL surface
  * for uart/Uart.h to compile and RUN on a desktop. Types and semantics mirror
  * the real F1/G4/H7RS drivers (new USART IP: ISR/RDR/ICR); the behaviour lives

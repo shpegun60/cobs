@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * uart_bench.cpp — hardware bench for uart/Uart.h on STM32H7S3L8.
  * Canonical copy: uart/tests/bench/ in the cobs repository; the file in the
  * Cube project (Boot/Core/Src) is a copy of this one.

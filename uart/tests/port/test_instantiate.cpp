@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * Portability smoke test: compiles the whole UART engine for a concrete
  * STM32 target, instantiating every template path and every API entry.
  * Compile-only (-c): HAL functions are declared by the family headers but

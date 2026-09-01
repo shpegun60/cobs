@@ -1,4 +1,7 @@
 #!/bin/sh
+# Author: shpegun60
+# SPDX-License-Identifier: MIT
+
 # Host codec microbenchmark. Timing is informational, never a CI pass/fail gate.
 set -e
 

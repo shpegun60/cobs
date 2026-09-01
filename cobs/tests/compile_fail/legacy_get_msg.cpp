@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * The pre-refactor message factory name is physically absent; no alias remains.
  */
 #include "Cobs.h"

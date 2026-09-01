@@ -1,3 +1,8 @@
+/*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
 /* Compile-only probe used by run.sh to verify configuration diagnostics. */
 #include "Uart.h"
 

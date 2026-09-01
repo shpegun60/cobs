@@ -1,4 +1,9 @@
 /*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * UartBase.cpp
  *
  *  Created on: Mar 15, 2025
