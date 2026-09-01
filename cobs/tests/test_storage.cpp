@@ -17,7 +17,7 @@
 namespace {
 
 using ContractHeap = cobs::Heap<cobs::Format<128, 96>>;
-using ContractPool = cobs::Pool<cobs::Format<128, 96>, 2, 1>;
+using ContractPool = cobs::Pool<2, 1, cobs::Format<128, 96>>;
 
 static_assert(cobs::Storage<ContractHeap>,
 	"the built-in heap policy must satisfy the checked storage contract");
@@ -25,7 +25,7 @@ static_assert(cobs::Storage<ContractPool>,
 	"the built-in fixed policy must satisfy the checked storage contract");
 
 struct MissingTxOperations {
-	using Format = cobs::Format<8, 8>;
+	using Format = cobs::Format<8>;
 	using RxBlock = cobs::RxBlock<MissingTxOperations>;
 
 	RxBlock* acquire_rx(std::size_t) noexcept;
@@ -33,7 +33,7 @@ struct MissingTxOperations {
 };
 
 struct WrongTxResult {
-	using Format = cobs::Format<8, 8>;
+	using Format = cobs::Format<8>;
 	using RxBlock = cobs::RxBlock<WrongTxResult>;
 
 	RxBlock* acquire_rx(std::size_t) noexcept;
@@ -43,7 +43,7 @@ struct WrongTxResult {
 };
 
 struct ThrowingAcquireRx {
-	using Format = cobs::Format<8, 8>;
+	using Format = cobs::Format<8>;
 	using RxBlock = cobs::RxBlock<ThrowingAcquireRx>;
 
 	RxBlock* acquire_rx(std::size_t); // deliberately not noexcept
@@ -63,7 +63,7 @@ struct MissingFormat {
 
 struct WrongRxBlock {
 	struct RxBlock {};
-	using Format = cobs::Format<8, 8>;
+	using Format = cobs::Format<8>;
 
 	RxBlock* acquire_rx(std::size_t) noexcept;
 	void release_rx(RxBlock*) noexcept;
@@ -256,7 +256,7 @@ void runContract(const char* name)
 void testFixedExhaustionAndIndependence()
 {
 	g_strategy = "fixed";
-	using Strategy = cobs::Pool<cobs::Format<64, 32>, 2, 1>;
+	using Strategy = cobs::Pool<2, 1, cobs::Format<64, 32>>;
 	Strategy a;
 
 	check(a.rx_available() == 2 && a.tx_available() == 1, "pools start full");
@@ -333,7 +333,7 @@ void testHeapGrantsExactlyWhatWasAsked()
 void testFixedReportsTheWholeSlab()
 {
 	g_strategy = "fixed";
-	using Strategy = cobs::Pool<cobs::Format<64, 1024>, 1, 1>;
+	using Strategy = cobs::Pool<1, 1, cobs::Format<64, 1024>>;
 	Strategy a;
 
 	// One size class: every accepted request reports the whole slab, because
@@ -354,7 +354,7 @@ void testFixedGeometryIsAbiIndependent()
 	g_strategy = "fixed";
 	// The declared limits are exactly what was asked for, on any ABI; only the
 	// physical block size moves, and it is nobody's business (§9.1.1).
-	using Strategy = cobs::Pool<cobs::Format<1024, 256>, 4, 2>;
+	using Strategy = cobs::Pool<4, 2, cobs::Format<1024, 256>>;
 	static_assert(Strategy::Format::max_receive_size == 1024);
 	static_assert(Strategy::Format::max_send_size == 256);
 
@@ -428,7 +428,7 @@ void testSizeArithmeticGuard()
 	// And the policies really do carry the assertion.
 	static_assert(cobs::codec::size_arithmetic_fits(cobs::Heap<cobs::Format<64, 1024>>::Format::max_send_size));
 	static_assert(cobs::codec::size_arithmetic_fits(
-		cobs::Pool<cobs::Format<64, 1024>, 2, 2>::Format::max_send_size));
+		cobs::Pool<2, 2, cobs::Format<64, 1024>>::Format::max_send_size));
 	check(true, "both shipped policies assert it on their own limits");
 }
 
@@ -438,7 +438,7 @@ int main()
 {
 	group("Contract");
 	runContract<cobs::Heap<cobs::Format<128, 96>>>("heap");
-	runContract<cobs::Pool<cobs::Format<128, 96>, 8, 4>>("fixed");
+	runContract<cobs::Pool<8, 4, cobs::Format<128, 96>>>("fixed");
 
 	group("FixedSpecific");
 	testFixedExhaustionAndIndependence();

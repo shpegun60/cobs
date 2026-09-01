@@ -6,7 +6,7 @@
  * production stack under test:
  *
  *   PC reference codec <-> USART3/VCP <-> Uart<128,8>
- *                      <-> Endpoint<Pool<Format<1024,1024>,8,2>>
+ *                      <-> Endpoint<Pool<8,2,Format<1024>>>
  *
  * Ordinary application bodies are echoed exactly. Bodies beginning with the
  * reserved four-byte magic below are harness control packets. All responses
@@ -45,8 +45,8 @@ constexpr std::size_t kTxBlocks = 2u;
 constexpr std::size_t kUartChunkSize = 128u;
 constexpr std::size_t kUartChunkCount = 8u;
 
-using Wire = cobs::Format<kMaxPayload, kMaxPayload>;
-using Memory = cobs::Pool<Wire, kRxBlocks, kTxBlocks>;
+using Wire = cobs::Format<kMaxPayload>;
+using Memory = cobs::Pool<kRxBlocks, kTxBlocks, Wire>;
 using Link = cobs::Endpoint<Memory>;
 using Serial = Uart<kUartChunkSize, kUartChunkCount>;
 

@@ -162,8 +162,8 @@ regression clues for those ABIs, not universal ABI promises:
 | RX statistics | 28 bytes | 28 bytes |
 | TX statistics | 12 bytes | 12 bytes |
 | pool statistics | 16 bytes | 16 bytes |
-| `cobs::Pool<cobs::Format<1024, 1024>, 8, 2>` | 10,496 bytes | 10,424 bytes |
-| `cobs::Endpoint<cobs::Pool<cobs::Format<1024, 1024>, 8, 2>>` | 10,800 bytes | 10,592 bytes |
+| `cobs::Pool<8, 2, cobs::Format<1024>>` | 10,496 bytes | 10,424 bytes |
+| `cobs::Endpoint<cobs::Pool<8, 2, cobs::Format<1024>>>` | 10,800 bytes | 10,592 bytes |
 
 The owning delegates are intentionally retained. Their size is not a
 reason to weaken their owning-callable semantics. Before layout work is marked
@@ -233,7 +233,7 @@ permanent APIs.
 | `CobsFrameFormat` helpers | `cobs::Format<Rx, Tx>` | extension | protocol geometry only |
 | allocator policy idea | `cobs::Storage` | extension | checked storage contract |
 | `CobsHeapAllocator` | `cobs::Heap<Format>` | extension | dynamic memory strategy |
-| `CobsFixedAllocator` | `cobs::Pool<Format, RxN, TxN>` | extension | deterministic memory strategy |
+| `CobsFixedAllocator` | `cobs::Pool<RxN, TxN, Format>` | extension | deterministic memory strategy |
 | `TxAllocation` and `CobsMsg::TxBlock` | `cobs::TxBlock` | extension | one TX ownership descriptor |
 | `RxPacket` | `cobs::RxBlock<Storage>` | extension | typed storage-extension block |
 | `CobsDecoder` | `cobs::codec::Decoder` | low-level | non-template streaming decoder |
@@ -303,9 +303,9 @@ using Wire = cobs::Format<
     64>;  // maximum transmitted body
 
 using Memory = cobs::Pool<
-    Wire,
     8,  // RX blocks
-    2>; // TX blocks
+    2,  // TX blocks
+    Wire>;
 
 cobs::Endpoint<Memory> link;
 
@@ -367,7 +367,7 @@ The target separates these choices:
 ```text
 Format<1024, 64>        protocol geometry
 Heap<Format>            memory strategy A
-Pool<Format, 8, 2>      memory strategy B
+Pool<8, 2, Format>      memory strategy B
 ```
 
 `Format` owns only compile-time framing facts:

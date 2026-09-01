@@ -57,7 +57,7 @@
 
 namespace cobs {
 
-template<std::size_t RxMaxSize, std::size_t TxMaxSize>
+template<std::size_t RxMaxSize = 255, std::size_t TxMaxSize = RxMaxSize>
 struct Format final {
 	// A 32-bit format is deliberately not offered. Nothing in this stack wants
 	// 64 KiB frames, and an unused third width is a third thing to get wrong.

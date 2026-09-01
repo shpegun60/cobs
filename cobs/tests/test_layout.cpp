@@ -14,8 +14,8 @@
 
 namespace {
 
-using Heap = cobs::Heap<cobs::Format<1024, 1024>>;
-using Pool = cobs::Pool<cobs::Format<1024, 1024>, 8, 2>;
+using Heap = cobs::Heap<cobs::Format<1024>>;
+using Pool = cobs::Pool<8, 2, cobs::Format<1024>>;
 using Block = cobs::RxBlock<Heap>;
 using Packet = cobs::Packet<Heap>;
 using Message = cobs::Message<Heap>;

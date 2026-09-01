@@ -322,7 +322,7 @@ void runEngine(const char* name)
 void testFixedExhaustion()
 {
 	g_strategy = "fixed";
-	using Memory = cobs::Pool<cobs::Format<32, 32>, 2, 1>;
+	using Memory = cobs::Pool<2, 1, cobs::Format<32>>;
 	cobs::Endpoint<Memory> cobs;
 	FakeTransport t;
 	bind(cobs, t);
@@ -351,7 +351,7 @@ void testFixedExhaustion()
 void testDestructorReclaimsActiveTx()
 {
 	g_strategy = "fixed";
-	using Memory = cobs::Pool<cobs::Format<32, 32>, 2, 2>;
+	using Memory = cobs::Pool<2, 2, cobs::Format<32>>;
 	FakeTransport t;
 	{
 		cobs::Endpoint<Memory> cobs;
@@ -413,7 +413,7 @@ void testDefaultCapacityHint()
 	{	// A policy whose limit is BELOW the default must still work: the
 		// default is clamped, so make_message() can never fail on its own default.
 		g_strategy = "fixed";
-		using Engine = cobs::Endpoint<cobs::Pool<cobs::Format<32, 16>, 2, 1>>;
+		using Engine = cobs::Endpoint<cobs::Pool<2, 1, cobs::Format<32, 16>>>;
 		static_assert(Engine::default_capacity_hint == 16,
 		              "the default must clamp to a smaller tx_max_size");
 		Engine cobs;
@@ -612,9 +612,9 @@ void testComplementaryPeers()
 void testStorageDoesNotChangeFormat()
 {
 	g_strategy = "format";
-	using Wire = cobs::Format<64, 64>;
+	using Wire = cobs::Format<64>;
 	using HeapEngine = cobs::Endpoint<cobs::Heap<Wire>>;
-	using PoolEngine = cobs::Endpoint<cobs::Pool<Wire, 2, 1>>;
+	using PoolEngine = cobs::Endpoint<cobs::Pool<2, 1, Wire>>;
 
 	static_assert(std::is_same_v<typename HeapEngine::Format, Wire>);
 	static_assert(std::is_same_v<typename PoolEngine::Format, Wire>);
@@ -650,7 +650,7 @@ void testStorageDoesNotChangeFormat()
 void testDelegateBindingModes()
 {
 	g_strategy = "delegate";
-	using Engine = cobs::Endpoint<cobs::Heap<cobs::Format<32, 32>>>;
+	using Engine = cobs::Endpoint<cobs::Heap<cobs::Format<32>>>;
 	const std::vector<uint8_t> payload{0x11, 0x00, 0x22};
 
 	{	// Ordinary callables are owned, including a move-only capture.
@@ -738,8 +738,8 @@ void testDelegateBindingModes()
 int main()
 {
 	group("Engine");
-	runEngine<cobs::Heap<cobs::Format<64, 64>>>("heap");
-	runEngine<cobs::Pool<cobs::Format<64, 64>, 4, 2>>("fixed");
+	runEngine<cobs::Heap<cobs::Format<64>>>("heap");
+	runEngine<cobs::Pool<4, 2, cobs::Format<64>>>("fixed");
 	group("DelegateLifetime");
 	testDelegateBindingModes();
 

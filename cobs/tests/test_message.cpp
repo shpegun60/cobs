@@ -43,10 +43,10 @@ void check(const bool ok, const std::string& what)
 }
 
 constexpr std::size_t kMaxDecoded = 64;
-constexpr std::size_t kTxBlocks = 2; // the recommended default: build one while one flies
+constexpr std::size_t kTxBlocks = 2; // recommended quota: build one while one flies
 
-using TxPool = cobs::Pool<cobs::Format<kMaxDecoded, kMaxDecoded>, 1, kTxBlocks>;
-using HeapPool = cobs::Heap<cobs::Format<kMaxDecoded, kMaxDecoded>>;
+using TxPool = cobs::Pool<1, kTxBlocks, cobs::Format<kMaxDecoded>>;
+using HeapPool = cobs::Heap<cobs::Format<kMaxDecoded>>;
 using Message = cobs::Message<TxPool>;
 
 // A message filled with `n` recognisable bytes, plus the bytes themselves for
@@ -848,7 +848,7 @@ void testDefaultHintAvoidsTheLadder()
 // heap-exact, for contrast.
 class NarrowHeap final {
 public:
-	using Format = cobs::Format<255, 255>;
+	using Format = cobs::Format<255>;
 	using RxBlock = cobs::RxBlock<NarrowHeap>;
 
 	[[nodiscard]] RxBlock* acquire_rx(std::size_t) noexcept { return nullptr; }
@@ -910,7 +910,7 @@ void testLengthPrefixIsHiddenAndCorrect()
 
 void testMaximumFormatFrame()
 {
-	using Engine = cobs::Endpoint<cobs::Heap<cobs::Format<65535, 65535>>>;
+	using Engine = cobs::Endpoint<cobs::Heap<cobs::Format<65535>>>;
 	Engine endpoint;
 	CaptureTransport transport;
 	check(bindTransport(endpoint, transport), "the maximum-format coordinator binds");

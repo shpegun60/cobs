@@ -41,7 +41,7 @@ void check(const bool ok, const std::string& what)
 
 constexpr std::size_t kMaxDecoded = 64;
 constexpr std::size_t kBlocks = 4;
-using Pool = cobs::Pool<cobs::Format<kMaxDecoded, kMaxDecoded>, kBlocks, 2>;
+using Pool = cobs::Pool<kBlocks, 2, cobs::Format<kMaxDecoded>>;
 using Rx = cobs::detail::Receiver<Pool>;
 using Packet = Rx::Packet;
 
@@ -142,20 +142,17 @@ void testDefaultHeapFormat()
 	using DefaultHeap = cobs::Heap<>;
 	using DefaultRx = cobs::detail::Receiver<DefaultHeap>;
 	static_assert(std::is_same_v<DefaultRx::StorageType, DefaultHeap>);
-	static_assert(DefaultRx::max_receive_size == 1024, "with its default limit");
+	static_assert(DefaultRx::max_receive_size == 255, "with its default limit");
 
 	DefaultHeap storage;
 	DefaultRx rx(storage);
 
-	const auto p = payload(0x11, 300);
-	// NOT engine_frame(): the default policy's Format limits are 1024, so it speaks a
-	// TWO-byte header while the pool used elsewhere in this file speaks one.
-	// Feeding it the other engine's frame would be exactly the peer
-	// incompatibility §3 warns about.
-	static_assert(DefaultRx::length_size == 2, "1024 needs a two-byte length field");
+	const auto p = payload(0x11, 255);
+	static_assert(DefaultRx::length_size == 1,
+	              "the 255-byte default keeps the length field to one byte");
 	rx.consume(std::span<const uint8_t>{cobs_test::frame(p, DefaultRx::length_size)});
 	const DefaultRx::Packet r = rx.pop_packet();
-	check(r.size() == p.size(), "the default heap format receives a frame through Receiver");
+	check(matches(r, p), "the default heap format receives its largest frame through Receiver");
 }
 
 /* ========================= the protocol limit =========================== */
@@ -312,11 +309,15 @@ void testLengthCodec()
 	static_assert(Narrow::length_size == 1);
 	static_assert(Wide::length_size == 2);
 	static_assert(Wide2::length_size == 2);
-	static_assert(cobs::Format<0, 0>::length_size == 1, "zero limits still use one byte");
+	static_assert(std::is_same_v<cobs::Format<>, cobs::Format<255>>,
+	              "the default format is symmetric 255/255");
+	static_assert(std::is_same_v<cobs::Format<64>, cobs::Format<64, 64>>,
+	              "one explicit limit applies symmetrically");
+	static_assert(cobs::Format<0>::length_size == 1, "zero limits still use one byte");
 	static_assert(cobs::Format<254, 0>::length_size == 1, "254 fits one byte");
-	static_assert(cobs::Format<255, 255>::length_size == 1, "255 still fits one byte");
+	static_assert(cobs::Format<255>::length_size == 1, "255 still fits one byte");
 	static_assert(cobs::Format<256, 1>::length_size == 2, "256 does not");
-	static_assert(cobs::Format<65535, 65535>::length_size == 2,
+	static_assert(cobs::Format<65535>::length_size == 2,
 	              "the largest supported limit uses two bytes");
 	static_assert(std::is_same_v<Narrow::LengthType, uint8_t>);
 	static_assert(std::is_same_v<Wide::LengthType, uint16_t>);
@@ -358,7 +359,7 @@ void testLengthCodec()
 // is a measurement rather than a claim.
 class RecordingHeap final {
 public:
-	using Format = cobs::Format<64, 64>;
+	using Format = cobs::Format<64>;
 	using RxBlock = cobs::RxBlock<RecordingHeap>;
 
 	[[nodiscard]] RxBlock* acquire_rx(const std::size_t requested_size) noexcept
@@ -437,7 +438,7 @@ void testMalformedLengths()
 		      "the delimiter that exposed it already resynchronized us");
 	}
 	{	// A truncated two-byte header.
-		using Wide = cobs::Heap<cobs::Format<1024, 1024>>;
+		using Wide = cobs::Heap<cobs::Format<1024>>;
 		Wide pool;
 		cobs::detail::Receiver<Wide> rx(pool);
 		static_assert(cobs::detail::Receiver<Wide>::length_size == 2);
@@ -556,7 +557,7 @@ void testFixedSlabPublishesDeclaredLength()
  */
 void testRxLengthSweep()
 {
-	using Wide = cobs::Heap<cobs::Format<600, 600>>;   // two-byte header
+	using Wide = cobs::Heap<cobs::Format<600>>;   // two-byte header
 	static_assert(cobs::detail::Receiver<Wide>::length_size == 2);
 	Wide pool;
 	cobs::detail::Receiver<Wide> rx(pool);
@@ -614,7 +615,7 @@ void testRxLengthSweep()
  */
 class RefuseEmptyOnly final {
 public:
-	using Format = cobs::Format<64, 64>;
+	using Format = cobs::Format<64>;
 	using RxBlock = cobs::RxBlock<RefuseEmptyOnly>;
 
 	[[nodiscard]] RxBlock* acquire_rx(const std::size_t requested_size) noexcept
@@ -730,7 +731,7 @@ concept CanReadData = requires(const P& p) { p.data(); };
 
 void testPacketInternalsAreSealed()
 {
-	using P = cobs::RxBlock<cobs::Heap<cobs::Format<1024, 1024>>>;
+	using P = cobs::RxBlock<cobs::Heap<cobs::Format<1024>>>;
 	static_assert(!CanWritePayload<P>, "the writable span must not be reachable");
 	static_assert(!CanSetSize<P>,
 	              "a public size is a one-line out-of-bounds read: "
@@ -762,7 +763,7 @@ void testPacketInternalsAreSealed()
  */
 class MinimalStorage final {
 public:
-	using Format = cobs::Format<64, 64>;
+	using Format = cobs::Format<64>;
 	using RxBlock = cobs::RxBlock<MinimalStorage>;
 
 	[[nodiscard]] RxBlock* acquire_rx(const std::size_t requested_size) noexcept
@@ -839,7 +840,7 @@ void testContractIsSelfSufficient()
 template<std::size_t Max>
 void checkWidestFrame(const char* name)
 {
-	using WideHeap = cobs::Heap<cobs::Format<Max, Max>>;
+	using WideHeap = cobs::Heap<cobs::Format<Max>>;
 	WideHeap storage;
 	cobs::detail::Receiver<WideHeap> rx(storage);
 
@@ -862,11 +863,11 @@ void checkWidestFrame(const char* name)
 
 void testWidestFrames()
 {
-	static_assert(cobs::detail::Receiver<cobs::Heap<cobs::Format<255, 255>>>::length_size == 1,
+	static_assert(cobs::detail::Receiver<cobs::Heap<cobs::Format<255>>>::length_size == 1,
 	              "255 is the last body a one-byte header can describe");
-	static_assert(cobs::detail::Receiver<cobs::Heap<cobs::Format<256, 256>>>::length_size == 2,
+	static_assert(cobs::detail::Receiver<cobs::Heap<cobs::Format<256>>>::length_size == 2,
 	              "256 needs two");
-	static_assert(cobs::detail::Receiver<cobs::Heap<cobs::Format<65535, 65535>>>::length_size == 2,
+	static_assert(cobs::detail::Receiver<cobs::Heap<cobs::Format<65535>>>::length_size == 2,
 	              "and two is enough to the very end");
 
 	checkWidestFrame<255>("H=1 max");

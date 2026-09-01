@@ -85,13 +85,16 @@ template<class Engine>
 
 int main()
 {
-	using Wire = cobs::Format<1024, 1024>;
+	using Wire = cobs::Format<>;
 	using HeapEndpoint = cobs::Endpoint<>;
-	using PoolEndpoint = cobs::Endpoint<cobs::Pool<Wire, 2, 2>>;
+	using PoolEndpoint = cobs::Endpoint<cobs::Pool<2, 2>>;
 
 	static_assert(cobs::Storage<typename HeapEndpoint::StorageType>);
 	static_assert(cobs::Storage<typename PoolEndpoint::StorageType>);
 	static_assert(std::is_same_v<typename HeapEndpoint::Format, Wire>);
+	static_assert(HeapEndpoint::max_receive_size == 255);
+	static_assert(HeapEndpoint::max_send_size == 255);
+	static_assert(HeapEndpoint::length_size == 1);
 	static_assert(HeapEndpoint::length_size == PoolEndpoint::length_size);
 
 	if (!exercise<HeapEndpoint>()) {

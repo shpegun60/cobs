@@ -41,7 +41,7 @@ void check(const bool ok, const std::string& what)
 
 constexpr std::size_t kMaxPayload = 64;
 constexpr std::size_t kBlocks = 4;
-using Memory = cobs::Pool<cobs::Format<kMaxPayload, kMaxPayload>, kBlocks, 1>;
+using Memory = cobs::Pool<kBlocks, 1, cobs::Format<kMaxPayload>>;
 using Engine = cobs::Endpoint<Memory>;
 using Packet = Engine::Packet;
 

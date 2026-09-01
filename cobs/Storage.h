@@ -6,11 +6,11 @@
  *
  * This header exports every type needed to provide memory to the engine:
  *
- *     Format<Rx, Tx>          protocol geometry
- *     RxBlock<Storage>        typed receive ownership block
- *     TxBlock                 transmit ownership descriptor
- *     Storage                 checked C++20 contract
- *     Heap / Pool             built-in strategies
+ *     Format<> / Format<N> / Format<Rx, Tx>  protocol geometry
+ *     RxBlock<Storage>                       typed receive ownership block
+ *     TxBlock                                transmit ownership descriptor
+ *     Storage                                checked C++20 contract
+ *     Heap / Pool<RxN, TxN, WireFormat>      built-in strategies
  *
  * Protocol and memory stay separate. A storage implementation names one
  * Format, but never duplicates its limits. RX and TX remain intentionally
@@ -140,7 +140,7 @@ concept Storage = requires(
  * requested payload capacity. The type is stateless and remains the default
  * storage for Endpoint.
  */
-template<class WireFormat = Format<1024, 1024>>
+template<class WireFormat = Format<>>
 class Heap final {
 public:
 	using Format = WireFormat;
@@ -204,7 +204,7 @@ public:
  * independent quotas and failure accounting. Every successful TX acquisition
  * reports the full slab capacity because that capacity is already paid for.
  */
-template<class WireFormat, std::size_t RxBlocks, std::size_t TxBlocks>
+template<std::size_t RxBlocks, std::size_t TxBlocks, class WireFormat = Format<>>
 class Pool final {
 public:
 	using Format = WireFormat;
@@ -292,7 +292,9 @@ private:
 };
 
 static_assert(Storage<Heap<>>);
-static_assert(Storage<Pool<Format<64, 64>, 1, 1>>);
+static_assert(std::same_as<typename Heap<>::Format, Format<>>);
+static_assert(Storage<Pool<1, 1>>);
+static_assert(std::same_as<typename Pool<1, 1>::Format, Format<>>);
 
 } // namespace cobs
 

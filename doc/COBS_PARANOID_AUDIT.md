@@ -204,7 +204,7 @@ in registers instead of touching decoder fields per byte. Object layout of
 | `Message<Heap>` | 48 / 48 B | 24 / 24 B |
 | `Receiver<Heap>` | 136 / 120 B | 80 / 72 B |
 | `Endpoint<Heap>` | 304 / 288 B | 168 / 160 B |
-| `Endpoint<Pool<Format<1024,1024>,8,2>>` | 10800 / 10784 B | 10592 / 10584 B |
+| `Endpoint<Pool<8,2,Format<1024>>>` | 10800 / 10784 B | 10592 / 10584 B |
 
 The receiver reduction comes from removing duplicate state, not from packing
 or inferring the state machine.
@@ -215,7 +215,7 @@ On 2026-09-01 the production COBS checkpoint above was integrated with the
 audited UART tree at `ef0a78cd0ebdf0d9b4fbd99fe0e8c1ef81c9b628` and rerun on
 a NUCLEO-H7S3L8 rev Y. The board exercised
 `Uart<128,8>` and
-`Endpoint<Pool<Format<1024,1024>,8,2>>` through USART3/GPDMA and the ST-Link
+`Endpoint<Pool<8,2,Format<1024>>>` through USART3/GPDMA and the ST-Link
 VCP. The PC side used an independent COBS/length implementation rather than
 linking the library under test.
 
@@ -271,7 +271,7 @@ path the object exists to serve.
   `{00,01,02,03,55,FE,FF}`: 960,800 streams under ten input/output/prearm plans.
 - Independent canonical encoder comparison: 177,146 payload/headroom cases.
 - Pure codec coverage around decoded size 65,537.
-- Full `Format<65535,65535>` message build and canonical in-place send.
+- Full `Format<65535>` message build and canonical in-place send.
 - Prepared-output semantics across leading delimiters and exhaustive malformed
   transitions.
 - ASan+UBSan configured to stop at the first error, plus

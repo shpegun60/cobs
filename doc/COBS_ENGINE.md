@@ -324,7 +324,9 @@ never by its raw block size:
 
 ```cpp
 namespace cobs {
-template<class Format, std::size_t RxBlocks, std::size_t TxBlocks>
+template<std::size_t RxBlocks,
+         std::size_t TxBlocks,
+         class WireFormat = cobs::Format<>>
 class Pool;
 }
 ```
@@ -1452,7 +1454,7 @@ own mystery.
 quotas, and names the format it serves:
 
 ```text
-cobs::Format<Rx, Tx>
+cobs::Format<> / cobs::Format<N> / cobs::Format<Rx, Tx>
 ├── max_receive_size     largest BODY this instance accepts
 ├── max_send_size        largest BODY this instance can send
 ├── length_size / LengthType
@@ -1480,7 +1482,7 @@ which a declared length is refused.
 ```cpp
 namespace cobs {
 
-template<class Format = cobs::Format<1024, 1024>>
+template<class Format = cobs::Format<>>
 class Heap;
 
 template<class StorageT = cobs::Heap<>>
@@ -1489,8 +1491,9 @@ class Endpoint;
 } // namespace cobs
 ```
 
-so `cobs::Endpoint<>` gets workable defaults and a bigger heap-backed link is still one
-line:
+so `cobs::Endpoint<>` accepts up to 255 body bytes in either direction and uses
+a one-byte length field. This is the largest default with that header width. A
+bigger heap-backed link is still one line:
 
 ```cpp
 using Wire = cobs::Format<4096, 512>;
@@ -1504,8 +1507,8 @@ would then carry that fixed quota whatever its workload. A target where
 deliberately:
 
 ```cpp
-using Wire = cobs::Format<1024, 1024>;
-using Memory = cobs::Pool<Wire, /* RX blocks */ 8, /* TX blocks */ 2>;
+using Wire = cobs::Format<1024>;
+using Memory = cobs::Pool</* RX blocks */ 8, /* TX blocks */ 2, Wire>;
 cobs::Endpoint<Memory> cobs;
 ```
 

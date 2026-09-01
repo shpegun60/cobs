@@ -7,7 +7,7 @@
 #include <cstddef>
 
 struct RxOnlyStorage final {
-	using Format = cobs::Format<8, 8>;
+	using Format = cobs::Format<8>;
 	using RxBlock = cobs::RxBlock<RxOnlyStorage>;
 
 	[[nodiscard]] RxBlock* acquire_rx(std::size_t) noexcept { return nullptr; }

@@ -47,7 +47,14 @@ encoding is a sender requirement, not a receiver rejection rule.
 
 ## 3. Length field and directional limits
 
-Each `cobs::Format<RxMax, TxMax>` declares two body limits:
+Each `cobs::Format<RxMax, TxMax>` declares two body limits. Its concise forms
+are deliberately symmetric:
+
+```cpp
+cobs::Format<>       // RX 255, TX 255
+cobs::Format<1024>   // RX 1024, TX 1024
+cobs::Format<1024, 64>
+```
 
 ```text
 max_receive_size = largest body this instance accepts

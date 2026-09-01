@@ -571,7 +571,20 @@ def suite_gap(link: HardwareLink) -> dict:
     # chunk pool. Repeating it while the loop is stalled forces physical loss
     # in Uart, not merely an Endpoint allocation refusal.
     body = pattern("random", MAX_PAYLOAD, 0x47415021)
-    link.write_raw(engine_frame(body) * 64)
+    frame = engine_frame(body)
+    flood_frames = 64
+    drain_batch = 4
+    for first in range(0, flood_frames, drain_batch):
+        count = min(drain_batch, flood_frames - first)
+        link.write_raw(frame * count)
+
+        # Flood echoes are deliberately irrelevant to this test, but leaving
+        # roughly 60 KiB of them unread can overflow the PC-side ST-Link VCP
+        # queue at 115200 and manufacture a truncated response. Keep the
+        # independent strict decoder active while preventing that host-only
+        # loss from being mistaken for a board TX failure.
+        link._pump()
+        link.frames.clear()
     link.port.flush()
     time.sleep(stall_ms / 1000.0 + 0.35)
     link.drain(0.5)

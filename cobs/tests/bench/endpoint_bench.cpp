@@ -18,8 +18,8 @@
 
 namespace {
 
-using Format = cobs::Format<1024, 1024>;
-using Storage = cobs::Pool<Format, 8, 1>;
+using Format = cobs::Format<1024>;
+using Storage = cobs::Pool<8, 1, Format>;
 using Endpoint = cobs::Endpoint<Storage>;
 using Clock = std::chrono::steady_clock;
 

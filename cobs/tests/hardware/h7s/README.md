@@ -2,8 +2,11 @@
 
 Status: audited on real silicon, 2026-09-01
 
-Canonical raw evidence:
-`results_audited_2026-09-01.jsonl` (29 independently parsed JSON records).
+Raw evidence:
+
+- `results_audited_2026-09-01.jsonl` — baseline audit (29 records);
+- `results_format_api_2026-09-01.jsonl` — full matrix after the concise
+  `Format`/`Pool` API migration and VCP gap-runner hardening (29 records).
 
 This is not a UART-only throughput generator. It exercises the production
 stack end to end in both directions:
@@ -13,7 +16,7 @@ independent Python codec
     <-> ST-Link VCP / COM port
     <-> USART3 + GPDMA
     <-> Uart<128, 8>
-    <-> cobs::Endpoint<cobs::Pool<cobs::Format<1024, 1024>, 8, 2>>
+    <-> cobs::Endpoint<cobs::Pool<8, 2, cobs::Format<1024>>>
 ```
 
 Ordinary application bodies are echoed byte for byte. Test control requests
@@ -109,6 +112,11 @@ before the thread announces the transport gap; the explicit bare delimiter is
 therefore required by the decoder contract before a deliverable frame. The
 delimiter is synchronization material, not a hidden retry.
 
+While producing the gap, the PC runner strictly decodes and discards irrelevant
+flood echoes in small batches. This prevents the host-side ST-Link VCP receive
+queue from overflowing at 115200 while leaving malformed-response detection
+enabled; only the board's RX direction is meant to lose bytes in this test.
+
 ## CPU accounting
 
 The reported `integrated_cpu_percent` is the sum of non-overlapping,
@@ -177,6 +185,14 @@ and highest baud; runs an additional 30-second 10M/window-7 stress; then
 rebuilds, flashes and smoke-checks the default 115200 image.
 
 ## Audited silicon result
+
+The concise API follow-up repeated the complete matrix with
+`Endpoint<Pool<8,2,Format<1024>>>`. All five baud rates, both physical gap
+tests, and the final restored 115200 smoke test passed. The extended 10 Mbaud
+run delivered 61,611 exact frames / 19,133,016 payload bytes in 30 seconds at
+0.608 MiB/s and 5.977% measured CPU, with zero unexpected UART or COBS loss.
+The verified 115200 image remained 23,616 bytes text, 12 bytes data, and 14,576
+bytes BSS.
 
 Environment observed by CubeProgrammer: board rev Y, MCU device ID `0x485`,
 silicon revision Y, ST-Link V3J17M11, target voltage 3.26 V, verified SWD

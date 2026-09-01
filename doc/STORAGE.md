@@ -267,9 +267,13 @@ observers, but they are not part of `cobs::Storage`.
 Default:
 
 ```cpp
-using DefaultStorage = cobs::Heap<cobs::Format<1024, 1024>>;
+using DefaultFormat = cobs::Format<>; // Format<255, 255>
+using DefaultStorage = cobs::Heap<>;
 cobs::Endpoint<> endpoint;
 ```
+
+The 255-byte default is the largest symmetric format that keeps the decoded
+length field to one byte. Larger links opt into an explicit `Format`.
 
 Properties:
 
@@ -283,14 +287,21 @@ Properties:
 Choose Heap for desktop use, tests, or systems where dynamic allocation is an
 accepted policy.
 
-### 8.2 `cobs::Pool<WireFormat, RxBlocks, TxBlocks>`
+### 8.2 `cobs::Pool<RxBlocks, TxBlocks, WireFormat>`
 
 Example:
 
 ```cpp
 using Wire = cobs::Format<1024, 64>;
-using Memory = cobs::Pool<Wire, 8, 2>;
+using Memory = cobs::Pool<8, 2, Wire>;
 cobs::Endpoint<Memory> endpoint;
+```
+
+`WireFormat` defaults to `cobs::Format<>`, but the RX and TX block counts stay
+explicit because they determine both static RAM use and backpressure:
+
+```cpp
+cobs::Endpoint<cobs::Pool<8, 2>> endpoint; // Format<255, 255>
 ```
 
 Properties:
