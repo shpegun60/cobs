@@ -96,7 +96,10 @@ Encoded encodeInPlace(const std::vector<uint8_t>& payload, const std::size_t raw
 std::vector<uint8_t> decodeFrame(const std::vector<uint8_t>& wire, bool& ok)
 {
 	cobs::codec::Decoder d;
-	std::vector<uint8_t> out(4096, 0);
+	// A decoded COBS frame cannot be larger than its delimiter-inclusive wire
+	// representation. Size from the case itself rather than hide a 4096-byte
+	// ceiling in an oracle that is also used for the 65537-byte format maximum.
+	std::vector<uint8_t> out(wire.size(), 0);
 	std::vector<uint8_t> result;
 	std::size_t pos = 0;
 	ok = false;
@@ -241,7 +244,8 @@ void testAgainstBothOracles()
 	// The named lengths, and every length adjacent to them: an off-by-one in
 	// the block arithmetic lives exactly one byte away from a round number.
 	std::vector<std::size_t> lengths;
-	for (const std::size_t n : {0u, 1u, 253u, 254u, 255u, 508u, 509u, 762u, 1024u}) {
+	for (const std::size_t n : {
+		0u, 1u, 253u, 254u, 255u, 508u, 509u, 762u, 1024u, 65537u}) {
 		for (int d = -2; d <= 2; ++d) {
 			const long long v = static_cast<long long>(n) + d;
 			if (v >= 0) { lengths.push_back(static_cast<std::size_t>(v)); }

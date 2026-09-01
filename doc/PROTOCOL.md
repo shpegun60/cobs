@@ -237,9 +237,13 @@ zero: the encoded byte needing a destination is intentionally left for the
 next call. `Result::decoded_size` is meaningful on `FrameComplete` and totals
 all attached output segments.
 
-`NeedOutput` can occur multiple times per frame. The endpoint uses the first
-segment for the length field and the next for exactly the declared body.
-Attaching a new segment while the current one still has room is ignored.
+`NeedOutput` can occur multiple times per frame. An owner may call
+`prepare_output()` while the decoder is `Synced` to prepare a known first
+segment; the endpoint does this with its fixed length-field buffer and avoids
+one event/call round trip per normal frame. Without preparation, the first
+`NeedOutput` asks for that segment. Later requests ask for the next segment;
+the endpoint uses exactly the declared body allocation. Attaching a new
+segment while the current decoding segment still has room is ignored.
 Attaching an empty segment does not mean failure and can cause repeated
 `NeedOutput`; refusal is expressed with `discard_until_delimiter()`.
 

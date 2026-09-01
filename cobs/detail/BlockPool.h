@@ -1,6 +1,7 @@
 /*
  * cobs::detail::BlockPool — fixed blocks in static storage, and nothing
- * else. No heap, no virtuals, no mutex, O(1) acquire and release.
+ * else. No heap, no virtuals, no mutex, O(1) acquire. Checked release is
+ * O(BlockCount); see COBS_POOL_CHECKS below.
  *
  * INTERNAL. This is an implementation primitive, not a settled contract for
  * user-supplied storage: it lives in detail/ so that nobody discovers it,
@@ -58,14 +59,18 @@ namespace cobs::detail {
 struct PoolStats {
 	uint32_t in_use     = 0;
 	uint32_t high_water = 0;
-	uint32_t exhausted  = 0; // acquire() calls that found the pool dry
-	uint32_t rejected   = 0; // release() calls refused by the checks
+	uint32_t exhausted  = 0; // dry acquire count, modulo 2^32
+	uint32_t rejected   = 0; // refused release count, modulo 2^32
 };
 
 template<std::size_t BlockSize, std::size_t BlockCount, std::size_t RequestedAlignment>
 class BlockPool final {
 	static_assert(BlockCount >= 1, "a pool needs at least one block");
+	static_assert(BlockCount <= UINT32_MAX,
+		"PoolStats::in_use cannot represent this many live blocks");
 	static_assert(RequestedAlignment >= 1, "alignment must be positive");
+	static_assert((RequestedAlignment & (RequestedAlignment - 1u)) == 0u,
+		"alignment must be a power of two");
 
 	// Forward-declared so the free-list link's size and alignment are known
 	// before the block that has to accommodate them is defined.
@@ -199,8 +204,8 @@ private:
 		return ((address - begin) % sizeof(Block)) == 0u;
 	}
 
-	// O(n) on purpose: this catches a double free during testing, it is not
-	// meant to be fast, and it is compiled out entirely in a release build.
+	// O(n) on purpose: this catches a double free in every configuration where
+	// checks are enabled. Defining COBS_POOL_CHECKS=0 is the explicit opt-out.
 	bool is_free(const Block* const b) const noexcept
 	{
 		for (const Block* f = m_free; f != nullptr; f = next_of(f)) {

@@ -10,7 +10,10 @@
  *
  * The count is a plain integer. One execution domain needs nothing more; an
  * atomic policy belongs to the day cross-task sharing actually appears, not
- * to a speculative today.
+ * to a speculative today. Like any fixed-width intrusive count, it also has a
+ * capacity: an application must not create more than UINT32_MAX simultaneous
+ * handles to one block. That bound is beyond the addressable Packet count on
+ * a 32-bit target, but stating it keeps unsigned wrap out of the contract.
  *
  * The application sees the payload only as a const span: the bytes are
  * immutable once published.

@@ -8,17 +8,18 @@
  * compiled exactly once no matter how many Endpoint instantiations exist.
  *
  * Because it holds no allocator, an allocation failure cannot arise inside
- * it. The seam is Event::NeedOutput: the decoder consumes the code byte that
- * starts a frame, then asks its owner for somewhere to put the result.
+ * it. The seam is Event::NeedOutput: unless the owner prepared the first
+ * segment while synchronized, the decoder consumes the code byte that starts
+ * a frame and then asks for somewhere to put the result.
  *
  * OUTPUT IS SEGMENTED. NeedOutput may be raised MANY times within one frame:
- * once when the frame starts, and again whenever the attached segment is full
- * and another decoded byte is due. The owner answers each one with the next
- * segment, or discards. This is what lets a length-prefixed protocol decode a
- * small header into a local buffer, learn how big the body is, allocate for
- * exactly that, and continue into the packet — with no staging buffer and no
- * copy. The decoder itself knows nothing about any of that; it only knows it
- * has run out of room.
+ * at frame start when no first segment was prepared, and whenever an attached
+ * segment is full and another decoded byte is due. The owner answers each one
+ * with the next segment, or discards. This is what lets a length-prefixed
+ * protocol decode a small header into a local buffer, learn how big the body
+ * is, allocate for exactly that, and continue into the packet — with no
+ * staging buffer and no copy. The decoder itself knows nothing about any of
+ * that; it only knows it has run out of room.
  *
  * decoded_size on FrameComplete is the TOTAL across every segment.
  *
@@ -92,10 +93,29 @@ public:
 	// change the state.
 	[[nodiscard]] Result consume(std::span<const uint8_t> input) noexcept;
 
-	// Answer to NeedOutput: the NEXT output segment. Accepted only when one is
-	// actually wanted — while decoding, with nothing attached yet or with the
-	// current segment full. Attaching over a segment that still has room would
-	// silently strand the bytes already in it, so it is ignored.
+	// Prepares the first output segment of the next frame while Synced, avoiding
+	// a NeedOutput round trip for an owner whose initial destination is already
+	// known. Ignored while Decoding or discarding. A second preparation replaces
+	// the still-unused segment.
+	//
+	// The span is borrowed across bare delimiters until the next NeedOutput,
+	// FrameComplete, Malformed, or discard. Frame completion clears it; prepare
+	// again for the next frame.
+	void prepare_output(std::span<uint8_t> output) noexcept
+	{
+		if (m_state != State::Synced) {
+			return;
+		}
+		m_output = output;
+		m_written = 0;
+		m_decodedBefore = 0;
+		m_hasOutput = true;
+	}
+
+	// Answer to NeedOutput: the NEXT output segment. Accepted only while
+	// Decoding, with nothing attached yet or with the current segment full.
+	// Attaching over a segment that still has room would silently strand the
+	// bytes already in it, so it is ignored.
 	//
 	// Only the segment-local write position resets; the running total does
 	// not, so decoded_size still spans the whole frame.
@@ -128,18 +148,6 @@ private:
 		m_decodedBefore = 0;
 		m_blockRemaining = 0;
 		m_pendingZero = false;
-	}
-
-	// True when the next decoded byte has nowhere to go. Only asked once a
-	// segment has actually been attached.
-	[[nodiscard]] bool segmentFull() const noexcept
-	{
-		return m_written == m_output.size();
-	}
-
-	[[nodiscard]] std::size_t decodedTotal() const noexcept
-	{
-		return m_decodedBefore + m_written;
 	}
 
 	State m_state = State::Synced;

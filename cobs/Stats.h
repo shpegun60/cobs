@@ -5,6 +5,11 @@
  * Receiver owns Rx and Endpoint owns Tx. Endpoint::stats() combines copies of
  * both into this value type, so an application observes one coherent
  * API without receiving mutable references into engine state.
+ *
+ * Event counters are uint32_t and intentionally wrap modulo 2^32. Keeping an
+ * update to one native increment matters on embedded hot paths; monitoring
+ * that needs lifetime totals should sample periodically and extend modular
+ * deltas in its own wider accumulator.
  */
 
 #ifndef COBS_STATS_H_

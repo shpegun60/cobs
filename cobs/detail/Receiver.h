@@ -69,7 +69,10 @@ public:
 
 	static constexpr std::size_t length_size = Format::length_size;
 
-	explicit Receiver(StorageT& storage) noexcept : m_storage(storage) {}
+	explicit Receiver(StorageT& storage) noexcept : m_storage(storage)
+	{
+		prepareHeader();
+	}
 
 	// Owns references, so it must not be copied.
 	Receiver(const Receiver&) = delete;
@@ -154,17 +157,20 @@ private:
 	 * The only temporary decoded storage in the whole RX path is the one or
 	 * two bytes of m_lengthBytes.
 	 */
-	enum class Stage : uint8_t { Header, Body };
+	// NeedHeader and Header are distinct states instead of a Stage plus a
+	// separate boolean. The impossible combinations are therefore not
+	// representable: Header always means the local segment is attached.
+	enum class Stage : uint8_t { NeedHeader, Header, Body };
 
 	void onNeedOutput() noexcept
 	{
+		if (m_stage == Stage::NeedHeader) {
+			// First request after a resynchronization: give it the length field.
+			m_stage = Stage::Header;
+			m_decoder.attach_output(std::span<uint8_t>{m_lengthBytes});
+			return;
+		}
 		if (m_stage == Stage::Header) {
-			if (!m_headerAttached) {
-				// First request of a new frame: give it the length field.
-				m_headerAttached = true;
-				m_decoder.attach_output(std::span<uint8_t>{m_lengthBytes});
-				return;
-			}
 			// The header is complete and MORE decoded bytes are coming, so the
 			// body starts now and its size is already known.
 			beginBody();
@@ -226,7 +232,10 @@ private:
 			return;
 		}
 		m_building = block;
-		m_declared = declared;
+		// While the block is private to the building state, its existing size
+		// field is the single source of truth for the declared body length. It
+		// becomes the published logical size only after the equality check.
+		m_building->size = static_cast<uint16_t>(declared);
 		m_stage = Stage::Body;
 		// EXACTLY the declared length, never rx_max_size: the block may be
 		// that small, and a longer span would both overrun it and hide an
@@ -236,7 +245,7 @@ private:
 
 	void onFrameComplete(const std::size_t decoded_size) noexcept
 	{
-		if (m_stage == Stage::Header) {
+		if (m_stage != Stage::Body) {
 			// The delimiter arrived before any body did. Only one of these is
 			// a real frame.
 			if (decoded_size < length_size) {
@@ -274,9 +283,9 @@ private:
 
 		// Stage::Body. decoded_size counts the header too.
 		const std::size_t body = decoded_size - length_size;
-		if (body != m_declared) {
+		if (body != static_cast<std::size_t>(m_building->size)) {
 			// Short: the delimiter came before the declared bytes did. Long is
-			// impossible here — the segment is exactly m_declared bytes, so an
+			// impossible here — the segment is exactly the declared bytes, so an
 			// extra byte raises NeedOutput instead of arriving.
 			++m_stats.length_mismatch;
 			endFrame(true);
@@ -315,13 +324,18 @@ private:
 			++m_stats.frames_lost;
 		}
 		resetFrame();
+		prepareHeader();
 	}
 
 	void resetFrame() noexcept
 	{
+		m_stage = Stage::NeedHeader;
+	}
+
+	void prepareHeader() noexcept
+	{
 		m_stage = Stage::Header;
-		m_headerAttached = false;
-		m_declared = 0;
+		m_decoder.prepare_output(std::span<uint8_t>{m_lengthBytes});
 	}
 
 	void releaseBuilding() noexcept
@@ -337,6 +351,7 @@ private:
 		releaseBuilding();
 		++m_stats.frames_lost;
 		resetFrame();
+		prepareHeader();
 	}
 
 	void enqueueReady(Block* const block) noexcept
@@ -376,9 +391,7 @@ private:
 	StorageT& m_storage;
 
 	std::array<uint8_t, Format::length_size> m_lengthBytes{};
-	std::size_t m_declared = 0;
-	Stage m_stage = Stage::Header;
-	bool  m_headerAttached = false;
+	Stage m_stage = Stage::NeedHeader;
 
 	Block* m_building  = nullptr;
 	Block* m_readyHead = nullptr;

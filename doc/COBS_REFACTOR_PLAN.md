@@ -23,6 +23,10 @@ contract. The stable result is now split into `ARCHITECTURE.md`,
 rationale and proofs. This plan remains the migration history and explicitly
 identifies the invariants that must not change while unfinished phases proceed.
 
+The post-refactor correctness/performance re-audit is recorded separately in
+[`COBS_PARANOID_AUDIT.md`](COBS_PARANOID_AUDIT.md). It amends implementation
+details only where it preserves the ownership and wire decisions locked here.
+
 ## 1. Purpose
 
 The existing algorithms are not the reason for the refactor. The decoder,
@@ -73,8 +77,10 @@ refactor.
 ### 2.3 Explicit state machines remain explicit
 
 - Keep every decoder state and counter needed by streaming COBS decoding.
-- Keep the receiver's explicit `Header`/`Body` stage, declared length, and
-  header-attachment state.
+- Keep the receiver's explicit `NeedHeader`/`Header`/`Body` stage and declared
+  length. Header attachment is encoded by that stage (not a separate bool),
+  and the private building `RxBlock::size` is the single declared-length
+  source once allocation succeeds.
 - Keep the message's explicit state.
 - Do not infer state from `nullptr`, size, capacity, or wire size in order to
   save a few bytes. The resulting hidden state machine would be harder to
@@ -514,7 +520,7 @@ Exact field migration inventory:
 | Current owner | Current fields | Target decision |
 |---|---|---|
 | `cobs::codec::Decoder` | `m_state`, `m_output`, `m_written`, `m_decodedBefore`, `m_blockRemaining`, `m_pendingZero`, `m_hasOutput` | retained unchanged by the completed codec namespace move |
-| `cobs::detail::Receiver` | `m_decoder`, `m_storage`, `m_lengthBytes`, `m_declared`, `m_stage`, `m_headerAttached`, `m_building`, `m_readyHead`, `m_readyTail`, `m_stats` | final internal name; all ready-queue writes centralized in private helpers |
+| `cobs::detail::Receiver` | `m_decoder`, `m_storage`, `m_lengthBytes`, `m_stage`, `m_building`, `m_readyHead`, `m_readyTail`, `m_stats` | `Stage` makes header preparation explicit; the private building block's `size` holds the validated declaration, avoiding duplicate state; all ready-queue writes remain centralized |
 | `cobs::RxBlock<Storage>` | `refs`, `size`, `next_ready`, `owner` | typed/private metadata retained unchanged |
 | `cobs::Packet` | `m_p` | final one-pointer public handle |
 | `cobs::Message` | `m_storage`, `m_block`, `m_size`, `m_wire`, `m_state` | one `cobs::TxBlock`; explicit state remains |

@@ -13,6 +13,7 @@
 #include "reference_encoder.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdint>
 #include <string>
@@ -211,6 +212,18 @@ void testNeedOutputSeam()
 		const auto r2 = d.consume(std::span<const uint8_t>{wire.data() + 1, 3});
 		check(r2.event == cobs::codec::Decoder::Event::FrameComplete && r2.decoded_size == 2,
 		      "the remainder completes the frame without re-feeding the code byte");
+	}
+	{ // A known first destination can be prepared before the frame starts.
+		cobs::codec::Decoder d;
+		std::array<uint8_t, 2> out{0xCC, 0xCC};
+		d.prepare_output(out);
+		const std::array<uint8_t, 5> wire{0x00, 0x03, 0x11, 0x22, 0x00};
+		const auto r = d.consume(wire);
+		check(r.event == cobs::codec::Decoder::Event::FrameComplete &&
+		      r.consumed == wire.size() && r.decoded_size == out.size(),
+		      "a prepared first segment avoids the initial NeedOutput round trip");
+		check(out == std::array<uint8_t, 2>{0x11, 0x22},
+		      "and remains prepared across harmless leading delimiters");
 	}
 	{	// Ignoring NeedOutput must not corrupt anything: the decoder asks again.
 		cobs::codec::Decoder d;

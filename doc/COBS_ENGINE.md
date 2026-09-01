@@ -137,6 +137,14 @@ Whatever supplies those delegates must still honour the transport contract:
 only that the transport has stopped borrowing the buffer — never that a frame
 was delivered (§8.2).
 
+Both targets run synchronously inside `noexcept` endpoint methods. They must
+not throw and must not re-enter `bind()`, `unbind()`, `send()`, or `poll()` on
+the same endpoint. In particular, the sender callback runs before ownership
+moves from `Message` to `Endpoint`; re-entering `send()` in that interval would
+interrupt the hand-off. A sender returning `true` has taken exactly one borrow
+of the supplied span and keeps it until the paired busy query returns `false`;
+returning `false` means it took no borrow at all.
+
 ---
 
 ## 3. Wire format
@@ -465,14 +473,17 @@ pendingZero      the current block ended with code != 0xFF, so an implicit
 
 In `Synced`, a `0x00` is consumed and ignored (§3).
 
-**Output is segmented.** `NeedOutput` is not a once-per-frame event: the
-decoder raises it when a frame starts, and again whenever the attached segment
-is full and another decoded byte is due. The owner answers with the next
-segment or discards. `decoded_size` on `FrameComplete` is the total across all
-of them.
+**Output is segmented.** `NeedOutput` is not a once-per-frame event. If no
+first segment was prepared while `Synced`, the decoder raises it when a frame
+starts; it is raised again whenever the attached segment is full and another
+decoded byte is due. The receiver already owns its 1-2 byte length buffer, so
+it prepares that segment after every synchronized frame and removes the first
+round trip from the steady-state path. The owner answers later requests with
+the next segment or discards. `decoded_size` on `FrameComplete` is the total
+across all of them.
 
 ```text
-NeedOutput  -> attach segment A   (the length field)
+Synced      -> prepare segment A  (the length field)
 A fills
 NeedOutput  -> attach segment B   (the packet, sized from the declared length)
 B fills or the delimiter arrives
@@ -486,8 +497,10 @@ Three rules make that safe:
   an implicit zero owed across one;
 - if the delimiter arrives exactly when the segment is full, the frame
   completes without asking for a segment nobody would use;
-- `attach_output` is ignored while the current segment still has room, since
-  replacing it would silently strand the bytes already written into it.
+- `prepare_output` while `Synced` prepares the first segment;
+- `attach_output` answers a request while decoding and is ignored if the
+  current segment still has room, since replacing that segment would silently
+  strand the bytes already written into it;
 
 There is deliberately **no `Oversize` event**. "Too big" is not a fact this
 class can know: it has no protocol limit, only a segment that happens to be

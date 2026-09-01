@@ -369,6 +369,14 @@ The following are preconditions, not optional advice:
 6. `consume()` and `notify_gap()` are presented in real stream order. A gap
    moves decoding into discard-until-delimiter state even if it appeared to
    occur between known frames.
+7. Sender and busy-query delegate targets do not throw and do not re-enter
+   `bind()`, `unbind()`, `send()`, or `poll()` on the same endpoint. They run
+   synchronously inside `noexcept` methods; throwing terminates, while
+   re-entry can interrupt the TX ownership hand-off.
+8. A sender returns `true` only after borrowing the supplied span, and keeps
+   that borrow until the paired busy query returns `false`. Returning `false`
+   means no borrow was taken. The busy query is side-effect-free and never
+   reports idle while hardware can still read the block.
 
 ## 9. Observability
 
@@ -388,6 +396,11 @@ sender-start failures.
 Pool occupancy and pool allocation/release statistics are storage-specific.
 They remain available through the const `endpoint.storage()` view and are not
 folded into protocol statistics.
+
+Event counters are native `uint32_t` increments and wrap modulo 2^32. A
+long-running monitor extends periodic modular deltas if it needs a wider
+lifetime total; the protocol hot path does not pay for 64-bit or saturating
+arithmetic on Cortex-M.
 
 ## 10. Architectural invariants
 

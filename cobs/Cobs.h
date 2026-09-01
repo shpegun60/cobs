@@ -24,6 +24,14 @@
  *     physically reading a block that is about to stop existing. Check
  *     `tx_active()` and drain with `poll()` before letting it go.
  * ---------------------------------------------------------------------------
+ * TRANSPORT CALLBACK PRECONDITIONS. Sender and busy-query targets execute
+ * synchronously inside noexcept Endpoint methods. They must not throw and
+ * must not re-enter bind(), unbind(), send(), or poll() on this same Endpoint.
+ * A sender returning true has borrowed the exact span until busy() becomes
+ * false; returning false means it borrowed nothing. busy() itself is a
+ * side-effect-free lifetime query and may return false only after the
+ * transport has stopped touching the bytes.
+ * ---------------------------------------------------------------------------
  */
 
 #ifndef COBS_H_

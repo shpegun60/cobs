@@ -908,6 +908,25 @@ void testLengthPrefixIsHiddenAndCorrect()
 	}
 }
 
+void testMaximumFormatFrame()
+{
+	using Engine = cobs::Endpoint<cobs::Heap<cobs::Format<65535, 65535>>>;
+	Engine endpoint;
+	CaptureTransport transport;
+	check(bindTransport(endpoint, transport), "the maximum-format coordinator binds");
+
+	std::vector<uint8_t> body(Engine::max_send_size);
+	for (std::size_t i = 0; i < body.size(); ++i) {
+		body[i] = static_cast<uint8_t>((i % 251u == 7u) ? 0u : 1u + i % 254u);
+	}
+	auto message = endpoint.make_message(body.size());
+	check(message.append_bytes(std::span<const uint8_t>{body}) &&
+	      message.size() == Engine::max_send_size,
+	      "all 65535 payload bytes fit the widest supported format");
+	check(sendsAs(endpoint, transport, message, body),
+	      "and encode in place as one canonical maximum engine frame");
+}
+
 /*
  * The header shifts every COBS block boundary by H bytes, so the interesting
  * payload lengths are the ones that put H + S on a boundary rather than S.
@@ -994,6 +1013,7 @@ int main()
 
 	group("Format");
 	testLengthPrefixIsHiddenAndCorrect();
+	testMaximumFormatFrame();
 	testHeaderShiftsTheCobsBoundaries();
 
 	group("CoordinatorEncoding");
