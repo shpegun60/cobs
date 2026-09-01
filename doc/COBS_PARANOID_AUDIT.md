@@ -1,10 +1,12 @@
 # COBS paranoid correctness and hot-path audit
 
-Status: verification complete; publication checkpoint pending
+Status: complete
 
 Audit date: 2026-09-01
 
 Audited baseline: `0263f522e764b801999fcda5d20140049f16b64d`
+
+Published implementation checkpoint: `ff1d3f756b311bbaaff29e5e29606748fd8bd0cf`
 
 Scope: every active production file under `cobs/`, its public contracts,
 storage extension boundary, ownership fields, host/ARM layouts, test runners,
@@ -271,9 +273,8 @@ implementation deterministic and fast:
 
 ## 8. Closure criteria
 
-All verification below was repeated on the final implementation tree. The
-publication item remains open until the implementation commit is present on
-the existing remote branch:
+All verification below was repeated on the final implementation tree, and the
+implementation checkpoint is present on the existing remote branch:
 
 - [x] MinGW host suite, compile-fail contracts, headers, `NDEBUG`, optimized oracle;
 - [x] WSL ASan/UBSan suite with non-recovering sanitizer mode;
@@ -281,4 +282,4 @@ the existing remote branch:
 - [x] Cortex-M `-O3`/`-Os` codec warning and stack-usage builds;
 - [x] qmake public consumer and root project clean builds;
 - [x] `git diff --check` and a clean tracked build boundary;
-- [ ] scoped commit and push on the existing branch.
+- [x] scoped commit and push on the existing branch.
