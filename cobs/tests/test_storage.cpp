@@ -1,5 +1,5 @@
 /*
- * The storage contract (doc/COBS_ENGINE.md §9), run against both built-in
+ * The storage contract (doc/STORAGE.md), run against both built-in
  * strategies from one test body.
  *
  * That shared body is the real point. It uses nothing but the contract — one

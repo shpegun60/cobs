@@ -9,6 +9,13 @@ and acceptance criteria are in `doc/COBS_REFACTOR_PLAN.md`. Consult it before
 changing COBS names, ownership, storage, delegates, state fields, or file
 boundaries.
 
+The stable COBS documentation is split by boundary:
+
+- `doc/ARCHITECTURE.md` — canonical component/API/ownership entry point;
+- `doc/PROTOCOL.md` — normative wire and decoder behavior;
+- `doc/STORAGE.md` — exact custom-storage contract;
+- `doc/COBS_ENGINE.md` — detailed rationale, transition traces, and proofs.
+
 A Qt Widgets application (qmake, C++20) intended as a desktop host/testbed for a reusable UART + COBS communication stack. The Qt GUI itself is currently a bare scaffold (`main.cpp`, `mainwindow.*`), but `COBS.pro` includes `cobs/cobs.pri` and therefore compiles the real non-template COBS core. The separate console consumer under `cobs/tests/qmake_consumer/` instantiates and executes the full public API over both built-in storage strategies. The STM32 implementation remains in `uart/Uart.h` (not part of the Qt build — it needs an STM32 HAL).
 
 Local dependencies live in `libs/` (cloned from the author's GitHub, on `INCLUDEPATH`):
@@ -92,7 +99,9 @@ The script builds with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` and adds
 
 ## Architecture
 
-`doc/UART_COBS_ARCHITECTURE.md` is the original design document — read it before implementing or modifying any transport code. Its core rules:
+`doc/UART_COBS_ARCHITECTURE.md` is the original design sketch. It remains
+useful as historical rationale, but its sample API and parts of its UART model
+are not current. The implemented boundaries are:
 
 - **Three layers**: byte transport (UART/TCP/…) → COBS (framing, packet lifetime, storage) → application (`cobs::Message` / `cobs::Packet`). "UART handles bytes. COBS handles packets."
 - The transport is bound as one owning `tiny::delegate` pair for busy state and `send(span)`; it has **no TX queue**, no knowledge of framing, CRC, or packet sizes. TX-busy policy (retry/drop/queue) belongs to layers above.
@@ -101,9 +110,11 @@ The script builds with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` and adds
 - RX callbacks deliver arbitrary byte chunks (a frame may span chunks, or one chunk may hold several frames); the span is valid only during the callback. On errors COBS drops bytes until the next `0x00` delimiter to resynchronize.
 - CRC is a COBS/protocol policy, never a UART feature.
 
-Section 33 of the doc ("Key invariants") lists the invariants any implementation must preserve.
-
-**`doc/COBS_ENGINE.md` supersedes it for the COBS layer.** The architecture document is a design sketch and its UART sections are now partly historical (the implemented driver is a template with an internal chunk pool, not the external-storage engine it describes); `COBS_ENGINE.md` is the reviewed contract the COBS implementation must satisfy — decision table, decoder state machine, size arithmetic, the in-place TX overlap invariant with its proof, and the test plan. Where the two disagree, `COBS_ENGINE.md` wins. Notably it splits out the non-template `cobs::codec::Decoder`, binds transport with owning delegates, and defines memory through the checked `cobs::Storage` contract with `Heap`, `Pool`, `RxBlock`, and `TxBlock` (§9).
+For current COBS work, start with `doc/ARCHITECTURE.md` and follow its links
+to `PROTOCOL.md` or `STORAGE.md`. `COBS_ENGINE.md` retains the reviewed decoder
+state machine, arithmetic rationale, in-place overlap proof, and test plan.
+For current UART behavior, read `uart/Uart.h` and its executable host and
+portability tests rather than treating the old sketch as an API contract.
 
 ## Reference material
 

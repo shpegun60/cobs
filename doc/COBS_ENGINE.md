@@ -1,19 +1,21 @@
-# COBS Engine — implementation contract
+# COBS Engine — detailed design record
 
-> Refactor tracking: `COBS_REFACTOR_PLAN.md` records the locked decisions,
-> target architecture, migration phases, and verification gates. This file
-> remains the current behavioural contract until that migration is complete.
+> Current documentation is split by boundary: `ARCHITECTURE.md` is the
+> canonical entry point, `PROTOCOL.md` is the normative wire contract, and
+> `STORAGE.md` is the storage-extension contract. `COBS_REFACTOR_PLAN.md`
+> records locked migration decisions and verification gates.
 
-This document refines `UART_COBS_ARCHITECTURE.md` into the contract the
-implementation must satisfy. Where the two disagree, **this document wins**:
-the architecture document is the original design sketch and still shows a
-virtual `IByteTx` and a single large templated `cobs::Endpoint`, both of which the
-decisions below replace.
+This document preserves the detailed rationale, transition tables, arithmetic,
+and overlap proof behind those stable documents. It refined the original
+`UART_COBS_ARCHITECTURE.md` sketch while the implementation was being built.
+Current API or extension work starts from the split documents above; this file
+explains why their constraints exist. The old sketch still shows a virtual
+`IByteTx` and a single large templated `cobs::Endpoint`, both superseded by the
+implemented architecture.
 
-Nothing here is implementation. It exists so that the implementation can be
-reviewed against a written contract instead of against somebody's memory of a
-conversation, and so that the invariants that are cheap to state now stay
-provable later.
+This is not an additional compatibility surface. It exists so that the
+implementation can be reviewed against recorded reasoning instead of against
+somebody's memory of a conversation, and so that its invariants stay provable.
 
 The byte transport underneath is settled and frozen: see `uart/Uart.h`. The
 only two things COBS may assume about it are `tx_busy()` and `send(span)`.
@@ -1453,8 +1455,8 @@ Storage
 `cobs::Endpoint` reads those numbers from `StorageT::Format` and never reconstructs
 them. It republishes them under `max_receive_size` and `max_send_size` (§4.1).
 
-The default is **`cobs::Heap`**, as `UART_COBS_ARCHITECTURE.md` §1 has
-said from the start, which makes the common spelling `cobs::Endpoint<>`. It is
+The default is **`cobs::Heap`**, which makes the common spelling
+`cobs::Endpoint<>`. It is
 parameterized rather than unbounded, because "no limit" is not available to
 us: the length field is itself fixed-width, so the largest frame the format can
 describe has to be decided when the type is instantiated. The PER-FRAME

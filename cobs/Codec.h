@@ -1,9 +1,10 @@
 /*
  * cobs::codec — the non-template COBS framing primitives.
  *
- * Contract: doc/COBS_ENGINE.md. This class deliberately knows no allocator,
- * no transport and no ownership: it decodes into a span the owner supplies,
- * so it can be tested with no HAL, no pool and no transport at all, and it is
+ * Contract: doc/PROTOCOL.md. The detailed derivation and overlap proof remain
+ * in doc/COBS_ENGINE.md. This class deliberately knows no allocator, no
+ * transport and no ownership: it decodes into a span the owner supplies, so
+ * it can be tested with no HAL, no pool and no transport at all, and it is
  * compiled exactly once no matter how many Endpoint instantiations exist.
  *
  * Because it holds no allocator, an allocation failure cannot arise inside

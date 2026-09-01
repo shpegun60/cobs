@@ -1,9 +1,10 @@
 /*
  * Endpoint — the assembled engine. RX vertical, TX vertical, one storage strategy.
  *
- * Contract: doc/COBS_ENGINE.md. Everything difficult already lives one layer
- * down; what is here is the transport handshake and the single active
- * transfer.
+ * Contract: doc/ARCHITECTURE.md. Wire details are in doc/PROTOCOL.md and the
+ * memory extension boundary is in doc/STORAGE.md. Everything difficult
+ * already lives one layer down; what is here is the transport handshake and
+ * the single active transfer.
  *
  *     RX:  bytes -> cobs::codec::Decoder -> storage -> RxBlock -> Packet
  *     TX:  Message -> encoder -> sender delegate -> activeTx -> storage

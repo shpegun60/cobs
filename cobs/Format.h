@@ -1,8 +1,8 @@
 /*
  * cobs::Format — protocol geometry, independent of memory strategy.
  *
- * Contract: doc/COBS_ENGINE.md §3 and §4. Every engine frame carries a
- * fixed-width decoded length prefix ahead of its body:
+ * Contract: doc/PROTOCOL.md. Every engine frame carries a fixed-width decoded
+ * length prefix ahead of its body:
  *
  *     wire     =  COBS( [length][body] ) 00
  *     length   =  the number of decoded BODY bytes that follow it

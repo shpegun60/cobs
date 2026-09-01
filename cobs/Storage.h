@@ -1,6 +1,9 @@
 /*
  * cobs storage extension surface.
  *
+ * Contract: doc/STORAGE.md. The checked concept below covers syntax; the
+ * document and shared conformance suite cover its runtime obligations.
+ *
  * This header exports every type needed to provide memory to the engine:
  *
  *     Format<Rx, Tx>          protocol geometry

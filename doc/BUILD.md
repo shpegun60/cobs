@@ -11,6 +11,13 @@ The repository has two qmake targets with different jobs:
 The second target is the stronger public-API integration proof; the GUI does
 not need test logic in `main.cpp` merely to instantiate templates.
 
+Current COBS documentation is split by boundary:
+
+- `ARCHITECTURE.md` — components, public API, ownership, and lifetimes;
+- `PROTOCOL.md` — normative wire format and framing behavior;
+- `STORAGE.md` — checked storage extension contract and custom strategies;
+- `COBS_ENGINE.md` — detailed rationale, state traces, and overlap proof.
+
 ## Toolchain
 
 | Tool | Path |

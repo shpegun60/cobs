@@ -12,11 +12,11 @@ API and ownership model, the order of migration, and the evidence required at
 each step. It is deliberately more detailed than the future user-facing
 architecture documentation.
 
-`COBS_ENGINE.md` remains the implementation contract for the current engine
-until the migration is complete. If this plan and that contract appear to
-disagree about current behaviour, `COBS_ENGINE.md` wins. This document defines
-where the architecture is going and explicitly identifies the invariants that
-must not change on the way there.
+During the early phases, `COBS_ENGINE.md` was the single implementation
+contract. The stable result is now split into `ARCHITECTURE.md`,
+`PROTOCOL.md`, and `STORAGE.md`; `COBS_ENGINE.md` retains the detailed
+rationale and proofs. This plan remains the migration history and explicitly
+identifies the invariants that must not change while unfinished phases proceed.
 
 ## 1. Purpose
 
@@ -845,7 +845,7 @@ protocol changes must never be bundled together.
 ### Phase 7 - build and documentation
 
 - [x] Add a real COBS consumer/build fragment to qmake.
-- [ ] Produce `ARCHITECTURE.md`, `PROTOCOL.md`, and `STORAGE.md` from the stable
+- [x] Produce `ARCHITECTURE.md`, `PROTOCOL.md`, and `STORAGE.md` from the stable
       API.
 - [x] Update `BUILD.md` with exact verified commands.
 - [ ] Check parity, then archive superseded sketches.
@@ -1029,3 +1029,15 @@ The following are not part of this refactor:
   commands. The full checkpoint remained 23,033 COBS checks under MinGW and
   WSL ASan/UBSan, unchanged ARM layouts, UART host 131/131, and a passing
   F1/G4/H7RS port/probe matrix with only the known vendor warning.
+- Split the stable documentation by audience without introducing another API:
+  `ARCHITECTURE.md` now records public/extension/detail boundaries, concrete
+  object fields, ownership transitions, delegate and endpoint lifetimes;
+  `PROTOCOL.md` is the normative wire, length, decoder, resynchronization, and
+  in-place geometry contract; `STORAGE.md` contains the exact checked concept,
+  runtime obligations, built-in strategies, a complete custom-storage example,
+  pool sizing, and conformance checklist. `COBS_ENGINE.md` remains the deep
+  rationale and proof companion, while this plan remains migration history.
+  Both complete documentation examples compile warning-clean. The checkpoint
+  passed 23,033 COBS checks on MinGW and under WSL ASan/UBSan, the ARM layout
+  assertions, UART host 131/131, the F1/G4/H7RS port/probe matrix, the qmake
+  consumer, and the root Qt build.

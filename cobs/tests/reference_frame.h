@@ -1,7 +1,7 @@
 /*
  * An independent oracle for the ENGINE wire format, for tests only.
  *
- * doc/COBS_ENGINE.md §3: an engine frame is a COBS-encoded [length][body],
+ * doc/PROTOCOL.md: an engine frame is a COBS-encoded [length][body],
  * where the length is a little-endian field of 1 or 2 bytes counting only the
  * body that follows it.
  *
