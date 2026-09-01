@@ -2,9 +2,12 @@ QT += widgets
 
 CONFIG += c++20
 
-INCLUDEPATH += \
-    libs/spsc/src \
-    libs/delegate
+INCLUDEPATH += libs/spsc/src
+
+# Compile and expose the real COBS core in the host project. The separate
+# qmake consumer under cobs/tests/qmake_consumer also instantiates the complete
+# Endpoint API over both built-in storage strategies.
+include(cobs/cobs.pri)
 
 # You can make your code fail to compile if it uses deprecated APIs.
 # In order to do so, uncomment the following line.

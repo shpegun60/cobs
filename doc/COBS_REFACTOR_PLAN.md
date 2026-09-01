@@ -123,8 +123,11 @@ baseline recorded before production changes is:
 - STM32 F1, G4, and H7RS compile matrix passed;
 - disabled-probe and port-equivalence checks passed.
 
-The root `COBS.pro` currently builds only the Qt GUI scaffold. Passing that
-build alone is not evidence that either COBS or UART compiles.
+At the starting SHA, root `COBS.pro` built only the Qt GUI scaffold. The current
+tree includes `cobs/cobs.pri`, so it compiles the two non-template codec sources;
+the dedicated qmake consumer additionally instantiates and executes the public
+endpoint API over both built-in storage strategies. UART still requires its
+own host and STM32 targets.
 
 ### 3.1 Host layout snapshot
 
@@ -719,17 +722,19 @@ together, and forwarding headers or compatibility aliases are not retained.
 
 ## 13. Build and integration boundary
 
-The repository needs a build target that proves the real library is usable.
-The final integration work should:
+The repository now has a build target that proves the real library is usable.
+The integration boundary is:
 
-- add `cobs/cobs.pri` or an equivalent reusable qmake fragment;
-- compile non-template codec sources exactly once;
-- expose the required include paths for COBS and `tiny_delegate`;
-- add a small consumer that constructs an `Endpoint`, binds delegates, sends,
+- `cobs/cobs.pri` is the guarded reusable qmake fragment;
+- it compiles non-template codec sources exactly once;
+- it exposes the required include paths for COBS and `tiny_delegate`, with an
+  override for external dependency layouts;
+- the console consumer constructs an `Endpoint`, binds delegates, sends,
   receives, and exercises both default and deterministic storage at compile
-  time;
-- keep host test scripts available independently of Qt;
-- document the exact MinGW, WSL sanitizer, and STM32 matrix commands.
+  time and runtime;
+- host test scripts remain available independently of Qt;
+- `BUILD.md` records the exact MinGW, WSL sanitizer, consumer, and STM32 matrix
+  commands.
 
 The empty GUI scaffold may remain an example shell, but its success must no
 longer be confused with core-library validation.
@@ -826,23 +831,23 @@ protocol changes must never be bundled together.
 - [x] Group the two delegates in private `Transport`; host/ARM layout and
       transactional bind behaviour show no regression.
 - [x] Return the combined `Stats` snapshot.
-- [ ] Update examples to include only `Cobs.h`.
+- [x] Update examples to include only `Cobs.h`.
 
 ### Phase 6 - tests around public boundaries
 
 - [ ] Separate codec, storage, message, packet-lifetime, endpoint, public API,
       and compile-fail tests.
-- [ ] Permit white-box tests to include `detail` explicitly.
+- [x] Permit white-box tests to include `detail` explicitly.
 - [x] Require application tests to include only `Cobs.h`.
-- [ ] Add wire-equivalence fixtures across storage implementations.
+- [x] Add wire-equivalence fixtures across storage implementations.
 - [x] Add transport-delegate lifetime tests for owning lambdas/binds/borrows.
 
 ### Phase 7 - build and documentation
 
-- [ ] Add a real COBS consumer/build fragment to qmake.
+- [x] Add a real COBS consumer/build fragment to qmake.
 - [ ] Produce `ARCHITECTURE.md`, `PROTOCOL.md`, and `STORAGE.md` from the stable
       API.
-- [ ] Update `BUILD.md` with exact verified commands.
+- [x] Update `BUILD.md` with exact verified commands.
 - [ ] Check parity, then archive superseded sketches.
 - [x] Retain no forwarding aliases or headers during the migration.
 
@@ -1014,3 +1019,13 @@ The following are not part of this refactor:
   the decision to retain the universal owning delegate observable rather than
   documentary. MinGW and WSL ASan/UBSan passed 23,033 COBS checks; ARM layout,
   UART host 131/131, and the full F1/G4/H7RS port/probe matrix remained green.
+- Added the guarded reusable `cobs/cobs.pri` source manifest and included it in
+  root `COBS.pro`, so a GUI build now compiles and links both non-template codec
+  sources. Added a Qt-free qmake console consumer that includes only `Cobs.h`,
+  instantiates the default heap endpoint and a format-compatible deterministic
+  pool endpoint, then executes bind, build, send, loopback receive, packet,
+  poll, stats, and unbind paths. A fresh root build and a clean consumer build
+  both passed. `BUILD.md` now distinguishes those proofs and records the exact
+  commands. The full checkpoint remained 23,033 COBS checks under MinGW and
+  WSL ASan/UBSan, unchanged ARM layouts, UART host 131/131, and a passing
+  F1/G4/H7RS port/probe matrix with only the known vendor warning.

@@ -1,6 +1,15 @@
-# Building COBS on Windows (MinGW)
+# Building and verifying COBS on Windows (MinGW)
 
-The project is a qmake-based Qt Widgets application. It can be built either from Qt Creator or from the command line.
+The repository has two qmake targets with different jobs:
+
+- `COBS.pro` is the Qt Widgets host scaffold and compiles the real non-template
+  COBS codec through `cobs/cobs.pri`;
+- `cobs/tests/qmake_consumer/consumer.pro` is the application-shaped proof. It
+  includes only `Cobs.h`, instantiates `Endpoint` with both `Heap` and `Pool`,
+  binds delegates, sends, receives, polls, observes `Stats`, and executes.
+
+The second target is the stronger public-API integration proof; the GUI does
+not need test logic in `main.cpp` merely to instantiate templates.
 
 ## Toolchain
 
@@ -39,6 +48,69 @@ A plain `qmake` produces a **release** build: `build/cli/release/COBS.exe`. With
 
 The `build/cli/` directory is used so command-line builds never collide with Qt Creator's build directory.
 
+## Reusable COBS qmake fragment
+
+A downstream qmake target consumes the library with one line:
+
+```qmake
+include(path/to/cobs/cobs.pri)
+```
+
+The guarded fragment enables C++20, adds the COBS and delegate include paths,
+registers every library header, and compiles `Decoder.cpp` and `Encoder.cpp`
+exactly once. In this repository it finds `libs/delegate` automatically. An
+external layout may override the dependency path before including the file:
+
+```qmake
+COBS_DELEGATE_DIR = path/to/tiny_delegate
+include(path/to/cobs/cobs.pri)
+```
+
+Run the checked consumer from Git Bash:
+
+```bash
+export PATH="/c/Qt/6.10.1/mingw_64/bin:/c/Qt/Tools/mingw1310_64/bin:$PATH"
+sh cobs/tests/qmake_consumer/run.sh
+```
+
+The default out-of-tree result is
+`build/cobs-consumer/bin/cobs_pri_consumer.exe`. `QMAKE`, `MAKE`, and
+`COBS_QMAKE_BUILD_DIR` may override the tools or output directory.
+
+## COBS verification
+
+MinGW host suite, including five independent public-header smoke checks and
+the `-DNDEBUG` storage guarantees:
+
+```bash
+export PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH"
+sh cobs/tests/run.sh
+```
+
+WSL ASan+UBSan run (do not run it concurrently with the MinGW command because
+both intentionally reuse `cobs/tests/out`):
+
+```powershell
+wsl -e sh -lc 'cd /mnt/c/Users/admin/Documents/my_workspace/Qt/COBS && CXX=g++ sh cobs/tests/run.sh'
+```
+
+Cortex-M compile-only layout assertions with the recorded CubeIDE toolchain:
+
+```bash
+sh cobs/tests/check_arm_layout.sh
+```
+
+## UART regression matrix
+
+The COBS refactor keeps UART behaviour frozen. Its host interleaving suite and
+STM32 portability/probe matrix are:
+
+```bash
+export PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH"
+sh uart/tests/host/run.sh
+sh uart/tests/port/build.sh
+```
+
 ## Running the executable
 
 Outside Qt Creator the exe needs the Qt runtime DLLs. Either keep `C:\Qt\6.10.1\mingw_64\bin` on `PATH` when launching it, or make the build self-contained once:
@@ -49,7 +121,9 @@ C:\Qt\6.10.1\mingw_64\bin\windeployqt.exe build\cli\release\COBS.exe
 
 ## Adding files to the project
 
-New sources, headers, and `.ui` forms must be registered in `COBS.pro` (`SOURCES`, `HEADERS`, `FORMS`). After editing the `.pro` file, re-run `qmake` before `mingw32-make`.
+GUI sources, headers, and `.ui` forms are registered in `COBS.pro`. COBS
+library sources and headers are registered once in `cobs/cobs.pri`. After
+editing either list, re-run qmake before `mingw32-make`.
 
 ## Cleaning
 

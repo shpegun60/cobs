@@ -9,7 +9,7 @@ and acceptance criteria are in `doc/COBS_REFACTOR_PLAN.md`. Consult it before
 changing COBS names, ownership, storage, delegates, state fields, or file
 boundaries.
 
-A Qt Widgets application (qmake, C++20) intended as a desktop host/testbed for a reusable UART + COBS communication stack. The Qt GUI itself is currently a bare scaffold (`main.cpp`, `mainwindow.*`); the substance of the project is the transport-stack design in `doc/UART_COBS_ARCHITECTURE.md` and its STM32 implementation in `uart/Uart.h` (not part of the Qt build — it needs an STM32 HAL).
+A Qt Widgets application (qmake, C++20) intended as a desktop host/testbed for a reusable UART + COBS communication stack. The Qt GUI itself is currently a bare scaffold (`main.cpp`, `mainwindow.*`), but `COBS.pro` includes `cobs/cobs.pri` and therefore compiles the real non-template COBS core. The separate console consumer under `cobs/tests/qmake_consumer/` instantiates and executes the full public API over both built-in storage strategies. The STM32 implementation remains in `uart/Uart.h` (not part of the Qt build — it needs an STM32 HAL).
 
 Local dependencies live in `libs/` (cloned from the author's GitHub, on `INCLUDEPATH`):
 - `libs/spsc` — wait-free SPSC containers; `spsc::cache_aligned_chunk_fifo` is the RX buffer pool of the UART engine (DMA writes straight into claimed chunk slots).
@@ -28,7 +28,23 @@ mingw32-make -j
 
 Output: `build/cli/release/COBS.exe` (release is the default). Qt Creator uses its own directory, `build/Desktop_Qt_6_10_1_MinGW_64_bit_Debug/` — never build into it from the CLI.
 
-New source/header/form files must be added to `SOURCES`/`HEADERS`/`FORMS` in `COBS.pro`, then qmake must be re-run.
+The reusable COBS fragment and its real application-shaped consumer are
+verified separately:
+
+```bash
+export PATH="/c/Qt/6.10.1/mingw_64/bin:/c/Qt/Tools/mingw1310_64/bin:$PATH"
+sh cobs/tests/qmake_consumer/run.sh
+```
+
+The consumer includes only `Cobs.h`, links `Decoder.cpp` and `Encoder.cpp`
+through `cobs.pri`, and runs the same bind/send/receive flow over `Heap` and
+`Pool`. A downstream qmake project uses `include(path/to/cobs/cobs.pri)`; set
+`COBS_DELEGATE_DIR` before the include only when `tiny_delegate` is not at the
+repository default.
+
+GUI source/header/form files must be added to `SOURCES`/`HEADERS`/`FORMS` in
+`COBS.pro`. COBS library files belong in `cobs/cobs.pri`. Re-run qmake after
+changing either source list.
 
 ### STM32 portability matrix
 
