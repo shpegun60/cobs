@@ -170,7 +170,7 @@ void step(State& st, Rng& rng)
 			// Run a whole burst with interrupts masked, then release: the
 			// pending events must all be delivered on restore.
 			{
-				IRQGuard guard;
+				uart::detail::IrqGuard guard;
 				if (m.rx_armed) { fake::rx_bytes("XY", 2); fake::rx_idle(); }
 				st.trail.note("masked");
 			}

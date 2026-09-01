@@ -870,8 +870,8 @@ protocol changes must never be bundled together.
 
 - [x] Remove only proven-unused packaging files.
 - [x] Replace macro-generated deleted operations with explicit C++.
-- [ ] Hide helpers under `uart::detail` without logic changes.
-- [ ] Rerun every host, port, probe, and equivalence check.
+- [x] Hide helpers under `uart::detail` without logic changes.
+- [x] Rerun every host, port, probe, and equivalence check.
 
 ## 17. Verification matrix
 
@@ -1095,3 +1095,16 @@ The following are not part of this refactor:
   changed. A compiler dependency trace now resolves
   `libs/spsc/basic_types.h`, UART host remained 131/131, the complete
   F1/G4/H7RS port/probe matrix passed, and root qmake regenerated and built.
+- Consolidated the remaining UART implementation helpers physically under
+  `uart/detail` and semantically under `uart::detail`. The former global
+  `IRQGuard` and `UartRegistry` are now the concise internal types `IrqGuard`
+  and `Registry`; D-cache operations use named internal functions; and the
+  register portability layer exposes typed `new_usart_ip`, `no_error`,
+  `rx_error_mask`, and `clear_rx_errors` values/operations instead of leaking
+  global operation macros. Public `Uart`, configuration macros, owning
+  delegates, `uart_probe`, interrupt ordering, DMA ownership, and recovery
+  state transitions are unchanged. Added a real G4 compile target for
+  `UART_ENGINE_INTERNAL_CALLBACKS_ON=0`, with application-owned HAL callbacks
+  forwarding to the internal registry. UART host passed 131/131; F1 legacy,
+  G4 default/old-HAL/registered-callback/external-callback, H7RS D-cache, both
+  probe-on targets, and disabled-probe disassembly equivalence all passed.

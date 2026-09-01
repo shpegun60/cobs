@@ -9,7 +9,8 @@
  *    re-arms DMA onto the next free slot. Zero memcpy, zero heap.
  *  - TX: no queue. send(span) starts DMA on caller-owned memory, tx_busy()
  *    reports completion. Policy on Busy belongs to the layer above (COBS).
- *  - Portable across STM32 series: register differences live in uart_regs.h,
+ *  - Portable across STM32 series: register differences live in
+ *    detail/UartRegs.h,
  *    D-cache maintenance is compile-time optional, HAL callbacks attach either
  *    internally or via USE_HAL_UART_REGISTER_CALLBACKS.
  *
@@ -42,9 +43,9 @@
 // deep inside the body instead of compiling out cleanly.
 #if defined(HAL_UART_MODULE_ENABLED)
 
-#include "uart_regs.h"       // SR/DR vs ISR/RDR abstraction (all STM32 series)
+#include "detail/IrqGuard.h"
+#include "detail/UartRegs.h" // SR/DR vs ISR/RDR abstraction (all STM32 series)
 #include "uart_probe.h"      // benchmark instrumentation; compiles to nothing by default
-#include "irq/IRQGuard.h"
 
 #include "spsc/chunk_fifo.hpp"   // needs both the SPSC root and src include paths
 #include "tiny_delegate.hpp"     // https://github.com/shpegun60/delegate
@@ -78,7 +79,8 @@
 
 // 1 -> this library defines HAL_UARTEx_RxEventCallback / HAL_UART_TxCpltCallback /
 //      HAL_UART_ErrorCallback (define UART_ENGINE_IMPLEMENT in exactly ONE .cpp).
-// 0 -> the user delegates their own callbacks to UartRegistry::onRxEvent/onTxCplt/onError.
+// 0 -> the user forwards their own callbacks to
+//      uart::detail::Registry::onRxEvent/onTxCplt/onError.
 // With USE_HAL_UART_REGISTER_CALLBACKS == 1 neither is needed: init() registers
 // per-handle callbacks and nothing global is defined.
 #ifndef UART_ENGINE_INTERNAL_CALLBACKS_ON
@@ -125,44 +127,42 @@
 
 /* ============================ D-cache helpers ============================= */
 
-namespace uart_detail {
+namespace uart::detail {
 
 #if UART_ENGINE_DCACHE_MAINTENANCE
 
-static inline bool dcacheEnabled() noexcept
+static inline bool dcache_enabled() noexcept
 {
 	return (SCB->CCR & SCB_CCR_DC_Msk) != 0u;
 }
 
-static inline void dcacheInvalidate(const void* const addr, const uint32_t size) noexcept
+static inline void invalidate_dcache(const void* const addr, const uint32_t size) noexcept
 {
-	if (addr && size && dcacheEnabled()) {
+	if (addr && size && dcache_enabled()) {
 		SCB_InvalidateDCache_by_Addr(const_cast<void*>(addr), static_cast<int32_t>(size));
 	}
 }
 
-static inline void dcacheClean(const void* const addr, const uint32_t size) noexcept
+static inline void clean_dcache(const void* const addr, const uint32_t size) noexcept
 {
-	if (addr && size && dcacheEnabled()) {
+	if (addr && size && dcache_enabled()) {
 		SCB_CleanDCache_by_Addr(const_cast<void*>(addr), static_cast<int32_t>(size));
 	}
 }
 
 #else /* stubs — no D-cache on this core, or MPU region is non-cacheable */
 
-static inline void dcacheInvalidate(const void*, const uint32_t) noexcept {}
-static inline void dcacheClean(const void*, const uint32_t) noexcept {}
+static inline void invalidate_dcache(const void*, const uint32_t) noexcept {}
+static inline void clean_dcache(const void*, const uint32_t) noexcept {}
 
 #endif /* UART_ENGINE_DCACHE_MAINTENANCE */
-
-} // namespace uart_detail
 
 /* ============================ instance registry =========================== */
 
 // Non-template, non-virtual dispatch from HAL callbacks to instances.
 // Fixed-capacity static table: no heap, no std::vector, no vtables.
 // The linear search runs over <= UART_ENGINE_MAX_INSTANCES entries per event.
-class UartRegistry final {
+class Registry final {
 public:
 	struct Ops {
 		void (*rx_event)(void* self, uint16_t size);
@@ -177,7 +177,7 @@ public:
 		}
 		// Guarded: other instances may already be running and their ISRs walk
 		// this table; an Entry assignment is not atomic.
-		IRQGuard guard;
+		IrqGuard guard;
 		for (const auto& e : s_entries) {
 			// Reject both a duplicate handle AND a second handle that drives
 			// the same physical peripheral: two engines on one USARTx would
@@ -198,7 +198,7 @@ public:
 
 	static void detach(void* const self) noexcept
 	{
-		IRQGuard guard;
+		IrqGuard guard;
 		for (auto& e : s_entries) {
 			if (e.self == self) {
 				e = Entry{};
@@ -233,7 +233,7 @@ private:
 	// Plain aggregate (no default member initializers): the static inline
 	// s_entries{} below value-initializes it, which zeroes every field; NSDMIs
 	// here would additionally require Entry to be complete before the end of
-	// UartRegistry, which C++ forbids for the in-class definition.
+	// Registry, which C++ forbids for the in-class definition.
 	struct Entry {
 		UART_HandleTypeDef* huart;
 		void* self;
@@ -252,6 +252,8 @@ private:
 
 	static inline std::array<Entry, UART_ENGINE_MAX_INSTANCES> s_entries{};
 };
+
+} // namespace uart::detail
 
 /* ================================ engine ================================== */
 
@@ -335,7 +337,7 @@ public:
 			// DMA keeps writing into storage that is about to go away. Give
 			// instances static lifetime (the documented usage) and this
 			// cannot arise.
-			UartRegistry::detach(this);
+			uart::detail::Registry::detach(this);
 			AllTeardown ts(*this);
 			(void)HAL_UART_Abort(m_huart);
 			m_huart = nullptr;
@@ -508,7 +510,7 @@ public:
 		// object is the confirmed owner, so a rejected init leaves nothing
 		// behind — in particular the destructor has no handle to abort, and
 		// cannot tear down a peripheral that belongs to another instance.
-		static constexpr UartRegistry::Ops ops = {
+		static constexpr uart::detail::Registry::Ops ops = {
 			[](void* self, uint16_t n) { static_cast<Uart*>(self)->isrRxEvent(n); },
 			[](void* self)             { static_cast<Uart*>(self)->isrTxCplt(); },
 			[](void* self)             { static_cast<Uart*>(self)->isrError(); },
@@ -517,8 +519,8 @@ public:
 			// One guarded step: an ISR can never observe this object as
 			// registered-but-unbound (m_huart still null), which isrError()
 			// would dereference.
-			IRQGuard guard;
-			if (!UartRegistry::attach(huart, this, ops)) {
+			uart::detail::IrqGuard guard;
+			if (!uart::detail::Registry::attach(huart, this, ops)) {
 				return false; // table full, or this UART is already owned
 			}
 			m_huart = huart;
@@ -534,14 +536,14 @@ public:
 
 #if (USE_HAL_UART_REGISTER_CALLBACKS == 1)
 		bool reg_ok = (HAL_UART_RegisterRxEventCallback(huart,
-			[](UART_HandleTypeDef* h, uint16_t n) { UartRegistry::onRxEvent(h, n); }) == HAL_OK);
+			[](UART_HandleTypeDef* h, uint16_t n) { uart::detail::Registry::onRxEvent(h, n); }) == HAL_OK);
 		reg_ok = reg_ok && (HAL_UART_RegisterCallback(huart, HAL_UART_TX_COMPLETE_CB_ID,
-			[](UART_HandleTypeDef* h) { UartRegistry::onTxCplt(h); }) == HAL_OK);
+			[](UART_HandleTypeDef* h) { uart::detail::Registry::onTxCplt(h); }) == HAL_OK);
 		reg_ok = reg_ok && (HAL_UART_RegisterCallback(huart, HAL_UART_ERROR_CB_ID,
-			[](UART_HandleTypeDef* h) { UartRegistry::onError(h); }) == HAL_OK);
+			[](UART_HandleTypeDef* h) { uart::detail::Registry::onError(h); }) == HAL_OK);
 		if (!reg_ok) {
-			IRQGuard guard;
-			UartRegistry::detach(this);
+			uart::detail::IrqGuard guard;
+			uart::detail::Registry::detach(this);
 			m_huart = nullptr;
 			return false;
 		}
@@ -552,7 +554,7 @@ public:
 			// Hardware refused to start: give the handle back rather than
 			// staying half-bound. Registered HAL callbacks (if any) are left
 			// in place — without a registry entry they resolve to no-ops.
-			UartRegistry::detach(this);
+			uart::detail::Registry::detach(this);
 			m_huart = nullptr;
 			return false;
 		}
@@ -563,22 +565,22 @@ public:
 	// already running — the ISR never observes a half-written delegate.
 	void setRxHandler(RxHandler h) noexcept
 	{
-		IRQGuard guard;
+		uart::detail::IrqGuard guard;
 		m_rxHandler = static_cast<RxHandler&&>(h);
 	}
 	void setTxHandler(TxHandler h) noexcept
 	{
-		IRQGuard guard;
+		uart::detail::IrqGuard guard;
 		m_txHandler = static_cast<TxHandler&&>(h);
 	}
 	void setErrorHandler(ErrorHandler h) noexcept
 	{
-		IRQGuard guard;
+		uart::detail::IrqGuard guard;
 		m_errHandler = static_cast<ErrorHandler&&>(h);
 	}
 	void setRxGapHandler(GapHandler h) noexcept
 	{
-		IRQGuard guard;
+		uart::detail::IrqGuard guard;
 		m_gapHandler = static_cast<GapHandler&&>(h);
 	}
 
@@ -689,7 +691,7 @@ private:
 	{
 		UART_ENGINE_PROBE_SCOPE(Slow);
 		if (m_rxWorkPending) {
-			IRQGuard guard;
+			uart::detail::IrqGuard guard;
 			m_rxWorkPending = false;
 		}
 
@@ -751,7 +753,7 @@ private:
 			if (abort_status != HAL_OK) {
 				++m_stats.rx_errors;
 			} else {
-				IRQGuard guard;
+				uart::detail::IrqGuard guard;
 				// An RX ISR may have slipped in before the abort took effect
 				// and re-armed onto a real chunk; publish whatever landed in
 				// it (per the now-frozen counter) so nothing real is lost.
@@ -790,7 +792,7 @@ public:
 			return false;
 		}
 
-		uart_detail::dcacheClean(bytes.data(), bytes.size());
+		uart::detail::clean_dcache(bytes.data(), bytes.size());
 
 		// No deadline arithmetic here at all: the periodic audit judges this
 		// transfer by progress. Just forget what the previous frame looked
@@ -814,7 +816,7 @@ public:
 		// visible at a glance, and leaves the statistics update outside it.
 		bool started;
 		{
-			IRQGuard guard;
+			uart::detail::IrqGuard guard;
 			started = (HAL_UART_Transmit_DMA(m_huart, bytes.data(),
 			                                 static_cast<uint16_t>(bytes.size())) == HAL_OK);
 			if (started) {
@@ -959,7 +961,7 @@ private:
 	void publishActive(const uint16_t size) noexcept
 	{
 		if (m_active && size) {
-			uart_detail::dcacheInvalidate(m_active->data(), size);
+			uart::detail::invalidate_dcache(m_active->data(), size);
 			m_active->commit_size(size);
 			m_rx.publish();
 			m_active = nullptr;
@@ -1001,7 +1003,7 @@ private:
 		// AN4839: before DMA writes into a cacheable buffer, dirty lines
 		// covering it must be discarded, otherwise a later eviction would
 		// overwrite freshly received bytes mid-transfer.
-		uart_detail::dcacheInvalidate(dst, ChunkSize);
+		uart::detail::invalidate_dcache(dst, ChunkSize);
 
 		m_started = (HAL_UARTEx_ReceiveToIdle_DMA(m_huart, dst,
 		             static_cast<uint16_t>(ChunkSize)) == HAL_OK);
@@ -1039,14 +1041,14 @@ private:
 			}
 		}
 
-		IRQGuard guard;
+		uart::detail::IrqGuard guard;
 
 		// Clear stale PE/FE/NE/ORE/IDLE(/RTO) exactly per reference manual:
 		// legacy IP -> "read SR then read DR" sequence, new IP -> ICR write.
 		// (On legacy IP the DR read may consume one in-flight byte; the
 		// restart path is already lossy and COBS resynchronizes on 0x00.)
-		UART_ENGINE_CLEAR_RX_ERRORS(m_huart);
-		m_huart->ErrorCode = HAL_UART_ERROR_NONE;
+		uart::detail::clear_rx_errors(m_huart);
+		m_huart->ErrorCode = uart::detail::no_error;
 
 		// A chunk still claimed here (e.g. the ISR froze ownership because
 		// reception had not stopped) is now safe to touch: the abort above
@@ -1137,19 +1139,17 @@ private:
 
 		const uint32_t errorCode = HAL_UART_GetError(m_huart);
 
-#if UART_ENGINE_NEW_USART_IP
-		// ICR write-1-to-clear: side-effect free, always safe.
-		UART_ENGINE_CLEAR_RX_ERRORS(m_huart);
-#else
-		// Legacy IP clears via "read SR then read DR" — the DR read would
-		// STEAL a live data byte from the RX DMA stream, so clear only when
-		// the reception is already dead. (While it runs, HAL's own IRQ
-		// handler has performed the clearing sequence before calling us.)
-		if (m_huart->RxState == HAL_UART_STATE_READY) {
-			UART_ENGINE_CLEAR_RX_ERRORS(m_huart);
+		if constexpr (uart::detail::new_usart_ip) {
+			// ICR write-1-to-clear: side-effect free, always safe.
+			uart::detail::clear_rx_errors(m_huart);
+		} else if (m_huart->RxState == HAL_UART_STATE_READY) {
+			// Legacy IP clears via "read SR then read DR" — the DR read would
+			// STEAL a live data byte from the RX DMA stream, so clear only when
+			// the reception is already dead. (While it runs, HAL's own IRQ
+			// handler has performed the clearing sequence before calling us.)
+			uart::detail::clear_rx_errors(m_huart);
 		}
-#endif
-		m_huart->ErrorCode = HAL_UART_ERROR_NONE;
+		m_huart->ErrorCode = uart::detail::no_error;
 
 		// Direct field read, not HAL_UART_GetState() — see isrTxCplt().
 		//
@@ -1174,7 +1174,7 @@ private:
 			++m_stats.rx_errors;
 			voidActiveChunk();
 			m_started = false; // proceed() -> receiveRestart() with live tick
-		} else if (!rx_teardown && (errorCode & UART_ENGINE_RX_PART)) {
+		} else if (!rx_teardown && (errorCode & uart::detail::rx_error_mask)) {
 			// Unreachable while RX runs on DMA (see above); kept for a HAL
 			// that would report a line error without ending the reception.
 			++m_stats.rx_errors;
@@ -1191,7 +1191,7 @@ private:
 			}
 		}
 
-		if (m_errHandler && errorCode != HAL_UART_ERROR_NONE) {
+		if (m_errHandler && errorCode != uart::detail::no_error) {
 			m_errHandler(errorCode);
 		}
 	}
@@ -1284,7 +1284,7 @@ private:
 		{
 			TxTeardown ts(*this);
 			if (HAL_UART_AbortTransmit(m_huart) == HAL_OK) {
-				IRQGuard guard;
+				uart::detail::IrqGuard guard;
 				if (m_txBusy) {
 					m_txBusy = false;
 					m_txProgressValid = false;
@@ -1317,7 +1317,7 @@ private:
 		// stopped receiver, and the DMA error codes below.
 		bool bad = (gState == HAL_UART_STATE_ERROR) ||
 		           (gState == HAL_UART_STATE_TIMEOUT) ||
-		           (errorCode != HAL_UART_ERROR_NONE);
+		           (errorCode != uart::detail::no_error);
 
 		// RX should be actively receiving whenever we believe it is armed.
 		// RxState is present on every HAL recent enough to have ReceiveToIdle.
@@ -1369,7 +1369,7 @@ private:
 					m_started = false; // retry from proceed() every iteration
 					return;
 				}
-				IRQGuard guard;
+				uart::detail::IrqGuard guard;
 				voidActiveChunk(); // transfers confirmed stopped
 				m_started = false; // RX hardware is down; keep software in step
 				m_txBusy = false;
@@ -1457,17 +1457,17 @@ private:
 
 extern "C" void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef* huart, uint16_t Size)
 {
-	UartRegistry::onRxEvent(huart, Size);
+	uart::detail::Registry::onRxEvent(huart, Size);
 }
 
 extern "C" void HAL_UART_TxCpltCallback(UART_HandleTypeDef* huart)
 {
-	UartRegistry::onTxCplt(huart);
+	uart::detail::Registry::onTxCplt(huart);
 }
 
 extern "C" void HAL_UART_ErrorCallback(UART_HandleTypeDef* huart)
 {
-	UartRegistry::onError(huart);
+	uart::detail::Registry::onError(huart);
 }
 
 #endif /* UART_ENGINE_IMPLEMENT */

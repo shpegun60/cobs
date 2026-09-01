@@ -21,7 +21,7 @@ typedef struct {
 	volatile uint32_t CR1, CR2, CR3, BRR, GTPR, RTOR, RQR, ISR, ICR, RDR, TDR;
 } USART_TypeDef;
 
-/* Bit definitions the driver and uart_regs.h look for. The presence of
+/* Bit definitions the driver and detail/UartRegs.h look for. The presence of
  * USART_RDR_RDR_Msk + USART_ISR_PE_Msk selects the new-IP register map. */
 #define USART_RDR_RDR_Msk   (0x1FFUL)
 #define USART_ISR_PE_Msk    (0x1UL)

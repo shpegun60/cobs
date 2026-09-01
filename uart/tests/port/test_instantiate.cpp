@@ -12,10 +12,33 @@
 
 #include <type_traits>
 
-static_assert(!std::is_copy_constructible_v<IRQGuard>);
-static_assert(!std::is_copy_assignable_v<IRQGuard>);
-static_assert(!std::is_move_constructible_v<IRQGuard>);
-static_assert(!std::is_move_assignable_v<IRQGuard>);
+static_assert(!std::is_copy_constructible_v<uart::detail::IrqGuard>);
+static_assert(!std::is_copy_assignable_v<uart::detail::IrqGuard>);
+static_assert(!std::is_move_constructible_v<uart::detail::IrqGuard>);
+static_assert(!std::is_move_assignable_v<uart::detail::IrqGuard>);
+
+#if defined(USART_RDR_RDR_Msk) && defined(USART_ISR_PE_Msk)
+static_assert(uart::detail::new_usart_ip);
+#elif defined(USART_DR_DR_Msk) && defined(USART_SR_PE_Msk)
+static_assert(!uart::detail::new_usart_ip);
+#endif
+
+#if !UART_ENGINE_INTERNAL_CALLBACKS_ON && !(USE_HAL_UART_REGISTER_CALLBACKS == 1)
+extern "C" void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef* huart, uint16_t size)
+{
+	uart::detail::Registry::onRxEvent(huart, size);
+}
+
+extern "C" void HAL_UART_TxCpltCallback(UART_HandleTypeDef* huart)
+{
+	uart::detail::Registry::onTxCplt(huart);
+}
+
+extern "C" void HAL_UART_ErrorCallback(UART_HandleTypeDef* huart)
+{
+	uart::detail::Registry::onError(huart);
+}
+#endif
 
 static UART_HandleTypeDef s_huart;
 static DMA_HandleTypeDef  s_dma_rx;
