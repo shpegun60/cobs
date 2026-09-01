@@ -172,12 +172,8 @@ public:
 		if (m_activeTx.memory != nullptr) {
 			return false;
 		}
-		if (!sender || !busy) {
-			return false;
-		}
-		m_sender = static_cast<Sender&&>(sender);
-		m_busy = static_cast<BusyQuery&&>(busy);
-		return true;
+		return m_transport.bind(
+			static_cast<Sender&&>(sender), static_cast<BusyQuery&&>(busy));
 	}
 
 	[[nodiscard]] bool unbind() noexcept
@@ -185,8 +181,7 @@ public:
 		if (m_activeTx.memory != nullptr) {
 			return false;
 		}
-		m_sender = nullptr;
-		m_busy = nullptr;
+		m_transport.unbind();
 		return true;
 	}
 
@@ -258,10 +253,10 @@ public:
 		if (!msg || !msg.belongs_to(m_storage)) {
 			return SendResult::Invalid;
 		}
-		if (!m_sender || !m_busy) {
+		if (!m_transport.bound()) {
 			return SendResult::Unbound;
 		}
-		if (m_activeTx.memory != nullptr || m_busy()) {
+		if (m_activeTx.memory != nullptr || m_transport.busy()) {
 			++m_txStats.send_refused_busy;
 			return SendResult::Busy;
 		}
@@ -270,7 +265,7 @@ public:
 		if (wire.empty()) {
 			return SendResult::Invalid;
 		}
-		if (!m_sender(wire)) {
+		if (!m_transport.start(wire)) {
 			++m_txStats.send_failed;
 			return SendResult::Failed; // message stays Encoded, frame retryable
 		}
@@ -295,7 +290,7 @@ public:
 	// the transport's business, reported through its own counters.
 	void poll() noexcept
 	{
-		if (m_activeTx.memory != nullptr && !m_busy()) {
+		if (m_activeTx.memory != nullptr && !m_transport.busy()) {
 			// The capacity storage reported travels with the pointer, so a
 			// strategy that segregates by size class knows where the block
 			// belongs without searching (§9.1).
@@ -319,11 +314,52 @@ public:
 	[[nodiscard]] const StorageT& storage() const noexcept { return m_storage; }
 
 private:
+	/*
+	 * One owner for the one transport invariant. It contains exactly the same
+	 * two owning tiny::delegate objects as before; bound state is derived from
+	 * them, so grouping the pair adds neither a flag nor a weaker lifetime
+	 * model. A rejected bind validates both arguments before touching the live
+	 * pair, making rebinding transactional.
+	 */
+	class Transport final {
+	public:
+		[[nodiscard]] bool bind(Sender sender, BusyQuery busy) noexcept
+		{
+			if (!sender || !busy) {
+				return false;
+			}
+			m_sender = static_cast<Sender&&>(sender);
+			m_busy = static_cast<BusyQuery&&>(busy);
+			return true;
+		}
+
+		void unbind() noexcept
+		{
+			m_sender = nullptr;
+			m_busy = nullptr;
+		}
+
+		[[nodiscard]] bool bound() const noexcept
+		{
+			return static_cast<bool>(m_sender) && static_cast<bool>(m_busy);
+		}
+
+		[[nodiscard]] bool busy() const noexcept { return m_busy(); }
+
+		[[nodiscard]] bool start(const std::span<const uint8_t> frame) const noexcept
+		{
+			return m_sender(frame);
+		}
+
+	private:
+		Sender m_sender{};
+		BusyQuery m_busy{};
+	};
+
 	[[no_unique_address]] StorageT m_storage{};
 	cobs::detail::Receiver<StorageT> m_rx{m_storage};
 
-	Sender m_sender{};
-	BusyQuery m_busy{};
+	Transport m_transport{};
 
 	cobs::TxBlock m_activeTx{};
 	cobs::Stats::Tx m_txStats{};

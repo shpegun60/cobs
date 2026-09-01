@@ -89,6 +89,14 @@ including the half-bound states: `bind()` refuses either empty delegate.
 `unbind()` is the sole explicit removal operation. Binding, rebinding, and
 unbinding are all refused while a transfer is in flight.
 
+The endpoint stores the pair in one private `Transport` owner. That owner
+contains exactly the sender and busy-query `tiny::delegate` objects — both are
+still owning delegates, with no raw thunk, virtual interface, or transport
+template replacing them. Bound state is derived from the pair rather than kept
+in another flag. A rejected `bind()` validates both incoming delegates before
+touching the established pair, so a partial rebind cannot silently disconnect
+or mix a live transport.
+
 Because the transport is not a template parameter, `cobs::Endpoint` is templated on
 storage alone, and one instantiation works above a UART, a TCP socket or a
 test double without being recompiled per transport. The binding also matches

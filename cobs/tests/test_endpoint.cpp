@@ -269,9 +269,13 @@ void runEngine(const char* name)
 		}
 
 		bind(cobs, t);
+		check(!cobs.bind(sender_for<Engine>(other), typename Engine::BusyQuery{}),
+		      "a failed partial rebind leaves the established pair untouched");
 		auto msg = cobs.make_message(kPayload);
-		
+
 		check(cobs.send(msg) == cobs::SendResult::Sent, "a frame is in flight");
+		check(t.sent.size() == 1 && other.sent.empty(),
+		      "the original sender and busy query still act as one pair");
 
 		check(!cobs.bind(sender_for<Engine>(other), busy_for<Engine>(other)),
 		      "the transport cannot be swapped under a live transfer — a new "

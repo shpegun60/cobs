@@ -510,7 +510,7 @@ Exact field migration inventory:
 | `cobs::RxBlock<Storage>` | `refs`, `size`, `next_ready`, `owner` | typed/private metadata retained unchanged |
 | `cobs::Packet` | `m_p` | final one-pointer public handle |
 | `cobs::Message` | `m_storage`, `m_block`, `m_size`, `m_wire`, `m_state` | one `cobs::TxBlock`; explicit state remains |
-| `cobs::Endpoint` | `m_storage`, `m_rx`, `m_sender`, `m_busy`, `m_activeTx`, `m_txStats` | storage and receiver remain; delegates may be grouped in private `Transport`; active descriptor and counters remain |
+| `cobs::Endpoint` | `m_storage`, `m_rx`, `m_transport`, `m_activeTx`, `m_txStats` | storage and receiver remain; one private `Transport` owns the unchanged sender/busy delegates; active descriptor and counters remain |
 | `cobs::Pool` | `m_rx`, `m_tx` | two independent pools retained |
 | `cobs::detail::BlockPool` | `m_blocks`, `m_free`, `m_stats` | final internal name; no public ownership role |
 
@@ -577,9 +577,15 @@ Keep:
 
 - storage by value;
 - receiver bound to that storage;
-- private transport pair containing sender and busy delegates;
+- one private `Transport` containing the sender and busy owning delegates;
 - active `TxBlock`;
 - TX counters.
+
+`Transport` adds no bound flag and no polymorphic layer. It derives bound state
+from its two delegates, validates a new pair before replacing the current one,
+and is the only code that can set, clear, or invoke either half. Endpoint keeps
+the active-transfer guard because block ownership, not delegate storage, is
+what determines whether rebinding is safe.
 
 `Endpoint` stays non-copyable and non-movable while outstanding objects hold a
 pointer to its embedded storage. Its destructor precondition regarding an
@@ -817,8 +823,8 @@ protocol changes must never be bundled together.
 
 - [x] Apply method renames from the vocabulary table.
 - [x] Add explicit `unbind` with a documented active-transfer precondition.
-- [ ] Group the two delegates in private `Transport` if layout/behaviour proof
-      shows no regression.
+- [x] Group the two delegates in private `Transport`; host/ARM layout and
+      transactional bind behaviour show no regression.
 - [x] Return the combined `Stats` snapshot.
 - [ ] Update examples to include only `Cobs.h`.
 
@@ -991,3 +997,13 @@ The following are not part of this refactor:
   23,015 COBS checks; `Stats` is 40 bytes on both recorded ABIs while Receiver
   and Endpoint layouts remain unchanged. UART host stayed 131/131 and the full
   F1/G4/H7RS port/probe matrix passed with only the known vendor warning.
+- Grouped the unchanged sender and busy-query owning `tiny::delegate` objects
+  inside one private `Endpoint::Transport`. It derives bound state from the
+  pair, owns bind/unbind/start/busy operations, and validates both incoming
+  delegates before replacing an established pair; no public transport type,
+  raw thunk, virtual dispatch, template parameter, or compatibility surface was
+  added. Transactional rebind tests now prove a rejected partial pair leaves
+  the original link intact. MinGW and WSL ASan/UBSan passed 23,019 COBS checks;
+  Endpoint stayed 304 bytes on x64 and 168 bytes on ARM. UART host remained
+  131/131 and the complete STM32 port/probe matrix passed with only the known
+  H7RS vendor warning.
