@@ -8,10 +8,10 @@
 
 #include "Cobs.h"
 #include "CobsMsg.h"
-#include "CobsRx.h"
+#include "detail/Receiver.h"
 #include "PacketRef.h"
 #include "Storage.h"
-#include "detail/StaticBlockPool.h"
+#include "detail/BlockPool.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -25,14 +25,14 @@ using Block = cobs::RxBlock<Heap>;
 using Ref = PacketRef<Heap>;
 using Message = CobsMsg<Heap>;
 using Decoder = cobs::codec::Decoder;
-using Receiver = CobsRx<Heap>;
+using Receiver = cobs::detail::Receiver<Heap>;
 using Endpoint = Cobs<Heap>;
 using PoolEndpoint = Cobs<Pool>;
 using Sender = typename Endpoint::Sender;
 using BusyQuery = typename Endpoint::TxBusy;
 using RxStats = typename Receiver::Stats;
 using TxStats = typename Endpoint::TxStats;
-using PoolStats = cobs_detail::PoolStats;
+using PoolStats = cobs::detail::PoolStats;
 
 static_assert(sizeof(Ref) == sizeof(void*),
 	"a PacketRef is exactly one typed pointer");
@@ -110,7 +110,7 @@ int main()
 	std::printf("\n[Layout]\n");
 	std::printf("pointer=%zu size_t=%zu cobs::TxBlock=%zu cobs::RxBlock=%zu PacketRef=%zu\n",
 		sizeof(void*), sizeof(std::size_t), sizeof(cobs::TxBlock), sizeof(Block), sizeof(Ref));
-	std::printf("CobsMsg=%zu Decoder=%zu CobsRx=%zu CobsHeap=%zu\n",
+	std::printf("CobsMsg=%zu Decoder=%zu Receiver=%zu Endpoint=%zu\n",
 		sizeof(Message), sizeof(Decoder), sizeof(Receiver), sizeof(Endpoint));
 	std::printf("Heap=%zu Pool=%zu CobsPool=%zu sender=%zu busy=%zu\n",
 		sizeof(Heap), sizeof(Pool), sizeof(PoolEndpoint), sizeof(Sender), sizeof(BusyQuery));

@@ -115,7 +115,7 @@ void runContract(const char* name)
 	// refs, size, next_ready and owner are private to the RX vertical (§6.5) —
 	// a public `size` was a one-line out-of-bounds read once allocations
 	// became exact. They are asserted where they can be asserted honestly:
-	// through behaviour, in test_cobs_rx, where a released PacketRef returning
+	// through behaviour, in test_receiver, where a released PacketRef returning
 	// its block to the right pool is the only proof that `owner` is right that
 	// does not consist of reading `owner`.
 

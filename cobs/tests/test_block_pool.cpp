@@ -1,5 +1,5 @@
 /*
- * Host verification for detail::StaticBlockPool, the raw memory primitive
+ * Host verification for cobs::detail::BlockPool, the raw memory primitive
  * both allocator policies are built on. No packets, no decoder, no policy —
  * if something here goes red, the culprit is the block pool and nothing else.
  *
@@ -10,7 +10,7 @@
  * double free or a foreign pointer is observable as a rejection rather than as
  * a corrupted free list that surfaces three tests later.
  */
-#include "detail/StaticBlockPool.h"
+#include "detail/BlockPool.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -47,7 +47,7 @@ void testRawPoolHandlesTinyBlocks()
 	// that cannot physically hold a pointer. (An ENGINE frame is larger still,
 	// since it carries a length header; this pool knows nothing about either,
 	// which is the point of testing it at sizes no protocol would use.)
-	using Tiny = cobs_detail::StaticBlockPool<2, 4, 1>;
+	using Tiny = cobs::detail::BlockPool<2, 4, 1>;
 	Tiny pool;
 
 	check(Tiny::block_size == 2, "the client-visible block size is what was asked for");
@@ -57,7 +57,7 @@ void testRawPoolHandlesTinyBlocks()
 	std::byte* held[4] = {};
 	bool distinct = true;
 	for (int i = 0; i < 4; ++i) {
-		held[i] = pool.allocate();
+		held[i] = pool.acquire();
 		check(held[i] != nullptr, "tiny block " + std::to_string(i) + " allocates");
 		held[i][0] = std::byte{0x01};
 		held[i][1] = std::byte{0x00};
@@ -68,9 +68,9 @@ void testRawPoolHandlesTinyBlocks()
 		}
 	}
 	check(distinct, "and they are distinct, non-overlapping blocks");
-	check(pool.allocate() == nullptr, "a dry tiny pool returns nullptr");
+	check(pool.acquire() == nullptr, "a dry tiny pool returns nullptr");
 
-	for (std::byte* const p : held) { pool.deallocate(p); }
+	for (std::byte* const p : held) { pool.release(p); }
 	check(pool.available() == 4, "freeing them restores the pool");
 	check(pool.stats().rejected == 0, "with nothing rejected");
 }
@@ -79,21 +79,21 @@ void testRawPoolHandlesTinyBlocks()
 // run on memory the pool is about to refuse.
 void testCleanupRunsOnlyAfterValidation()
 {
-	using Small = cobs_detail::StaticBlockPool<32, 2, 1>;
+	using Small = cobs::detail::BlockPool<32, 2, 1>;
 	Small pool;
 	Small other;
 
 	int cleanups = 0;
 	const auto count = [&cleanups](std::byte*) noexcept { ++cleanups; };
 
-	std::byte* const good = pool.allocate();
+	std::byte* const good = pool.acquire();
 	check(pool.release(good, count) && cleanups == 1,
 	      "a valid block runs its cleanup and is returned");
 
 	check(!pool.release(good, count) && cleanups == 1,
 	      "a double free is refused BEFORE the cleanup runs");
 
-	std::byte* const foreign = other.allocate();
+	std::byte* const foreign = other.acquire();
 	check(!pool.release(foreign, count) && cleanups == 1,
 	      "a foreign pointer is refused before the cleanup runs");
 	check(other.stats().in_use == 1, "and still belongs to its own pool");

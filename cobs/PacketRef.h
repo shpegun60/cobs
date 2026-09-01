@@ -25,10 +25,6 @@
 #include <span>
 #include <utility>
 
-// The only legitimate source of packet references.
-template<class StorageT>
-class CobsRx;
-
 template<class StorageT>
 class PacketRef final {
 	// adopt() and the raw pointer are deliberately NOT public. With both
@@ -40,7 +36,7 @@ class PacketRef final {
 	// destructor frees the block, the second is left holding a dangling
 	// pointer. A hand-operated use-after-free factory in the public API.
 	template<class>
-	friend class CobsRx;
+	friend class cobs::detail::Receiver;
 
 public:
 	using Block = typename StorageT::RxBlock;

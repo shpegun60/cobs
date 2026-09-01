@@ -21,7 +21,7 @@
 
 #include "Codec.h"
 #include "Format.h"
-#include "detail/StaticBlockPool.h"
+#include "detail/BlockPool.h"
 
 #include <concepts>
 #include <cstddef>
@@ -30,14 +30,15 @@
 #include <new>
 #include <span>
 
-// These two current coordinator/handle types are migrated in later slices.
-// Forward declarations keep RxBlock's friendship typed without exposing its
-// metadata or introducing a void owner/deleter callback.
-template<class StorageT>
-class CobsRx;
-
 template<class StorageT>
 class PacketRef;
+
+namespace cobs::detail {
+
+template<class StorageT>
+class Receiver;
+
+} // namespace cobs::detail
 
 namespace cobs {
 
@@ -64,7 +65,7 @@ struct TxBlock final {
  */
 template<class StorageT>
 struct RxBlock final {
-	friend class ::CobsRx<StorageT>;
+	friend class detail::Receiver<StorageT>;
 	friend class ::PacketRef<StorageT>;
 
 	[[nodiscard]] std::span<const uint8_t> data() const noexcept
@@ -212,11 +213,11 @@ public:
 		"max_receive_size plus an RX block header overflows size_t");
 
 private:
-	using RxPool = cobs_detail::StaticBlockPool<
+	using RxPool = cobs::detail::BlockPool<
 		sizeof(RxBlock) + Format::max_receive_size,
 		RxBlocks,
 		alignof(RxBlock)>;
-	using TxPool = cobs_detail::StaticBlockPool<
+	using TxPool = cobs::detail::BlockPool<
 		Format::tx_storage_size_for_capacity(Format::max_send_size),
 		TxBlocks,
 		1>;
@@ -229,7 +230,7 @@ public:
 		Format::tx_storage_size_for_capacity(Format::max_send_size),
 		"the TX pool cannot hold its maximum wire frame");
 
-	using Stats = cobs_detail::PoolStats;
+	using Stats = cobs::detail::PoolStats;
 
 	Pool() noexcept = default;
 	Pool(const Pool&) = delete;
@@ -241,7 +242,7 @@ public:
 		if (requested_size > Format::max_receive_size) {
 			return nullptr;
 		}
-		std::byte* const memory = m_rx.allocate();
+		std::byte* const memory = m_rx.acquire();
 		if (memory == nullptr) {
 			return nullptr;
 		}
@@ -261,7 +262,7 @@ public:
 		if (requested > Format::max_send_size) {
 			return {};
 		}
-		std::byte* const memory = m_tx.allocate();
+		std::byte* const memory = m_tx.acquire();
 		if (memory == nullptr) {
 			return {};
 		}
@@ -270,7 +271,7 @@ public:
 
 	void release_tx(const TxBlock block) noexcept
 	{
-		m_tx.deallocate(block.memory);
+		m_tx.release(block.memory);
 	}
 
 	[[nodiscard]] std::size_t rx_available() const noexcept { return m_rx.available(); }

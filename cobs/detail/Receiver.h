@@ -1,5 +1,5 @@
 /*
- * CobsRx — the RX vertical, assembled.
+ * cobs::detail::Receiver — the RX vertical, assembled.
  *
  * Contract: doc/COBS_ENGINE.md §5–§7. Everything hard already lives one layer
  * down; this is the glue that answers the decoder's NeedOutput from an
@@ -8,7 +8,7 @@
  *
  * The ownership invariant of the whole normal path (§6.3):
  *
- *     allocate()  ->  refs = 1
+ *     acquire_rx()  ->  refs = 1
  *          |          held by m_building
  *          v
  *     FrameComplete   the SAME reference moves to the ready queue
@@ -24,18 +24,19 @@
  * PacketRef::adopt() is private and befriended here.
  */
 
-#ifndef COBS_RX_H_
-#define COBS_RX_H_
+#ifndef COBS_DETAIL_RECEIVER_H_
+#define COBS_DETAIL_RECEIVER_H_
 
-#include "Codec.h"
-#include "Format.h"
-#include "PacketRef.h"
-#include "Storage.h"
+#include "../Codec.h"
+#include "../PacketRef.h"
+#include "../Storage.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
+
+namespace cobs::detail {
 
 // One template parameter, per the frozen contract (COBS_ENGINE.md §4.3): the
 // storage names one Format, so a separate geometry parameter could only
@@ -43,20 +44,16 @@
 //
 // This is the RX half on its own, taking storage by reference. The assembled
 // Cobs owns storage by value (§9.4) and wraps this; an
-// application normally uses Cobs rather than instantiating CobsRx directly.
-template<class StorageT = cobs::Heap<>>
-class CobsRx final {
+// application uses Cobs rather than naming Receiver directly.
+template<class StorageT>
+class Receiver final {
 	static_assert(cobs::Storage<StorageT>,
-		"CobsRx storage must satisfy the cobs::Storage contract");
+		"Receiver storage must satisfy the cobs::Storage contract");
 
 public:
-	// Exposed so a user taking the default can still name the storage they must
-	// construct — without it the default would save nothing:
-	//     CobsRx<>::StorageType storage;
-	//     CobsRx<> rx(storage);
 	using StorageType = StorageT;
 	using Block = typename StorageT::RxBlock;
-	using Ref = PacketRef<StorageT>;
+	using Ref = ::PacketRef<StorageT>;
 	using Format = typename StorageT::Format;
 
 	/*
@@ -81,26 +78,16 @@ public:
 		uint32_t resyncs            = 0; // times we had to hunt for a delimiter
 	};
 
-	explicit CobsRx(StorageT& storage) noexcept : m_storage(storage) {}
+	explicit Receiver(StorageT& storage) noexcept : m_storage(storage) {}
 
 	// Owns references, so it must not be copied.
-	CobsRx(const CobsRx&) = delete;
-	CobsRx& operator=(const CobsRx&) = delete;
+	Receiver(const Receiver&) = delete;
+	Receiver& operator=(const Receiver&) = delete;
 
-	~CobsRx()
+	~Receiver()
 	{
-		if (m_building != nullptr) {
-			m_storage.release_rx(m_building);
-		}
-		// Release each queued reference through the same path a PacketRef
-		// uses, rather than duplicating the count logic here.
-		while (m_readyHead != nullptr) {
-			Block* const p = m_readyHead;
-			m_readyHead = p->next_ready;
-			p->next_ready = nullptr;
-			(void)Ref::adopt(p); // the temporary's destructor releases it
-		}
-		m_readyTail = nullptr;
+		releaseBuilding();
+		clearReady();
 	}
 
 	// Feed whatever the transport delivered. The span need not contain whole
@@ -153,15 +140,10 @@ public:
 
 	[[nodiscard]] Ref pop_packet() noexcept
 	{
-		Block* const p = m_readyHead;
+		Block* const p = dequeueReady();
 		if (p == nullptr) {
 			return Ref{};
 		}
-		m_readyHead = p->next_ready;
-		if (m_readyHead == nullptr) {
-			m_readyTail = nullptr;
-		}
-		p->next_ready = nullptr;
 		return Ref::adopt(p); // the queue's reference becomes the caller's
 	}
 
@@ -315,13 +297,7 @@ private:
 	void publish(const std::size_t body) noexcept
 	{
 		m_building->size = static_cast<uint16_t>(body);
-		m_building->next_ready = nullptr;
-		if (m_readyTail != nullptr) {
-			m_readyTail->next_ready = m_building;
-		} else {
-			m_readyHead = m_building;
-		}
-		m_readyTail = m_building;
+		enqueueReady(m_building);
 		m_building = nullptr;
 		++m_stats.frames_delivered;
 		endFrame(false);
@@ -372,6 +348,39 @@ private:
 		resetFrame();
 	}
 
+	void enqueueReady(Block* const block) noexcept
+	{
+		block->next_ready = nullptr;
+		if (m_readyTail != nullptr) {
+			m_readyTail->next_ready = block;
+		} else {
+			m_readyHead = block;
+		}
+		m_readyTail = block;
+	}
+
+	[[nodiscard]] Block* dequeueReady() noexcept
+	{
+		Block* const block = m_readyHead;
+		if (block == nullptr) {
+			return nullptr;
+		}
+		m_readyHead = block->next_ready;
+		if (m_readyHead == nullptr) {
+			m_readyTail = nullptr;
+		}
+		block->next_ready = nullptr;
+		return block;
+	}
+
+	void clearReady() noexcept
+	{
+		while (Block* const block = dequeueReady()) {
+			// Release through PacketRef so there is only one refcount path.
+			(void)Ref::adopt(block);
+		}
+	}
+
 	cobs::codec::Decoder m_decoder{};
 	StorageT& m_storage;
 
@@ -386,4 +395,6 @@ private:
 	Stats   m_stats{};
 };
 
-#endif /* COBS_RX_H_ */
+} // namespace cobs::detail
+
+#endif /* COBS_DETAIL_RECEIVER_H_ */

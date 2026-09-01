@@ -30,9 +30,9 @@
 
 #include "Format.h"
 #include "CobsMsg.h"
-#include "CobsRx.h"
 #include "PacketRef.h"
 #include "Storage.h"
+#include "detail/Receiver.h"
 
 #include "tiny_delegate.hpp"
 
@@ -112,7 +112,7 @@ public:
 	using Sender = tiny::delegate<bool(std::span<const uint8_t>)>;
 	using TxBusy = tiny::delegate<bool()>;
 
-	using RxStats = typename CobsRx<StorageT>::Stats;
+	using RxStats = typename cobs::detail::Receiver<StorageT>::Stats;
 	struct TxStats {
 		uint32_t frames_sent       = 0;
 		uint32_t send_refused_busy = 0;
@@ -308,7 +308,7 @@ public:
 
 private:
 	[[no_unique_address]] StorageT m_storage{};
-	CobsRx<StorageT> m_rx{m_storage};
+	cobs::detail::Receiver<StorageT> m_rx{m_storage};
 
 	Sender m_sender{};
 	TxBusy m_txBusy{};

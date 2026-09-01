@@ -35,7 +35,7 @@ only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 | Bare `0x00` | synchronization / no-op, never a packet |
 | Empty packet | a frame whose declared length is 0. `01 00` — a valid COBS frame with an empty decoded body — is an INVALID ENGINE FRAME, since it carries no length field: it is counted as `length_mismatch`, NOT as `malformed`, which stays reserved for structural COBS errors |
 | Delimiter inside a block | frame discarded, decoder is immediately synchronized |
-| Oversize / allocation failure | decided by CobsRx from the DECLARED length against `rx_max_size`, never by the decoder. `DropUntilDelimiter` only when the failure is found mid-frame; the two that are found AT the delimiter — an oversize header with no body, and a refused `acquire_rx(0)` — cost a frame and no resync (§6.1.2) |
+| Oversize / allocation failure | decided by `cobs::detail::Receiver` from the DECLARED length against `rx_max_size`, never by the decoder. `DropUntilDelimiter` only when the failure is found mid-frame; the two that are found AT the delimiter — an oversize header with no body, and a refused `acquire_rx(0)` — cost a frame and no resync (§6.1.2) |
 | Ready queue | intrusive, threaded through the packets themselves |
 | RX lifetime | intrusive refcount, `PacketRef`, payload immutable after publication |
 | Refcount | plain (single execution domain); no atomic policy in v1 |
@@ -197,7 +197,7 @@ two zero bytes plus the delimiter. It remains distinct from the no-op above.
 Note the consequence, which is a deliberate break with the pure-COBS layer
 underneath: `01 00` — a structurally valid COBS frame with an EMPTY decoded
 body — is no longer a valid engine frame, because it contains no length field.
-`cobs::codec::Decoder` still accepts it as a zero-byte decoded frame; `CobsRx` counts it
+`cobs::codec::Decoder` still accepts it as a zero-byte decoded frame; `cobs::detail::Receiver` counts it
 as a length mismatch. The two layers are answering different questions, and
 that is the point of keeping them apart.
 
@@ -541,7 +541,7 @@ must be counted against the span extent before it is written.
 ### 6.1 Allocate once the length is known
 
 Nothing is allocated when a frame starts. The first output segment is the
-length field, which lives in one or two bytes inside `CobsRx` itself:
+length field, which lives in one or two bytes inside `cobs::detail::Receiver` itself:
 
 ```text
 Synced + code != 0x00
@@ -1242,7 +1242,7 @@ An earlier revision argued that making RX size-aware would mean buffering the
 encoded frame, computing the decoded length, allocating, and then decoding a
 second time. That is true of a format WITHOUT a length prefix, and it is why
 the prefix was added rather than the second pass. With it, the decoder writes
-the header into a one- or two-byte local buffer, `CobsRx` reads the declared
+the header into a one- or two-byte local buffer, `cobs::detail::Receiver` reads the declared
 length, allocates exactly that, and the body decodes straight into its final
 home — one pass, no staging buffer, no copy.
 
@@ -1317,7 +1317,7 @@ RxBlock* block = std::construct_at(static_cast<RxBlock*>(memory));
 so heap and pool end up with identical geometry and differ only in where the
 region came from.
 
-`CobsRx` passes `writable_payload()` the same number it allocated with, which
+`cobs::detail::Receiver` passes `writable_payload()` the same number it allocated with, which
 is also the declared body length — so the decoder is given a segment that is
 exactly the frame's size. That is load-bearing twice over: on an exact heap
 allocation a longer span would run off the end of the block, and with any storage
@@ -1332,7 +1332,7 @@ the check either way.
 
 **Storage never touches the RX block's fields.** `refs`, `size`, `next_ready`
 and `owner` are private to the RX vertical, and `owner` in particular is set by
-`CobsRx`, not by storage. An earlier revision had both built-in strategies
+`cobs::detail::Receiver`, not by storage. An earlier revision had both built-in strategies
 stamp it themselves, which made it a hidden FIFTH obligation — absent from the
 signatures, absent from this list, and unverifiable by the contract test once
 the field became private. Storage written to the letter of §9 therefore

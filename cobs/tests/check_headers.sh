@@ -16,7 +16,6 @@ HEADERS="
  Codec.h
  Format.h
  CobsMsg.h
- CobsRx.h
  PacketRef.h
  Storage.h
 "
@@ -26,7 +25,10 @@ for header in $HEADERS; do
 	printf '#include "%s"\n' "$header" |
 		"$CXX" -std=gnu++20 $WARN -I"$COBS" -I"$PROJ/libs/delegate" \
 		-fsyntax-only -x c++ -
+	printf '#include "cobs/%s"\n' "$header" |
+		"$CXX" -std=gnu++20 $WARN -I"$PROJ" -I"$PROJ/libs/delegate" \
+		-fsyntax-only -x c++ -
 	count=$((count + 1))
 done
 
-echo "$count public headers compile independently"
+echo "$count public headers compile independently through both include roots"

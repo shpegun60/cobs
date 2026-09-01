@@ -140,7 +140,7 @@ regression clues for those ABIs, not universal ABI promises:
 | `PacketRef<...>` | 8 bytes | 4 bytes |
 | `CobsMsg<...>` | 48 bytes | 24 bytes |
 | `cobs::codec::Decoder` | 48 bytes | 24 bytes |
-| `CobsRx<...>` | 136 bytes | 80 bytes |
+| `cobs::detail::Receiver<...>` | 136 bytes | 80 bytes |
 | `Cobs<cobs::Heap<cobs::Format<...>>>` | 304 bytes | 168 bytes |
 | `cobs::Heap<cobs::Format<...>>` | 1 byte | 1 byte |
 | `tiny::delegate` sender | 64 bytes | 32 bytes |
@@ -164,7 +164,7 @@ compiler because padding and pointer width differ.
 byte chunks
     |
     v
-CobsRx<StorageT>
+cobs::detail::Receiver<StorageT>
     |
     +-- cobs::codec::Decoder decodes the length header into a local 1-2 byte buffer
     +-- the declared body length is parsed and validated
@@ -506,13 +506,13 @@ Exact field migration inventory:
 | Current owner | Current fields | Target decision |
 |---|---|---|
 | `cobs::codec::Decoder` | `m_state`, `m_output`, `m_written`, `m_decodedBefore`, `m_blockRemaining`, `m_pendingZero`, `m_hasOutput` | retained unchanged by the completed codec namespace move |
-| `CobsRx` | `m_decoder`, `m_storage`, `m_lengthBytes`, `m_declared`, `m_stage`, `m_headerAttached`, `m_building`, `m_readyHead`, `m_readyTail`, `m_stats` | storage vocabulary completed; queue writes still move to private helpers |
+| `cobs::detail::Receiver` | `m_decoder`, `m_storage`, `m_lengthBytes`, `m_declared`, `m_stage`, `m_headerAttached`, `m_building`, `m_readyHead`, `m_readyTail`, `m_stats` | final internal name; all ready-queue writes centralized in private helpers |
 | `cobs::RxBlock<Storage>` | `refs`, `size`, `next_ready`, `owner` | typed/private metadata retained unchanged |
 | `PacketRef` | `m_p` | retain the one-pointer handle; target type is `Packet<Storage>` |
 | `CobsMsg` | `m_storage`, `m_block`, `m_size`, `m_wire`, `m_state` | pointer+capacity now travel in one `cobs::TxBlock`; explicit state remains |
 | `Cobs` | `m_storage`, `m_rx`, `m_sender`, `m_txBusy`, `m_activeTx`, `m_txStats` | storage and receiver remain; delegates may be grouped in private `Transport`; active descriptor and counters remain |
 | `cobs::Pool` | `m_rx`, `m_tx` | two independent pools retained |
-| `StaticBlockPool` | `m_blocks`, `m_free`, `m_stats` | retain under `detail::BlockPool`; no public ownership role |
+| `cobs::detail::BlockPool` | `m_blocks`, `m_free`, `m_stats` | final internal name; no public ownership role |
 
 Current counter fields are also preserved: RX has `frames_delivered`,
 `frames_lost`, `allocation_failure`, `malformed`, `oversize`,
@@ -548,9 +548,8 @@ Keep:
 - ready-queue head and tail;
 - RX counters.
 
-Queue manipulation should be centralized in private `enqueue_ready`,
-`dequeue_ready`, and `clear_ready` helpers. A new public queue abstraction is
-not necessary.
+Queue manipulation is centralized in private `enqueueReady`, `dequeueReady`,
+and `clearReady` helpers. A new public queue abstraction is not necessary.
 
 ### 9.3 `cobs::Message<Storage>`
 
@@ -788,11 +787,11 @@ protocol changes must never be bundled together.
 
 ### Phase 4 - close the internal surface
 
-- [ ] Move receiver and block-pool implementation under `cobs::detail`.
+- [x] Move receiver and block-pool implementation under `cobs::detail`.
 - [ ] Make message encoding, ownership checks, and surrender coordinator-only.
-- [ ] Centralize ready-queue mutations in receiver helpers.
-- [ ] Keep typed ownership and private metadata.
-- [ ] Verify packet/message lifetime and endpoint-destruction edges.
+- [x] Centralize ready-queue mutations in receiver helpers.
+- [x] Keep typed ownership and private metadata.
+- [x] Verify packet/message lifetime and endpoint-destruction edges.
 
 ### Phase 5 - clean application API
 
@@ -901,7 +900,8 @@ The following are not part of this refactor:
 - Created this canonical plan.
 - Added the transitional `cobs::Storage` concept over the existing two-limit,
   four-operation policy interface.
-- Applied the contract guard to `Cobs`, `CobsRx`, and `CobsMsg` without
+- Applied the contract guard to `Cobs`, the then-current receiver, and
+  `CobsMsg` without
   constraining or replacing `tiny::delegate`.
 - Added positive compile-time checks for the built-in heap and fixed policies,
   plus negative checks for missing TX operations, a wrong TX return type, and
@@ -911,7 +911,9 @@ The following are not part of this refactor:
 - The two former COBS test `-Wshadow` warnings were removed during the storage
   vocabulary slice. The STM32 H7RS vendor `register` warning remains external.
 - Added a persistent smoke pass that compiles every current public COBS header
-  independently (7 after storage extension types were consolidated).
+  independently (6 after receiver and block-pool internals moved to
+  `cobs::detail`), through both `-I cobs` leaf includes and `-I <project>`
+  `cobs/...` includes.
 - Added exact x86-64 and ARM EABI layout assertions plus an inspectable
   Cortex-M object probe. Phase 0 characterization is now complete.
 - Physically replaced the old decoder/encoder files and symbols with
@@ -927,3 +929,11 @@ The following are not part of this refactor:
   `acquire/release` operations. Consolidated those extension types in
   `Storage.h`, removed four obsolete headers without forwarding aliases, and
   renamed the shared conformance suite to `test_storage`.
+- Physically replaced `CobsRx.h` and `detail/StaticBlockPool.h` with
+  `detail/Receiver.h` and `detail/BlockPool.h`. Both implementations now live
+  under `cobs::detail`; the receiver is no longer a public header, and all
+  ready-queue mutations go through its three private helpers. The ownership
+  fields, reference-count transitions, explicit RX states, and delegates were
+  left unchanged. `Receiver` no longer selects a default heap strategy; only
+  the application endpoint owns that default. The RX suite now follows the
+  real type as `test_receiver`.

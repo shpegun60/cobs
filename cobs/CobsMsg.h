@@ -134,7 +134,7 @@ class Cobs;
  * defeated a rule this layer does state: `enum class Flag : bool` passed the
  * enumeration branch and put a bool on the wire after all.
  */
-namespace cobs_detail {
+namespace cobs::detail {
 /*
  * std::underlying_type_t<T> is a HARD error for a non-enumeration, and `&&`
  * inside a variable template does not save you: both operands instantiate.
@@ -150,12 +150,12 @@ struct is_bool_backed_enum<T, true>
 
 template<class T>
 inline constexpr bool is_bool_backed_enum_v = is_bool_backed_enum<T>::value;
-} // namespace cobs_detail
+} // namespace cobs::detail
 
 template<class T>
 concept CobsScalar =
 	!std::is_volatile_v<T> &&
-	!cobs_detail::is_bool_backed_enum_v<std::remove_cv_t<T>> &&
+	!cobs::detail::is_bool_backed_enum_v<std::remove_cv_t<T>> &&
 	((std::is_arithmetic_v<std::remove_cv_t<T>> &&
 	  !std::is_same_v<std::remove_cv_t<T>, bool>) ||
 	 std::is_enum_v<std::remove_cv_t<T>> ||

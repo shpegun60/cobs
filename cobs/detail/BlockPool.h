@@ -1,14 +1,9 @@
 /*
- * StaticBlockPool — BlockCount fixed blocks in static storage, and nothing
- * else. No heap, no virtuals, no mutex, O(1) allocate and release.
+ * cobs::detail::BlockPool — fixed blocks in static storage, and nothing
+ * else. No heap, no virtuals, no mutex, O(1) acquire and release.
  *
- * INTERNAL. Named cobs_detail rather than cobs::detail on purpose: a namespace
- * called `cobs` would collide with the most natural name for the engine
- * object itself, and `Cobs<> cobs;` is exactly how the documentation spells
- * it. The library identifies itself by prefix, not by namespace.
- *
- * This is an implementation primitive, not a settled contract for a
- * user-supplied allocator: it lives in detail/ so that nobody discovers it,
+ * INTERNAL. This is an implementation primitive, not a settled contract for
+ * user-supplied storage: it lives in detail/ so that nobody discovers it,
  * builds on it, and turns yesterday's idea into an international treaty. The
  * public shape of custom memory is decided once both real use cases exist
  * (RX packets and TX wire blocks), not before.
@@ -26,8 +21,8 @@
  * threaded.
  */
 
-#ifndef COBS_DETAIL_STATIC_BLOCK_POOL_H_
-#define COBS_DETAIL_STATIC_BLOCK_POOL_H_
+#ifndef COBS_DETAIL_BLOCK_POOL_H_
+#define COBS_DETAIL_BLOCK_POOL_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -46,7 +41,7 @@
  * free list twice and corrupted it. A guarantee that evaporates under -DNDEBUG
  * is not a guarantee, it is a debugging aid with good manners.
  *
- * The cost is a walk of the free list on deallocate — O(blocks), where blocks
+ * The cost is a walk of the free list on release — O(blocks), where blocks
  * is typically 2 to 8, on a path that is never in an ISR. Anyone who has
  * measured it and wants the bytes back sets COBS_POOL_CHECKS=0 on purpose.
  */
@@ -54,7 +49,7 @@
 #	define COBS_POOL_CHECKS 1
 #endif
 
-namespace cobs_detail {
+namespace cobs::detail {
 
 // Outside the template on purpose: the numbers do not depend on the geometry,
 // so two pools of different shapes report the same TYPE. Nested, every
@@ -63,12 +58,12 @@ namespace cobs_detail {
 struct PoolStats {
 	uint32_t in_use     = 0;
 	uint32_t high_water = 0;
-	uint32_t exhausted  = 0; // allocate() calls that found the pool dry
+	uint32_t exhausted  = 0; // acquire() calls that found the pool dry
 	uint32_t rejected   = 0; // release() calls refused by the checks
 };
 
 template<std::size_t BlockSize, std::size_t BlockCount, std::size_t RequestedAlignment>
-class StaticBlockPool final {
+class BlockPool final {
 	static_assert(BlockCount >= 1, "a pool needs at least one block");
 	static_assert(RequestedAlignment >= 1, "alignment must be positive");
 
@@ -93,7 +88,7 @@ public:
 
 	using Stats = PoolStats;
 
-	StaticBlockPool() noexcept
+	BlockPool() noexcept
 	{
 		for (std::size_t i = BlockCount; i > 0; --i) {
 			Block* const b = &m_blocks[i - 1];
@@ -102,11 +97,11 @@ public:
 		}
 	}
 
-	StaticBlockPool(const StaticBlockPool&) = delete;
-	StaticBlockPool& operator=(const StaticBlockPool&) = delete;
+	BlockPool(const BlockPool&) = delete;
+	BlockPool& operator=(const BlockPool&) = delete;
 
 	// Raw block, or nullptr when the pool is dry. Never blocks.
-	[[nodiscard]] std::byte* allocate() noexcept
+	[[nodiscard]] std::byte* acquire() noexcept
 	{
 		Block* const b = m_free;
 		if (b == nullptr) {
@@ -127,7 +122,7 @@ public:
 	 * the pointer has been validated.
 	 *
 	 * That ordering is the whole reason this takes a callback instead of the
-	 * caller destroying its object and then calling deallocate(). A foreign
+	 * caller destroying its object and then calling release(). A foreign
 	 * or already-freed pointer must be refused BEFORE anything runs a
 	 * destructor on memory that may belong to somebody else.
 	 *
@@ -155,7 +150,7 @@ public:
 	}
 
 	// For blocks that are plain bytes with nothing to tear down.
-	void deallocate(std::byte* const ptr) noexcept
+	void release(std::byte* const ptr) noexcept
 	{
 		(void)release(ptr, [](std::byte*) noexcept {});
 	}
@@ -222,6 +217,6 @@ private:
 	Stats  m_stats{};
 };
 
-} // namespace cobs_detail
+} // namespace cobs::detail
 
-#endif /* COBS_DETAIL_STATIC_BLOCK_POOL_H_ */
+#endif /* COBS_DETAIL_BLOCK_POOL_H_ */
