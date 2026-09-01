@@ -14,21 +14,21 @@
  *     FrameComplete   the SAME reference moves to the ready queue
  *          |
  *          v
- *     pop_packet()    the SAME reference moves into a PacketRef
+ *     pop_packet()    the SAME reference moves into a Packet
  *
  * Not one refs++ or refs-- happens along it: the reference moves logically
- * rather than arithmetically, and only a copy of a PacketRef ever changes the
+ * rather than arithmetically, and only a copy of a Packet ever changes the
  * count.
  *
  * This class is the only legitimate source of packet references, which is why
- * PacketRef::adopt() is private and befriended here.
+ * Packet::adopt() is private and befriended here.
  */
 
 #ifndef COBS_DETAIL_RECEIVER_H_
 #define COBS_DETAIL_RECEIVER_H_
 
 #include "../Codec.h"
-#include "../PacketRef.h"
+#include "Packet.h"
 #include "../Storage.h"
 
 #include <array>
@@ -43,8 +43,8 @@ namespace cobs::detail {
 // disagree with it.
 //
 // This is the RX half on its own, taking storage by reference. The assembled
-// Cobs owns storage by value (§9.4) and wraps this; an
-// application uses Cobs rather than naming Receiver directly.
+// Endpoint owns storage by value (§9.4) and wraps this; an
+// application uses Endpoint rather than naming Receiver directly.
 template<class StorageT>
 class Receiver final {
 	static_assert(cobs::Storage<StorageT>,
@@ -53,7 +53,7 @@ class Receiver final {
 public:
 	using StorageType = StorageT;
 	using Block = typename StorageT::RxBlock;
-	using Ref = ::PacketRef<StorageT>;
+	using Packet = cobs::Packet<StorageT>;
 	using Format = typename StorageT::Format;
 
 	/*
@@ -138,13 +138,13 @@ public:
 		// predates the loss.
 	}
 
-	[[nodiscard]] Ref pop_packet() noexcept
+	[[nodiscard]] Packet pop_packet() noexcept
 	{
 		Block* const p = dequeueReady();
 		if (p == nullptr) {
-			return Ref{};
+			return Packet{};
 		}
-		return Ref::adopt(p); // the queue's reference becomes the caller's
+		return Packet::adopt(p); // the queue's reference becomes the caller's
 	}
 
 	[[nodiscard]] bool has_packet() const noexcept { return m_readyHead != nullptr; }
@@ -195,7 +195,7 @@ private:
 	 * obligation, invisible in the signatures and impossible for the contract
 	 * test to check now that the field is private. Storage written to the
 	 * letter of the contract would then hand back a packet whose owner is
-	 * null, and the first PacketRef release would dereference it.
+	 * null, and the first Packet release would dereference it.
 	 *
 	 * So the RX vertical establishes ownership, which is also where it
 	 * belongs: storage supplies memory and takes it back, and nothing
@@ -376,8 +376,8 @@ private:
 	void clearReady() noexcept
 	{
 		while (Block* const block = dequeueReady()) {
-			// Release through PacketRef so there is only one refcount path.
-			(void)Ref::adopt(block);
+			// Release through Packet so there is only one refcount path.
+			(void)Packet::adopt(block);
 		}
 	}
 

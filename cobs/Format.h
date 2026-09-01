@@ -41,7 +41,7 @@
  *     Peer A: RX 1024, TX 64    -> length_size 2
  *     Peer B: RX 64,   TX 1024  -> length_size 2
  *
- * `Cobs<A>::length_size` is constexpr so an integration build can
+ * `cobs::Endpoint<A>::length_size` is constexpr so an integration build can
  * static_assert the format it expects.
  * ---------------------------------------------------------------------------
  */

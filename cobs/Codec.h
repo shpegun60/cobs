@@ -4,7 +4,7 @@
  * Contract: doc/COBS_ENGINE.md. This class deliberately knows no allocator,
  * no transport and no ownership: it decodes into a span the owner supplies,
  * so it can be tested with no HAL, no pool and no transport at all, and it is
- * compiled exactly once no matter how many Cobs instantiations exist.
+ * compiled exactly once no matter how many Endpoint instantiations exist.
  *
  * Because it holds no allocator, an allocation failure cannot arise inside
  * it. The seam is Event::NeedOutput: the decoder consumes the code byte that

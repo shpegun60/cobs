@@ -3,7 +3,7 @@
  * delegates a real one would supply.
  *
  * Like test_storage, the whole body runs TWICE — once over the heap strategy
- * and once over the fixed one — from a single template. If Cobs ever had to
+ * and once over the fixed one — from a single template. If Endpoint ever had to
  * know which it was talking to, the abstraction would have leaked.
  */
 #include "Cobs.h"
@@ -89,11 +89,11 @@ template<class StorageT>
 void runEngine(const char* name)
 {
 	g_strategy = name;
-	using Engine = Cobs<StorageT>;
+	using Engine = cobs::Endpoint<StorageT>;
 
-	static_assert(!std::is_copy_constructible_v<Engine>, "Cobs must not be copyable");
+	static_assert(!std::is_copy_constructible_v<Engine>, "Endpoint must not be copyable");
 	static_assert(!std::is_move_constructible_v<Engine>,
-	              "Cobs must not be movable: PacketRef points into it");
+	              "Endpoint must not be movable: cobs::Packet points into it");
 
 	/* --- RX: bytes in, packets out ------------------------------------- */
 	{
@@ -128,7 +128,7 @@ void runEngine(const char* name)
 		const auto payload = pattern(0x20, 6);
 		check(msg.write_bytes(std::span<const uint8_t>{payload}), "the payload is written");
 
-		check(cobs.push(msg) == SendResult::Sent, "push sends it");
+		check(cobs.push(msg) == cobs::SendResult::Sent, "push sends it");
 		check(!msg, "the message surrendered its block");
 		check(cobs.tx_active(), "which the engine now holds");
 		check(t.sent.size() == 1 && t.sent[0] == cobs_test::frame(payload, Engine::length_size),
@@ -161,13 +161,13 @@ void runEngine(const char* name)
 
 		auto first = cobs.make_msg();
 		check(first.write(uint8_t{0x01}), "a one-byte frame is built");
-		check(cobs.push(first) == SendResult::Sent, "the first frame goes out");
+		check(cobs.push(first) == cobs::SendResult::Sent, "the first frame goes out");
 
 		auto second = cobs.make_msg(4);
 		const auto payload = pattern(0x30, 4);
 		check(second.write_bytes(std::span<const uint8_t>{payload}), "and a second built");
 
-		check(cobs.push(second) == SendResult::Busy, "a second push while busy is refused");
+		check(cobs.push(second) == cobs::SendResult::Busy, "a second push while busy is refused");
 		check(static_cast<bool>(second),
 		      "leaving the message owned by the caller");
 		check(cobs.tx_stats().send_refused_busy == 1, "and counted");
@@ -180,7 +180,7 @@ void runEngine(const char* name)
 
 		t.finish();
 		cobs.proceed();
-		check(cobs.push(second) == SendResult::Sent, "it sends once the link frees up");
+		check(cobs.push(second) == cobs::SendResult::Sent, "it sends once the link frees up");
 		auto expected = payload;
 		expected.push_back(0x34);
 		check(t.sent.back() == cobs_test::frame(expected, Engine::length_size),
@@ -198,7 +198,7 @@ void runEngine(const char* name)
 		check(msg.write_bytes(std::span<const uint8_t>{payload}), "a frame is built");
 
 		t.refuse = true;
-		check(cobs.push(msg) == SendResult::Error, "a transport that will not start reports Error");
+		check(cobs.push(msg) == cobs::SendResult::Error, "a transport that will not start reports Error");
 		check(static_cast<bool>(msg) && msg.size() == payload.size(),
 		      "the message survives with its payload identity intact");
 		check(!msg.write(uint8_t{0xFF}) && !msg.reserve(msg.capacity()),
@@ -207,7 +207,7 @@ void runEngine(const char* name)
 		check(cobs.tx_stats().send_failed == 1, "the failure is counted");
 
 		t.refuse = false;
-		check(cobs.push(msg) == SendResult::Sent, "the retry succeeds");
+		check(cobs.push(msg) == cobs::SendResult::Sent, "the retry succeeds");
 		check(t.sent.size() == 1 && t.sent[0] == cobs_test::frame(payload, Engine::length_size),
 		      "sending the identical frame, encoded exactly once");
 	}
@@ -217,16 +217,16 @@ void runEngine(const char* name)
 		Engine cobs;                       // nothing bound
 		auto msg = cobs.make_msg(kPayload);
 		
-		check(cobs.push(msg) == SendResult::NotBound, "pushing with no transport bound is NotBound");
+		check(cobs.push(msg) == cobs::SendResult::NotBound, "pushing with no transport bound is NotBound");
 		check(static_cast<bool>(msg), "and the message is untouched");
 
-		typename Engine::Msg empty;
-		check(cobs.push(empty) == SendResult::Invalid, "an empty message is Invalid");
+		typename Engine::Message empty;
+		check(cobs.push(empty) == cobs::SendResult::Invalid, "an empty message is Invalid");
 
 		Engine other;
 		auto foreign = other.make_msg(2);
 		
-		check(cobs.push(foreign) == SendResult::Invalid,
+		check(cobs.push(foreign) == cobs::SendResult::Invalid,
 		      "so is a message belonging to another engine of the same type");
 	}
 
@@ -245,14 +245,14 @@ void runEngine(const char* name)
 		{
 			auto msg = cobs.make_msg(kPayload);
 			
-			check(cobs.push(msg) == SendResult::NotBound,
+			check(cobs.push(msg) == cobs::SendResult::NotBound,
 			      "so neither half leaked into the engine");
 		}
 
 		bind(cobs, t);
 		auto msg = cobs.make_msg(kPayload);
 		
-		check(cobs.push(msg) == SendResult::Sent, "a frame is in flight");
+		check(cobs.push(msg) == cobs::SendResult::Sent, "a frame is in flight");
 
 		check(!cobs.set_transport(sender_for<Engine>(other), busy_for<Engine>(other)),
 		      "the transport cannot be swapped under a live transfer — a new "
@@ -275,7 +275,7 @@ void runEngine(const char* name)
 		const auto out = pattern(0x60, 5);
 		auto msg = cobs.make_msg();
 		check(msg.write_bytes(std::span<const uint8_t>{out}), "a frame is built");
-		check(cobs.push(msg) == SendResult::Sent, "a frame goes out");
+		check(cobs.push(msg) == cobs::SendResult::Sent, "a frame goes out");
 
 		const auto in = pattern(0x70, 11);
 		cobs.consume(std::span<const uint8_t>{cobs_test::frame(in, Engine::length_size)});
@@ -295,7 +295,7 @@ void testFixedExhaustion()
 {
 	g_strategy = "fixed";
 	using Memory = cobs::Pool<cobs::Format<32, 32>, 2, 1>;
-	Cobs<Memory> cobs;
+	cobs::Endpoint<Memory> cobs;
 	FakeTransport t;
 	bind(cobs, t);
 
@@ -303,10 +303,10 @@ void testFixedExhaustion()
 	check(static_cast<bool>(a), "the single TX block is handed out");
 	auto b = cobs.make_msg(4);
 	check(!b, "a second message from a one-block pool is empty");
-	check(cobs.push(b) == SendResult::Invalid, "and pushing it is Invalid, not a crash");
+	check(cobs.push(b) == cobs::SendResult::Invalid, "and pushing it is Invalid, not a crash");
 
 	
-	check(cobs.push(a) == SendResult::Sent, "the real one still sends");
+	check(cobs.push(a) == cobs::SendResult::Sent, "the real one still sends");
 
 	// The block is with the transport, so the pool is dry until it returns.
 	auto c = cobs.make_msg(4);
@@ -325,11 +325,11 @@ void testDestructorReclaimsActiveTx()
 	using Memory = cobs::Pool<cobs::Format<32, 32>, 2, 2>;
 	FakeTransport t;
 	{
-		Cobs<Memory> cobs;
+		cobs::Endpoint<Memory> cobs;
 		bind(cobs, t);
 		auto msg = cobs.make_msg();
 		check(msg.write(uint32_t{0x01020304u}), "a frame is built");
-		check(cobs.push(msg) == SendResult::Sent, "a frame is in flight at destruction");
+		check(cobs.push(msg) == cobs::SendResult::Sent, "a frame is in flight at destruction");
 		check(cobs.storage().tx_available() == 1, "one TX block is out");
 		// The transport is finished with it — precondition 2 is satisfied.
 		t.finish();
@@ -345,7 +345,7 @@ void testDefaultCapacityHint()
 	{	// The heap policy grants exactly what is asked, so the default is
 		// visible directly: a short frame never reallocates.
 		g_strategy = "heap";
-		using Engine = Cobs<cobs::Heap<cobs::Format<64, 1024>>>;
+		using Engine = cobs::Endpoint<cobs::Heap<cobs::Format<64, 1024>>>;
 		static_assert(Engine::default_capacity_hint == 32);
 		Engine cobs;
 		FakeTransport t;
@@ -368,7 +368,7 @@ void testDefaultCapacityHint()
 		      "make_msg(0) reserves nothing");
 		{
 			auto empty_frame = cobs.make_msg(0);
-			check(cobs.push(empty_frame) == SendResult::Sent &&
+			check(cobs.push(empty_frame) == cobs::SendResult::Sent &&
 			      t.sent.back() == cobs_test::frame({}, Engine::length_size),
 			      "and pushed straight away it is the canonical empty frame");
 			t.finish();
@@ -384,7 +384,7 @@ void testDefaultCapacityHint()
 	{	// A policy whose limit is BELOW the default must still work: the
 		// default is clamped, so make_msg() can never fail on its own default.
 		g_strategy = "fixed";
-		using Engine = Cobs<cobs::Pool<cobs::Format<32, 16>, 2, 1>>;
+		using Engine = cobs::Endpoint<cobs::Pool<cobs::Format<32, 16>, 2, 1>>;
 		static_assert(Engine::default_capacity_hint == 16,
 		              "the default must clamp to a smaller tx_max_size");
 		Engine cobs;
@@ -398,9 +398,9 @@ void testDefaultCapacityHint()
 
 /*
  * The reported capacity has to survive the WHOLE ownership chain, not just
- * CobsMsg:
+ * cobs::Message:
  *
- *     CobsMsg -> surrender_block() -> Cobs::m_activeTx -> proceed()
+ *     cobs::Message -> surrender_block() -> Endpoint::m_activeTx -> proceed()
  *             -> release_tx(the same TxBlock descriptor)
  *
  * Neither shipped policy can catch a regression here. The heap one reports
@@ -455,7 +455,7 @@ public:
 void testReportedCapacitySurvivesTheEngine()
 {
 	g_strategy = "overalloc";
-	using Engine = Cobs<OvergrantStorage>;
+	using Engine = cobs::Endpoint<OvergrantStorage>;
 	Engine cobs;
 	FakeTransport t;
 	bind(cobs, t);
@@ -466,7 +466,7 @@ void testReportedCapacitySurvivesTheEngine()
 
 	const auto payload = pattern(0x80, 12);
 	check(msg.write_bytes(std::span<const uint8_t>{payload}), "a payload is written");
-	check(cobs.push(msg) == SendResult::Sent, "and pushed");
+	check(cobs.push(msg) == cobs::SendResult::Sent, "and pushed");
 	check(t.sent.size() == 1 && t.sent[0] == cobs_test::frame(payload, Engine::length_size),
 	      "the transport got the canonical frame");
 	check(cobs.storage().frees == 0, "nothing is freed while the transport reads");
@@ -486,7 +486,7 @@ void testReportedCapacitySurvivesTheEngine()
 		check(grown.write_bytes(std::span<const uint8_t>{big}), "60 bytes force a growth");
 		const std::size_t after_growth = grown.capacity();
 		check(after_growth == 121, "to 121 (asked 60, granted 121)");
-		check(cobs.push(grown) == SendResult::Sent, "it sends");
+		check(cobs.push(grown) == cobs::SendResult::Sent, "it sends");
 		t.finish();
 		cobs.proceed();
 		check(cobs.storage().last_freed == after_growth,
@@ -511,8 +511,8 @@ void testReportedCapacitySurvivesTheEngine()
 void testComplementaryPeers()
 {
 	g_strategy = "pair";
-	using A = Cobs<cobs::Heap<cobs::Format<1024, 64>>>;
-	using B = Cobs<cobs::Heap<cobs::Format<64, 1024>>>;
+	using A = cobs::Endpoint<cobs::Heap<cobs::Format<1024, 64>>>;
+	using B = cobs::Endpoint<cobs::Heap<cobs::Format<64, 1024>>>;
 
 	static_assert(A::length_size == 2 && B::length_size == 2,
 	              "the larger limit picks the width, so the pair agrees");
@@ -533,7 +533,7 @@ void testComplementaryPeers()
 		const auto out = pattern(0x10, A::max_send_size);
 		auto msg = a.make_msg();
 		check(msg.write_bytes(std::span<const uint8_t>{out}), "A builds a 64-byte frame");
-		check(a.push(msg) == SendResult::Sent, "and sends it");
+		check(a.push(msg) == cobs::SendResult::Sent, "and sends it");
 
 		b.consume(std::span<const uint8_t>{ta.sent.back()});
 		const auto got = b.pop_packet();
@@ -548,7 +548,7 @@ void testComplementaryPeers()
 		const auto out = pattern(0x40, 300);
 		auto msg = b.make_msg();
 		check(msg.write_bytes(std::span<const uint8_t>{out}), "B builds a 300-byte frame");
-		check(b.push(msg) == SendResult::Sent, "and sends it");
+		check(b.push(msg) == cobs::SendResult::Sent, "and sends it");
 
 		a.consume(std::span<const uint8_t>{tb.sent.back()});
 		const auto got = a.pop_packet();
@@ -568,7 +568,7 @@ void testComplementaryPeers()
 		const auto out = pattern(0x60, 300);
 		auto msg = b.make_msg();
 		check(msg.write_bytes(std::span<const uint8_t>{out}), "B builds another 300 bytes");
-		check(b.push(msg) == SendResult::Sent, "and sends it");
+		check(b.push(msg) == cobs::SendResult::Sent, "and sends it");
 
 		const std::size_t before = b.rx_stats().oversize;
 		b.consume(std::span<const uint8_t>{tb.sent.back()}); // fed to itself
@@ -584,8 +584,8 @@ void testStorageDoesNotChangeFormat()
 {
 	g_strategy = "format";
 	using Wire = cobs::Format<64, 64>;
-	using HeapEngine = Cobs<cobs::Heap<Wire>>;
-	using PoolEngine = Cobs<cobs::Pool<Wire, 2, 1>>;
+	using HeapEngine = cobs::Endpoint<cobs::Heap<Wire>>;
+	using PoolEngine = cobs::Endpoint<cobs::Pool<Wire, 2, 1>>;
 
 	static_assert(std::is_same_v<typename HeapEngine::Format, Wire>);
 	static_assert(std::is_same_v<typename PoolEngine::Format, Wire>);
@@ -605,8 +605,8 @@ void testStorageDoesNotChangeFormat()
 	      "heap message accepts the payload");
 	check(pool_message.write_bytes(std::span<const uint8_t>{payload}),
 	      "pool message accepts the same payload");
-	check(heap.push(heap_message) == SendResult::Sent, "heap sends");
-	check(pool.push(pool_message) == SendResult::Sent, "pool sends");
+	check(heap.push(heap_message) == cobs::SendResult::Sent, "heap sends");
+	check(pool.push(pool_message) == cobs::SendResult::Sent, "pool sends");
 	check(heap_transport.sent.back() == pool_transport.sent.back(),
 	      "one Format produces byte-identical frames across storage strategies");
 

@@ -137,11 +137,11 @@ regression clues for those ABIs, not universal ABI promises:
 | pointer / `std::size_t` | 8 / 8 bytes | 4 / 4 bytes |
 | `cobs::TxBlock` | 16 bytes | 8 bytes |
 | `cobs::RxBlock<cobs::Heap<cobs::Format<...>>>` | 24 bytes | 16 bytes |
-| `PacketRef<...>` | 8 bytes | 4 bytes |
-| `CobsMsg<...>` | 48 bytes | 24 bytes |
+| `cobs::Packet<...>` | 8 bytes | 4 bytes |
+| `cobs::Message<...>` | 48 bytes | 24 bytes |
 | `cobs::codec::Decoder` | 48 bytes | 24 bytes |
 | `cobs::detail::Receiver<...>` | 136 bytes | 80 bytes |
-| `Cobs<cobs::Heap<cobs::Format<...>>>` | 304 bytes | 168 bytes |
+| `cobs::Endpoint<cobs::Heap<cobs::Format<...>>>` | 304 bytes | 168 bytes |
 | `cobs::Heap<cobs::Format<...>>` | 1 byte | 1 byte |
 | `tiny::delegate` sender | 64 bytes | 32 bytes |
 | `tiny::delegate` busy query | 64 bytes | 32 bytes |
@@ -149,7 +149,7 @@ regression clues for those ABIs, not universal ABI promises:
 | TX statistics | 12 bytes | 12 bytes |
 | pool statistics | 16 bytes | 16 bytes |
 | `cobs::Pool<cobs::Format<1024, 1024>, 8, 2>` | 10,496 bytes | 10,424 bytes |
-| `Cobs<cobs::Pool<cobs::Format<1024, 1024>, 8, 2>>` | 10,800 bytes | 10,592 bytes |
+| `cobs::Endpoint<cobs::Pool<cobs::Format<1024, 1024>, 8, 2>>` | 10,800 bytes | 10,592 bytes |
 
 The owning delegates are intentionally retained. Their size is not a
 reason to weaken their owning-callable semantics. Before layout work is marked
@@ -171,7 +171,7 @@ cobs::detail::Receiver<StorageT>
     +-- StorageT::acquire_rx(length) obtains the exact final RxBlock
     +-- the same decoder is attached to that packet's writable payload
     +-- a complete packet moves to the intrusive ready queue
-    +-- pop_packet() transfers the queue's existing reference to PacketRef
+    +-- pop_packet() transfers the queue's existing reference to cobs::Packet
 ```
 
 The normal acquisition-to-pop path does not increment or decrement the
@@ -185,7 +185,7 @@ handle changes the count.
 StorageT::acquire_tx(hint) -> cobs::TxBlock
     |
     v
-CobsMsg<StorageT> builds a body and grows geometrically when required
+cobs::Message<StorageT> builds a body and grows geometrically when required
     |
     v
 length prefix is written before the body
@@ -194,10 +194,10 @@ length prefix is written before the body
 canonical COBS frame is encoded in the same block
     |
     v
-Cobs::push() gives the encoded span to the sender delegate
+cobs::Endpoint::push() gives the encoded span to the sender delegate
     |
     +-- refused: message retains its TxBlock
-    +-- accepted: Cobs owns the active TxBlock until busy() becomes false
+    +-- accepted: Endpoint owns the active TxBlock until busy() becomes false
 ```
 
 The transport borrows the encoded bytes. The engine remains responsible for
@@ -508,9 +508,9 @@ Exact field migration inventory:
 | `cobs::codec::Decoder` | `m_state`, `m_output`, `m_written`, `m_decodedBefore`, `m_blockRemaining`, `m_pendingZero`, `m_hasOutput` | retained unchanged by the completed codec namespace move |
 | `cobs::detail::Receiver` | `m_decoder`, `m_storage`, `m_lengthBytes`, `m_declared`, `m_stage`, `m_headerAttached`, `m_building`, `m_readyHead`, `m_readyTail`, `m_stats` | final internal name; all ready-queue writes centralized in private helpers |
 | `cobs::RxBlock<Storage>` | `refs`, `size`, `next_ready`, `owner` | typed/private metadata retained unchanged |
-| `PacketRef` | `m_p` | retain the one-pointer handle; target type is `Packet<Storage>` |
-| `CobsMsg` | `m_storage`, `m_block`, `m_size`, `m_wire`, `m_state` | pointer+capacity now travel in one `cobs::TxBlock`; explicit state remains |
-| `Cobs` | `m_storage`, `m_rx`, `m_sender`, `m_txBusy`, `m_activeTx`, `m_txStats` | storage and receiver remain; delegates may be grouped in private `Transport`; active descriptor and counters remain |
+| `cobs::Packet` | `m_p` | final one-pointer public handle |
+| `cobs::Message` | `m_storage`, `m_block`, `m_size`, `m_wire`, `m_state` | one `cobs::TxBlock`; explicit state remains |
+| `cobs::Endpoint` | `m_storage`, `m_rx`, `m_sender`, `m_txBusy`, `m_activeTx`, `m_txStats` | storage and receiver remain; delegates may be grouped in private `Transport`; active descriptor and counters remain |
 | `cobs::Pool` | `m_rx`, `m_tx` | two independent pools retained |
 | `cobs::detail::BlockPool` | `m_blocks`, `m_free`, `m_stats` | final internal name; no public ownership role |
 
@@ -761,7 +761,7 @@ protocol changes must never be bundled together.
       `Encoder.cpp`.
 - [x] Take a clean API break: do not add compatibility aliases or traits for
       old names. All repository consumers move with each real rename slice.
-- [ ] Move the remaining application and detail types into
+- [x] Move the remaining application and detail types into
       `namespace cobs` under their final names.
 - [ ] Complete the vocabulary without changing state transitions or framing.
 - [x] Keep delegates exactly as currently implemented.
@@ -807,7 +807,7 @@ protocol changes must never be bundled together.
 - [ ] Separate codec, storage, message, packet-lifetime, endpoint, public API,
       and compile-fail tests.
 - [ ] Permit white-box tests to include `detail` explicitly.
-- [ ] Require application tests to include only `Cobs.h`.
+- [x] Require application tests to include only `Cobs.h`.
 - [ ] Add wire-equivalence fixtures across storage implementations.
 - [ ] Add transport-delegate lifetime tests for owning lambdas/binds/borrows.
 
@@ -911,8 +911,8 @@ The following are not part of this refactor:
 - The two former COBS test `-Wshadow` warnings were removed during the storage
   vocabulary slice. The STM32 H7RS vendor `register` warning remains external.
 - Added a persistent smoke pass that compiles every current public COBS header
-  independently (6 after receiver and block-pool internals moved to
-  `cobs::detail`), through both `-I cobs` leaf includes and `-I <project>`
+  independently (4 after application definitions moved behind the umbrella),
+  through both `-I cobs` leaf includes and `-I <project>`
   `cobs/...` includes.
 - Added exact x86-64 and ARM EABI layout assertions plus an inspectable
   Cortex-M object probe. Phase 0 characterization is now complete.
@@ -939,7 +939,15 @@ The following are not part of this refactor:
   real type as `test_receiver`.
 - Closed the message's coordinator boundary without an adapter or compatibility
   trait: `encode()`, `belongs_to()`, and `surrender_block()` are private to
-  `Cobs<Storage>`, and the unused public `encoded()` observer was removed.
+  `cobs::Endpoint<Storage>`, and the unused public `encoded()` observer was removed.
   Message tests now prove the public boundary at compile time and observe wire
   bytes, failed-start retry identity, growth copies, private encoded-state
   behaviour, and encoded-message destruction through the real coordinator.
+- Physically replaced the global `Cobs`, `CobsMsg`, `PacketRef`, and
+  `SendResult` types with real `cobs::Endpoint`, `cobs::Message`,
+  `cobs::Packet`, and `cobs::SendResult` definitions. `Message.h` and
+  `Packet.h` now live under `detail/` as template implementation files reached
+  through the sole application umbrella `Cobs.h`; the old public headers were
+  removed with no aliases or forwarding shims. Their suites now follow the
+  real names as `test_endpoint` and `test_message`. The serializer constraint
+  also moved out of the global API as `cobs::detail::NativeScalar`.

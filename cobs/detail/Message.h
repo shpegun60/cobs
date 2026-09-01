@@ -1,5 +1,5 @@
 /*
- * CobsMsg — exclusive owner of one TX block, and a builder for what goes in it.
+ * Message — exclusive owner of one TX block, and a builder for what goes in it.
  *
  * Contract: doc/COBS_ENGINE.md §8. This type knows its own storage geometry,
  * how to grow it, and how to encode into it. It knows nothing about a
@@ -67,11 +67,11 @@
  * immediately before it.
  */
 
-#ifndef COBS_MSG_H_
-#define COBS_MSG_H_
+#ifndef COBS_DETAIL_MESSAGE_H_
+#define COBS_DETAIL_MESSAGE_H_
 
-#include "Codec.h"
-#include "Storage.h"
+#include "../Codec.h"
+#include "../Storage.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -79,9 +79,13 @@
 #include <span>
 #include <type_traits>
 
+namespace cobs {
+
 // The only legitimate destination for a surrendered block.
 template<class StorageT>
-class Cobs;
+class Endpoint;
+
+} // namespace cobs
 
 /*
  * What write<T>() and write_array<T>() accept: the types that have a meaning
@@ -150,28 +154,31 @@ struct is_bool_backed_enum<T, true>
 
 template<class T>
 inline constexpr bool is_bool_backed_enum_v = is_bool_backed_enum<T>::value;
-} // namespace cobs::detail
 
 template<class T>
-concept CobsScalar =
+concept NativeScalar =
 	!std::is_volatile_v<T> &&
-	!cobs::detail::is_bool_backed_enum_v<std::remove_cv_t<T>> &&
+	!is_bool_backed_enum_v<std::remove_cv_t<T>> &&
 	((std::is_arithmetic_v<std::remove_cv_t<T>> &&
 	  !std::is_same_v<std::remove_cv_t<T>, bool>) ||
 	 std::is_enum_v<std::remove_cv_t<T>> ||
 	 std::is_same_v<std::remove_cv_t<T>, std::byte>);
 
+} // namespace cobs::detail
+
+namespace cobs {
+
 // One template parameter, like everything else in this layer: the storage
 // names its protocol Format, so memory strategy cannot redefine geometry.
 template<class StorageT>
-class CobsMsg final {
-	static_assert(cobs::Storage<StorageT>,
-		"CobsMsg storage must satisfy the cobs::Storage contract");
+class Message final {
+	static_assert(Storage<StorageT>,
+		"Message storage must satisfy the cobs::Storage contract");
 
-	// surrender_block() is private for the same reason PacketRef::adopt() is:
+	// surrender_block() is private for the same reason Packet::adopt() is:
 	// it hands out ownership without freeing it, so exactly one type may call
 	// it — the one that will keep the block alive until the transport is done.
-	friend class Cobs<StorageT>;
+	friend class Endpoint<StorageT>;
 
 public:
 	using Format = typename StorageT::Format;
@@ -181,7 +188,7 @@ public:
 	// the format it expects (COBS_ENGINE.md §3).
 	static constexpr std::size_t length_size = Format::length_size;
 
-	CobsMsg() noexcept = default;
+	Message() noexcept = default;
 
 	/*
 	 * Takes a block from storage and starts EMPTY. `hint` is a capacity
@@ -192,7 +199,7 @@ public:
 	 * Empty message rather than a failure code: `if (!msg)` is the check
 	 * either way.
 	 */
-	explicit CobsMsg(StorageT& storage, const std::size_t hint = 0) noexcept
+	explicit Message(StorageT& storage, const std::size_t hint = 0) noexcept
 		: m_storage(&storage)
 	{
 		if (hint > max_payload_size) {
@@ -204,19 +211,19 @@ public:
 		}
 	}
 
-	~CobsMsg() { release(); }
+	~Message() { release(); }
 
-	CobsMsg(const CobsMsg&) = delete;
-	CobsMsg& operator=(const CobsMsg&) = delete;
+	Message(const Message&) = delete;
+	Message& operator=(const Message&) = delete;
 
-	CobsMsg(CobsMsg&& other) noexcept
+	Message(Message&& other) noexcept
 		: m_storage(other.m_storage), m_block(other.m_block), m_size(other.m_size),
 		  m_wire(other.m_wire), m_state(other.m_state)
 	{
 		other.disown();
 	}
 
-	CobsMsg& operator=(CobsMsg&& other) noexcept
+	Message& operator=(Message&& other) noexcept
 	{
 		if (this != &other) {
 			release(); // whatever this message held is returned first
@@ -243,14 +250,14 @@ public:
 	 * endianness is the caller's business, and a hidden swap in a transport
 	 * library is a bug that only shows up on the second architecture.
 	 *
-	 * What is NOT accepted, and why, is in the CobsScalar concept above.
+	 * What is NOT accepted, and why, is in the detail::NativeScalar concept above.
 	 *
 	 * Returns false, with the message completely unchanged, if the value does
 	 * not fit the Format's limit or the growth it needs cannot be acquired.
 	 * The message remains usable — but it is now INCOMPLETE, so the result has
 	 * to be acted on before push(), or a truncated frame goes out.
 	 */
-	template<CobsScalar T>
+	template<detail::NativeScalar T>
 	[[nodiscard]] bool write(const T& value) noexcept
 	{
 		// A COMPILE-TIME length, deliberately: the copy then becomes a store
@@ -275,7 +282,7 @@ public:
 	 *         return;   // every write result has to be acted on
 	 *     }
 	 */
-	template<CobsScalar T>
+	template<detail::NativeScalar T>
 	[[nodiscard]] bool write_array(const std::span<const T> values) noexcept
 	{
 		if (values.size() > max_payload_size / sizeof(T)) {
@@ -334,7 +341,7 @@ public:
 private:
 	// Guards against pushing a message into a DIFFERENT engine of the same
 	// type, which would return the block to the wrong pool. The types cannot
-	// catch that: two Cobs<cobs::Pool<...>> objects are one type.
+	// catch that: two Endpoint<cobs::Pool<...>> objects are one type.
 	[[nodiscard]] bool belongs_to(const StorageT& storage) const noexcept
 	{
 		return m_storage == &storage;
@@ -516,10 +523,12 @@ private:
 	}
 
 	StorageT*     m_storage = nullptr;
-	cobs::TxBlock m_block{};
+	TxBlock       m_block{};
 	std::size_t   m_size  = 0; // payload bytes written; <= m_block.capacity
 	std::size_t   m_wire  = 0; // encoded frame length, once Encoded
 	State         m_state = State::Empty;
 };
 
-#endif /* COBS_MSG_H_ */
+} // namespace cobs
+
+#endif /* COBS_DETAIL_MESSAGE_H_ */

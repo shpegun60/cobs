@@ -1,7 +1,7 @@
 /*
- * Host verification for CobsMsg: block ownership, public container semantics,
+ * Host verification for cobs::Message: block ownership, public container semantics,
  * the growth rule and the serializers. Encoding is deliberately observed only
- * through the real Cobs coordinator; applications cannot invoke its internal
+ * through the real Endpoint coordinator; applications cannot invoke its internal
  * state transitions directly.
  *
  * Two things are asserted only INDIRECTLY, on purpose:
@@ -9,8 +9,8 @@
  *   - Ownership, through TX pool occupancy and through a counting policy. A
  *     message that leaks a block or frees one twice shows up as the wrong
  *     number of available blocks, never as a field read out of the object.
- *   - Payload contents, through Cobs::push() and the reference encoder.
- *     CobsMsg hands out no payload span or encoding hook, so a wrong byte, a
+ *   - Payload contents, through Endpoint::push() and the reference encoder.
+ *     cobs::Message hands out no payload span or encoding hook, so a wrong byte, a
  *     lost byte or a botched growth copy surfaces at the coordinator boundary.
  */
 #include "Cobs.h"
@@ -47,7 +47,7 @@ constexpr std::size_t kTxBlocks = 2; // the recommended default: build one while
 
 using TxPool = cobs::Pool<cobs::Format<kMaxDecoded, kMaxDecoded>, 1, kTxBlocks>;
 using HeapPool = cobs::Heap<cobs::Format<kMaxDecoded, kMaxDecoded>>;
-using Msg = CobsMsg<TxPool>;
+using Message = cobs::Message<TxPool>;
 
 // A message filled with `n` recognisable bytes, plus the bytes themselves for
 // the oracle to check against.
@@ -99,10 +99,10 @@ bool bindTransport(Engine& endpoint, CaptureTransport& transport)
 
 template<class Engine>
 bool sendsAs(Engine& endpoint, CaptureTransport& transport,
-	         typename Engine::Msg& message, const std::vector<uint8_t>& expected)
+	         typename Engine::Message& message, const std::vector<uint8_t>& expected)
 {
 	const std::size_t before = transport.accepted.size();
-	if (endpoint.push(message) != SendResult::Sent) {
+	if (endpoint.push(message) != cobs::SendResult::Sent) {
 		return false;
 	}
 	const bool matches = transport.accepted.size() == before + 1u &&
@@ -119,7 +119,7 @@ void testAcquireAndRelease()
 	TxPool pool;
 	check(pool.tx_available() == kTxBlocks, "the TX pool starts full");
 	{
-		Msg m{pool};
+		Message m{pool};
 		check(static_cast<bool>(m), "a message acquires a block");
 		check(pool.tx_available() == kTxBlocks - 1, "which the pool records as in use");
 		check(m.size() == 0, "and starts empty");
@@ -127,7 +127,7 @@ void testAcquireAndRelease()
 	check(pool.tx_available() == kTxBlocks, "destroying a Building message returns the block");
 
 	{	// A default-constructed message owns nothing and must not free anything.
-		Msg empty;
+		Message empty;
 		check(!empty, "a default-constructed message is empty");
 		check(empty.write<uint8_t>(1) == false, "and accepts no writes");
 		check(empty.size() == 0 && empty.capacity() == 0, "and exposes zero geometry");
@@ -139,13 +139,13 @@ void testAcquireAndRelease()
 void testExhaustionAndConcurrentMessages()
 {
 	TxPool pool;
-	Msg a{pool};
-	Msg b{pool};
+	Message a{pool};
+	Message b{pool};
 	check(static_cast<bool>(a) && static_cast<bool>(b),
 	      "several messages can be held at once");
 	check(pool.tx_available() == 0, "consuming the whole TX pool");
 
-	Msg c{pool};
+	Message c{pool};
 	check(!c, "a further message from a dry pool is empty rather than a failure code");
 	check(c.write<uint8_t>(0) == false, "and stays unusable");
 
@@ -156,9 +156,9 @@ void testExhaustionAndConcurrentMessages()
 		      "concurrent messages remain independently writable");
 	}
 
-	a = Msg{};
+	a = Message{};
 	check(pool.tx_available() == 1, "assigning an empty message over one releases its block");
-	Msg d{pool};
+	Message d{pool};
 	check(static_cast<bool>(d), "and the pool hands that block out again");
 	check(pool.tx_stats().rejected == 0, "with no block freed twice");
 }
@@ -167,10 +167,10 @@ void testMoveSemantics()
 {
 	TxPool pool;
 	{
-		Msg a{pool};
+		Message a{pool};
 		const auto expected = fill(a, 20, 0x20);
 
-		Msg b = std::move(a);
+		Message b = std::move(a);
 		check(!a, "a moved-from message is empty");
 		check(static_cast<bool>(b) && b.size() == 20,
 		      "and the destination carries the payload");
@@ -182,15 +182,15 @@ void testMoveSemantics()
 	check(pool.tx_available() == kTxBlocks, "and is released once");
 
 	{	// Move assignment must release what it overwrites, not leak it.
-		Msg a{pool};
-		Msg b{pool};
+		Message a{pool};
+		Message b{pool};
 		check(pool.tx_available() == 0, "two blocks held");
 		b = std::move(a);
 		check(pool.tx_available() == 1, "move assignment released b's own block first");
 		check(!a && static_cast<bool>(b), "and transferred a's");
 
 		// Self-move must not destroy the message.
-		Msg& alias = b;
+		Message& alias = b;
 		b = std::move(alias);
 		check(static_cast<bool>(b), "self move-assignment leaves the message intact");
 	}
@@ -198,8 +198,8 @@ void testMoveSemantics()
 	check(pool.tx_stats().rejected == 0, "with nothing double-freed");
 
 	// Exclusive ownership is a compile-time property, not a convention.
-	static_assert(!std::is_copy_constructible_v<Msg>, "CobsMsg must not be copyable");
-	static_assert(!std::is_copy_assignable_v<Msg>, "CobsMsg must not be copy-assignable");
+	static_assert(!std::is_copy_constructible_v<Message>, "cobs::Message must not be copyable");
+	static_assert(!std::is_copy_assignable_v<Message>, "cobs::Message must not be copy-assignable");
 	check(true, "copying is rejected at compile time");
 }
 
@@ -303,7 +303,7 @@ void testIntermediateOverallocation()
 {
 	SizeClassStorage pool;
 	{
-		CobsMsg<SizeClassStorage> m{pool, 7};
+		cobs::Message<SizeClassStorage> m{pool, 7};
 		check(m.capacity() == 15, "a policy may grant more than was requested (7 -> 15)");
 		check(m.size() == 0, "without putting anything in the message");
 
@@ -320,7 +320,7 @@ void testIntermediateOverallocation()
 	{	// A growth must also ask through the policy's rule, and record what
 		// came back rather than what it wanted.
 		SizeClassStorage grow;
-		CobsMsg<SizeClassStorage> m{grow, 4};
+		cobs::Message<SizeClassStorage> m{grow, 4};
 		check(m.capacity() == 9, "4 -> 9");
 		const std::vector<uint8_t> body(20, 0x3B);
 		check(m.write_bytes(std::span<const uint8_t>{body}), "20 bytes need a growth");
@@ -336,28 +336,28 @@ void testCreation()
 {
 	{	// The hint is a capacity hint, never an initial size.
 		HeapPool heap;
-		CobsMsg<HeapPool> unhinted{heap};
+		cobs::Message<HeapPool> unhinted{heap};
 		check(static_cast<bool>(unhinted), "an unhinted message is valid");
 		check(unhinted.size() == 0 && unhinted.capacity() == 0,
 		      "heap: no hint means no capacity yet, and never any size");
 
-		CobsMsg<HeapPool> hinted{heap, 40};
+		cobs::Message<HeapPool> hinted{heap, 40};
 		check(hinted.size() == 0, "a hint does not put bytes in the message");
 		check(hinted.capacity() == 40, "heap: the hint is honoured exactly");
 	}
 	{	// The single-slab pool answers with its whole limit either way, so a
 		// message on it is born with all the room it will ever need.
 		TxPool pool;
-		Msg unhinted{pool};
+		Message unhinted{pool};
 		check(unhinted.size() == 0 && unhinted.capacity() == kMaxDecoded,
 		      "fixed: even an unhinted message gets the whole slab");
-		Msg hinted{pool, 8};
+		Message hinted{pool, 8};
 		check(hinted.capacity() == kMaxDecoded, "fixed: and a small hint changes nothing");
 	}
 	{	// A hint past the protocol limit is refused rather than clamped: the
 		// caller asked for something this instance cannot carry.
 		HeapPool heap;
-		CobsMsg<HeapPool> over{heap, kMaxDecoded + 1};
+		cobs::Message<HeapPool> over{heap, kMaxDecoded + 1};
 		check(!over, "a hint beyond tx_max_size yields an empty message");
 	}
 }
@@ -365,7 +365,7 @@ void testCreation()
 void testGrowthSequence()
 {
 	SpyStorage spy;
-	CobsMsg<SpyStorage> m{spy};
+	cobs::Message<SpyStorage> m{spy};
 	check(m.capacity() == 0 && spy.allocations == 1,
 	      "the initial block is one allocation, of no capacity");
 
@@ -394,7 +394,7 @@ void testGrowthSequence()
 void testLargeJumpIsOneAllocation()
 {
 	SpyStorage spy;
-	CobsMsg<SpyStorage> m{spy, 64};
+	cobs::Message<SpyStorage> m{spy, 64};
 	check(m.capacity() == 64 && spy.allocations == 1, "starting from a 64-byte hint");
 
 	const std::vector<uint8_t> body(500, 0x5A);
@@ -409,7 +409,7 @@ void testLargeJumpIsOneAllocation()
 void testNoGrowthWhenItFits()
 {
 	SpyStorage spy;
-	CobsMsg<SpyStorage> m{spy, 256};
+	cobs::Message<SpyStorage> m{spy, 256};
 	const std::size_t after_create = spy.allocations;
 
 	bool ok = true;
@@ -421,7 +421,7 @@ void testNoGrowthWhenItFits()
 
 	// And the fixed policy gets this for free, without any hint.
 	TxPool pool;
-	Msg fixed{pool};
+	Message fixed{pool};
 	bool fill_ok = true;
 	for (std::size_t i = 0; i < kMaxDecoded; ++i) {
 		fill_ok = fill_ok && fixed.write<uint8_t>(static_cast<uint8_t>(i));
@@ -437,7 +437,7 @@ void testNoGrowthWhenItFits()
 void testFailedGrowthChangesNothing()
 {
 	SpyStorage spy;
-	CobsMsg<SpyStorage> m{spy, 8};
+	cobs::Message<SpyStorage> m{spy, 8};
 	(void)fill(m, 8, 0x70);
 	check(m.size() == 8 && m.capacity() == 8, "eight bytes in an eight-byte capacity");
 
@@ -461,7 +461,7 @@ void testFailedGrowthChangesNothing()
 void testReserve()
 {
 	SpyStorage spy;
-	CobsMsg<SpyStorage> m{spy};
+	cobs::Message<SpyStorage> m{spy};
 	check(m.reserve(0), "reserving nothing on an empty message succeeds");
 	check(spy.allocations == 1, "without allocating");
 
@@ -483,7 +483,7 @@ enum class Op : uint16_t { Ping = 0x0102, Pong = 0x0304 };
 
 void testSerializers()
 {
-	using Engine = Cobs<SpyStorage>;
+	using Engine = cobs::Endpoint<SpyStorage>;
 	Engine endpoint;
 	CaptureTransport transport;
 	check(bindTransport(endpoint, transport), "the serializer coordinator binds");
@@ -514,7 +514,7 @@ void testSerializers()
 	check(ok, "every scalar, enum and floating-point value appends");
 
 	{	// A flag goes out as the byte the caller chose, because write<T> does
-		// not accept bool at all (see CobsScalar).
+		// not accept bool at all (see cobs::detail::NativeScalar).
 		const uint8_t flag = 1;
 		ok = m.write(flag);
 		expect(&flag, 1);
@@ -542,7 +542,7 @@ void testSerializers()
 
 void testSerializerFailuresLeaveTheMessageUsable()
 {
-	using Engine = Cobs<SpyStorage>;
+	using Engine = cobs::Endpoint<SpyStorage>;
 	Engine endpoint;
 	CaptureTransport transport;
 	check(bindTransport(endpoint, transport), "the failure-recovery coordinator binds");
@@ -572,7 +572,7 @@ void testSerializerFailuresLeaveTheMessageUsable()
 void testOversizeIsRefusedNotClamped()
 {
 	SpyStorage spy;
-	CobsMsg<SpyStorage> m{spy};
+	cobs::Message<SpyStorage> m{spy};
 	const std::vector<uint8_t> huge(SpyStorage::Format::max_send_size + 1, 0x33);
 	check(m.write_bytes(std::span<const uint8_t>{huge}) == false,
 	      "a payload past tx_max_size is refused");
@@ -590,7 +590,7 @@ void testOversizeIsRefusedNotClamped()
 
 void testCoordinatorEncoding()
 {
-	using Engine = Cobs<TxPool>;
+	using Engine = cobs::Endpoint<TxPool>;
 	Engine endpoint;
 	CaptureTransport transport;
 	check(bindTransport(endpoint, transport), "the real coordinator binds for encoding tests");
@@ -608,7 +608,7 @@ void testCoordinatorEncoding()
 		auto m = endpoint.make_msg(8);
 		(void)fill(m, 8, 0x20);
 		transport.refuse = true;
-		check(endpoint.push(m) == SendResult::Error,
+		check(endpoint.push(m) == cobs::SendResult::Error,
 		      "a failed start leaves the encoded message owned by the caller");
 		check(endpoint.storage().tx_available() == kTxBlocks - 1,
 		      "and its block remains live");
@@ -621,12 +621,12 @@ void testCoordinatorEncoding()
 		auto m = endpoint.make_msg(kMaxDecoded);
 		const auto expected = fill(m, kMaxDecoded, 0x40);
 		transport.refuse = true;
-		check(endpoint.push(m) == SendResult::Error,
+		check(endpoint.push(m) == cobs::SendResult::Error,
 		      "a refused transport start leaves the message with the coordinator");
 		check(static_cast<bool>(m) && !m.write(uint8_t{0xFF}) && !m.reserve(m.capacity()),
 		      "the private Encoded state refuses public building operations");
 		transport.refuse = false;
-		check(endpoint.push(m) == SendResult::Sent,
+		check(endpoint.push(m) == cobs::SendResult::Sent,
 		      "the same message can be retried");
 		check(transport.attempts.size() >= 2u &&
 		      transport.attempts[transport.attempts.size() - 2u] == transport.attempts.back() &&
@@ -645,7 +645,7 @@ void testCoordinatorEncoding()
 // format.
 void testCoordinatorEncodingAcrossGrowthHistories()
 {
-	using Engine = Cobs<SpyStorage>;
+	using Engine = cobs::Endpoint<SpyStorage>;
 	Engine endpoint;
 	CaptureTransport transport;
 	check(bindTransport(endpoint, transport), "the coordinator binds for growth histories");
@@ -721,17 +721,17 @@ concept HasPublicSurrender = requires(M& m) { m.surrender_block(); };
 
 void testCoordinatorOnlyOperations()
 {
-	static_assert(!HasPublicEncode<Msg>);
-	static_assert(!HasPublicEncodedState<Msg>);
-	static_assert(!HasPublicStorageIdentity<Msg, TxPool>);
-	static_assert(!HasPublicSurrender<Msg>);
+	static_assert(!HasPublicEncode<Message>);
+	static_assert(!HasPublicEncodedState<Message>);
+	static_assert(!HasPublicStorageIdentity<Message, TxPool>);
+	static_assert(!HasPublicSurrender<Message>);
 	check(true,
 	      "encode, encoded state, storage identity and block surrender are coordinator-only");
 }
 
 void testTypeConstraints()
 {
-	using M = CobsMsg<TxPool>;
+	using M = cobs::Message<TxPool>;
 
 	// Accepted: the types that mean something on a wire.
 	static_assert(CanWrite<M, uint8_t>);
@@ -761,12 +761,12 @@ void testTypeConstraints()
 
 	/* volatile deserves its own assertion, because the constraint alone did
 	 * NOT catch it. Before the concept excluded volatile explicitly,
-	 * CobsScalar<volatile uint32_t> was true and this very CanWrite reported
+	 * cobs::detail::NativeScalar<volatile uint32_t> was true and this very CanWrite reported
 	 * the type as writable — a requires-expression checks that a call is
 	 * viable, not that its body instantiates, and the body failed on
 	 * `const volatile void*` -> `const void*`. The assertion below is the one
 	 * that would have failed then. */
-	static_assert(!CobsScalar<volatile uint32_t>,
+	static_assert(!cobs::detail::NativeScalar<volatile uint32_t>,
 	              "volatile must not satisfy the concept");
 	static_assert(!CanWrite<M, volatile uint32_t>,
 	              "and a volatile value must not be writable");
@@ -802,13 +802,13 @@ void testTypeConstraints()
 
 /* ===================== the default reserve pays off ===================== */
 
-// The measured reason Cobs::default_capacity_hint is not zero. Same policy rule
+// The measured reason Endpoint::default_capacity_hint is not zero. Same policy rule
 // as the heap one, so these counts are the heap's counts.
 void testDefaultHintAvoidsTheLadder()
 {
 	const auto buildByteAtATime = [](SpyStorage& spy, const std::size_t hint,
 	                                 const std::size_t payload) {
-		CobsMsg<SpyStorage> m{spy, hint};
+		cobs::Message<SpyStorage> m{spy, hint};
 		for (std::size_t i = 0; i < payload; ++i) {
 			if (!m.write(static_cast<uint8_t>(i))) { return false; }
 		}
@@ -867,12 +867,12 @@ public:
 
 void testLengthPrefixIsHiddenAndCorrect()
 {
-	static_assert(CobsMsg<NarrowHeap>::length_size == 1, "255/255 fits one byte");
-	static_assert(CobsMsg<SpyStorage>::length_size == 2, "4096 needs two");
+	static_assert(cobs::Message<NarrowHeap>::length_size == 1, "255/255 fits one byte");
+	static_assert(cobs::Message<SpyStorage>::length_size == 2, "4096 needs two");
 	check(true, "the two header widths are both under test");
 
 	{	// The prefix is invisible to the container API.
-		using Engine = Cobs<NarrowHeap>;
+		using Engine = cobs::Endpoint<NarrowHeap>;
 		Engine endpoint;
 		CaptureTransport transport;
 		check(bindTransport(endpoint, transport), "the one-byte-format coordinator binds");
@@ -886,7 +886,7 @@ void testLengthPrefixIsHiddenAndCorrect()
 	}
 	{	// Same for the two-byte format, including a length above 255 that a
 		// one-byte header could not express.
-		using Engine = Cobs<SpyStorage>;
+		using Engine = cobs::Endpoint<SpyStorage>;
 		Engine endpoint;
 		CaptureTransport transport;
 		check(bindTransport(endpoint, transport), "the two-byte-format coordinator binds");
@@ -917,7 +917,7 @@ void testHeaderShiftsTheCobsBoundaries()
 	const auto run = [](auto& endpoint, CaptureTransport& transport,
 	                    const char* name, const std::size_t H) {
 		using Engine = std::decay_t<decltype(endpoint)>;
-		using M = typename Engine::Msg;
+		using M = typename Engine::Message;
 		bool ok = true;
 		std::size_t cases = 0;
 		for (const std::size_t decoded : {std::size_t{253}, std::size_t{254},
@@ -950,12 +950,12 @@ void testHeaderShiftsTheCobsBoundaries()
 		          " payloads placing header+body on a COBS block boundary");
 	};
 
-	Cobs<SpyStorage> wide;
+	cobs::Endpoint<SpyStorage> wide;
 	CaptureTransport wide_transport;
 	check(bindTransport(wide, wide_transport), "the wide boundary coordinator binds");
 	run(wide, wide_transport, "two-byte header", 2);
 
-	Cobs<NarrowHeap> narrow;
+	cobs::Endpoint<NarrowHeap> narrow;
 	CaptureTransport narrow_transport;
 	check(bindTransport(narrow, narrow_transport), "the narrow boundary coordinator binds");
 	run(narrow, narrow_transport, "one-byte header", 1);

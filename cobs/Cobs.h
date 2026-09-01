@@ -1,24 +1,24 @@
 /*
- * Cobs — the assembled engine. RX vertical, TX vertical, one storage strategy.
+ * Endpoint — the assembled engine. RX vertical, TX vertical, one storage strategy.
  *
  * Contract: doc/COBS_ENGINE.md. Everything difficult already lives one layer
  * down; what is here is the transport handshake and the single active
  * transfer.
  *
- *     RX:  bytes -> cobs::codec::Decoder -> storage -> RxBlock -> PacketRef
- *     TX:  CobsMsg -> encoder -> sender delegate -> activeTx -> storage
+ *     RX:  bytes -> cobs::codec::Decoder -> storage -> RxBlock -> Packet
+ *     TX:  Message -> encoder -> sender delegate -> activeTx -> storage
  *
  * ---------------------------------------------------------------------------
  * LIFETIME PRECONDITIONS. Not decoration — violating either is a use-after-
  * free that no amount of internal bookkeeping can repair:
  *
- *  1. A Cobs object must OUTLIVE every PacketRef and every CobsMsg it handed
+ *  1. An Endpoint object must OUTLIVE every Packet and every Message it handed
  *     out. Both hold a pointer to the storage living inside this object, and
- *     both call back into it when they release. That is also why Cobs is
+ *     both call back into it when they release. That is also why Endpoint is
  *     neither copyable nor movable: moving it would turn every outstanding
  *     packet's owner pointer into a souvenir of a previous life.
  *
- *  2. A Cobs object must not be destroyed while a transfer is in flight
+ *  2. An Endpoint object must not be destroyed while a transfer is in flight
  *     (`tx_active()` true and the transport still busy). The transport is
  *     physically reading a block that is about to stop existing. Check
  *     `tx_active()` and drain with `proceed()` before letting it go.
@@ -29,9 +29,9 @@
 #define COBS_H_
 
 #include "Format.h"
-#include "CobsMsg.h"
-#include "PacketRef.h"
 #include "Storage.h"
+#include "detail/Message.h"
+#include "detail/Packet.h"
 #include "detail/Receiver.h"
 
 #include "tiny_delegate.hpp"
@@ -41,8 +41,10 @@
 #include <span>
 #include <utility>
 
+namespace cobs {
+
 enum class SendResult : uint8_t {
-	Sent,     // the transport accepted the frame; Cobs now holds the block
+	Sent,     // the transport accepted the frame; Endpoint now holds the block
 	Busy,     // a transfer is already in flight; the message is untouched
 	NotBound, // no sender / tx_busy delegate has been set
 	Error,    // the transport refused to start; the message stays Encoded
@@ -50,14 +52,14 @@ enum class SendResult : uint8_t {
 };
 
 template<class StorageT = cobs::Heap<>>
-class Cobs final {
+class Endpoint final {
 	static_assert(cobs::Storage<StorageT>,
-		"Cobs storage must satisfy the cobs::Storage contract");
+		"Endpoint storage must satisfy the cobs::Storage contract");
 
 public:
 	using StorageType = StorageT;
-	using Msg = CobsMsg<StorageT>;
-	using Ref = PacketRef<StorageT>;
+	using Message = cobs::Message<StorageT>;
+	using Packet = cobs::Packet<StorageT>;
 	using Format = typename StorageT::Format;
 
 	/*
@@ -119,7 +121,7 @@ public:
 		uint32_t send_failed       = 0;
 	};
 
-	Cobs() noexcept = default;
+	Endpoint() noexcept = default;
 
 	// For storage that needs runtime arguments — an external memory region, a
 	// handle to somebody else's arena. It is constructed in place from
@@ -127,15 +129,15 @@ public:
 	// deliberately no constructor taking a ready-made instance: it would only
 	// serve copyable ones, and one way in is enough.
 	template<class... Args>
-	explicit Cobs(std::in_place_t, Args&&... args) noexcept
+	explicit Endpoint(std::in_place_t, Args&&... args) noexcept
 		: m_storage(std::forward<Args>(args)...) {}
 
-	Cobs(const Cobs&) = delete;
-	Cobs& operator=(const Cobs&) = delete;
-	Cobs(Cobs&&) = delete;
-	Cobs& operator=(Cobs&&) = delete;
+	Endpoint(const Endpoint&) = delete;
+	Endpoint& operator=(const Endpoint&) = delete;
+	Endpoint(Endpoint&&) = delete;
+	Endpoint& operator=(Endpoint&&) = delete;
 
-	~Cobs()
+	~Endpoint()
 	{
 		// Precondition 2 above says this must not happen with the transport
 		// still reading. If a block is here at all, the pool is about to be
@@ -188,7 +190,7 @@ public:
 	void consume(std::span<const uint8_t> bytes) noexcept { m_rx.consume(bytes); }
 	void gap() noexcept { m_rx.gap(); }
 
-	[[nodiscard]] Ref pop_packet() noexcept { return m_rx.pop_packet(); }
+	[[nodiscard]] Packet pop_packet() noexcept { return m_rx.pop_packet(); }
 	[[nodiscard]] bool has_packet() const noexcept { return m_rx.has_packet(); }
 
 	/* --------------------------------- TX -------------------------------- */
@@ -225,17 +227,17 @@ public:
 	 *     make_msg(N)    the caller knows a useful number
 	 *
 	 * An EMPTY result is the back-pressure signal that the configured TX
-	 * storage is exhausted, and callers must handle it; CobsMsg is already a
+	 * storage is exhausted, and callers must handle it; Message is already a
 	 * nullable owner, so there is nothing for an optional to add.
 	 */
-	[[nodiscard]] Msg make_msg() noexcept { return make_msg(default_capacity_hint); }
+	[[nodiscard]] Message make_msg() noexcept { return make_msg(default_capacity_hint); }
 
-	[[nodiscard]] Msg make_msg(const std::size_t capacity_hint) noexcept
+	[[nodiscard]] Message make_msg(const std::size_t capacity_hint) noexcept
 	{
 		if (capacity_hint > max_send_size) {
 			return {};
 		}
-		return Msg{m_storage, capacity_hint};
+		return Message{m_storage, capacity_hint};
 	}
 
 	/*
@@ -246,7 +248,7 @@ public:
 	 *   Error  -> still Encoded, and push() may retry the SAME wire frame
 	 *   Sent   -> the block moved here; the message is Empty again
 	 */
-	[[nodiscard]] SendResult push(Msg& msg) noexcept
+	[[nodiscard]] SendResult push(Message& msg) noexcept
 	{
 		if (!msg || !msg.belongs_to(m_storage)) {
 			return SendResult::Invalid;
@@ -316,5 +318,7 @@ private:
 	cobs::TxBlock m_activeTx{};
 	TxStats m_txStats{};
 };
+
+} // namespace cobs
 
 #endif /* COBS_H_ */

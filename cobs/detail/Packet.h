@@ -1,5 +1,5 @@
 /*
- * PacketRef — the application's handle on a decoded RX packet.
+ * Packet — the application's handle on a decoded RX packet.
  *
  * Contract: doc/COBS_ENGINE.md §6.3–§6.5. An intrusive shared handle: the
  * count lives inside the block, release goes through the storage instance
@@ -16,47 +16,49 @@
  * immutable once published.
  */
 
-#ifndef COBS_PACKET_REF_H_
-#define COBS_PACKET_REF_H_
+#ifndef COBS_DETAIL_PACKET_H_
+#define COBS_DETAIL_PACKET_H_
 
-#include "Storage.h"
+#include "../Storage.h"
 
 #include <cstddef>
 #include <span>
 #include <utility>
 
+namespace cobs {
+
 template<class StorageT>
-class PacketRef final {
+class Packet final {
 	// adopt() and the raw pointer are deliberately NOT public. With both
 	// `adopt(Block*)` and a public `get()`, an application could write
 	//
-	//     PacketRef b = PacketRef::adopt(a.get());
+	//     Packet b = Packet::adopt(a.get());
 	//
 	// and end up with two RAII owners of the SAME single reference: the first
 	// destructor frees the block, the second is left holding a dangling
 	// pointer. A hand-operated use-after-free factory in the public API.
 	template<class>
-	friend class cobs::detail::Receiver;
+	friend class detail::Receiver;
 
 public:
 	using Block = typename StorageT::RxBlock;
 
-	PacketRef() noexcept = default;
-	~PacketRef() { release(); }
+	Packet() noexcept = default;
+	~Packet() { release(); }
 
-	PacketRef(const PacketRef& other) noexcept : m_p(other.m_p)
+	Packet(const Packet& other) noexcept : m_p(other.m_p)
 	{
 		if (m_p != nullptr) {
 			++m_p->refs;
 		}
 	}
 
-	PacketRef(PacketRef&& other) noexcept : m_p(other.m_p)
+	Packet(Packet&& other) noexcept : m_p(other.m_p)
 	{
 		other.m_p = nullptr; // a move never touches the count
 	}
 
-	PacketRef& operator=(const PacketRef& other) noexcept
+	Packet& operator=(const Packet& other) noexcept
 	{
 		// Increment BEFORE releasing: with self-assignment both sides are the
 		// same packet, and releasing first could free what we then adopt.
@@ -68,7 +70,7 @@ public:
 		return *this;
 	}
 
-	PacketRef& operator=(PacketRef&& other) noexcept
+	Packet& operator=(Packet&& other) noexcept
 	{
 		if (this != &other) {
 			release();
@@ -100,9 +102,9 @@ private:
 	// held by the ready queue becomes the one held here (§6.3). Named, never
 	// implicit, and reachable only by the owner that legitimately has a
 	// reference to hand over.
-	[[nodiscard]] static PacketRef adopt(Block* const p) noexcept
+	[[nodiscard]] static Packet adopt(Block* const p) noexcept
 	{
-		PacketRef r;
+		Packet r;
 		r.m_p = p;
 		return r;
 	}
@@ -117,4 +119,6 @@ private:
 	Block* m_p = nullptr;
 };
 
-#endif /* COBS_PACKET_REF_H_ */
+} // namespace cobs
+
+#endif /* COBS_DETAIL_PACKET_H_ */

@@ -115,7 +115,7 @@ void runContract(const char* name)
 	// refs, size, next_ready and owner are private to the RX vertical (§6.5) —
 	// a public `size` was a one-line out-of-bounds read once allocations
 	// became exact. They are asserted where they can be asserted honestly:
-	// through behaviour, in test_receiver, where a released PacketRef returning
+	// through behaviour, in test_receiver, where a released cobs::Packet returning
 	// its block to the right pool is the only proof that `owner` is right that
 	// does not consist of reading `owner`.
 
@@ -160,7 +160,7 @@ void runContract(const char* name)
 	 * check exists. The encoded frame is [length][payload], so a policy that
 	 * still sizes its blocks with cobs::codec::max_wire_size(capacity) — correct
 	 * before the length prefix, one or two bytes short after it — would sail
-	 * through a test written the old way and then have CobsMsg::encode() run
+	 * through a test written the old way and then have Message encoding run
 	 * off the end of the block. Asking Format for the number is what makes
 	 * that regression impossible to miss.
 	 *
@@ -294,7 +294,7 @@ void testHeapGrantsExactlyWhatWasAsked()
 	Strategy a;
 
 	// No rounding, no size classes, no growth rule: deciding how much to ask
-	// for belongs to CobsMsg (§9.1.0), and a policy with a second opinion
+	// for belongs to cobs::Message (§9.1.0), and a policy with a second opinion
 	// would be two growth rules arguing over one allocation.
 	bool all_ok = true;
 	for (const std::size_t requested : {std::size_t{0}, std::size_t{1}, std::size_t{7},

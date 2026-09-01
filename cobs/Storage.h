@@ -30,8 +30,12 @@
 #include <new>
 #include <span>
 
+namespace cobs {
+
 template<class StorageT>
-class PacketRef;
+class Packet;
+
+} // namespace cobs
 
 namespace cobs::detail {
 
@@ -59,14 +63,14 @@ struct TxBlock final {
 /*
  * A decoded frame header followed immediately by its payload in the same
  * allocation. Application code only gets the immutable data() view; the
- * receiver owns decoded size and queue linkage, while PacketRef owns reference
+ * receiver owns decoded size and queue linkage, while Packet owns reference
  * arithmetic. Storage constructs and destroys the block but does not mutate
  * its lifetime metadata.
  */
 template<class StorageT>
 struct RxBlock final {
 	friend class detail::Receiver<StorageT>;
-	friend class ::PacketRef<StorageT>;
+	friend class Packet<StorageT>;
 
 	[[nodiscard]] std::span<const uint8_t> data() const noexcept
 	{
@@ -131,7 +135,7 @@ concept Storage = requires(
 /*
  * Dynamic strategy. RX allocations are exact; TX reports exactly the
  * requested payload capacity. The type is stateless and remains the default
- * storage for Endpoint/Cobs.
+ * storage for Endpoint.
  */
 template<class WireFormat = Format<1024, 1024>>
 class Heap final {

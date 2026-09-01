@@ -2,9 +2,9 @@
  * End-to-end verification of the RX vertical:
  *
  *   encoded bytes -> cobs::codec::Decoder -> storage -> cobs::RxBlock
- *                 -> intrusive ready queue -> PacketRef -> release -> pool
+ *                 -> intrusive ready queue -> cobs::Packet -> release -> pool
  *
- * PacketRef's own semantics (copy, move, assignment, self-assignment) are
+ * cobs::Packet's own semantics (copy, move, assignment, self-assignment) are
  * tested here rather than beside the pool, because a reference can now only
  * come from its legitimate owner: adopt() is private to Receiver, so a test can
  * no longer mint one by hand — which was exactly the hole being closed.
@@ -47,7 +47,7 @@ constexpr std::size_t kMaxDecoded = 64;
 constexpr std::size_t kBlocks = 4;
 using Pool = cobs::Pool<cobs::Format<kMaxDecoded, kMaxDecoded>, kBlocks, 2>;
 using Rx = cobs::detail::Receiver<Pool>;
-using Ref = Rx::Ref;
+using Packet = Rx::Packet;
 
 // Every frame in this suite is an ENGINE frame: COBS([length][body]). The
 // length prefix is the protocol's, not the application's, so it is built once
@@ -106,9 +106,9 @@ void testRoundTripThroughTheWholeStack()
 		check(rx.stats().frames_delivered == 3, "three frames decoded through the stack");
 		check(pool.rx_available() == kBlocks - 3, "and each holds a pool block");
 
-		Ref r1 = rx.pop_packet();
-		Ref r2 = rx.pop_packet();
-		Ref r3 = rx.pop_packet();
+		Packet r1 = rx.pop_packet();
+		Packet r2 = rx.pop_packet();
+		Packet r3 = rx.pop_packet();
 		check(matches(r1, a) && matches(r2, b) && matches(r3, c),
 		      "packets arrive in order with exactly the bytes that were encoded");
 		check(r2.size() == 0, "including the empty packet, which is a real packet");
@@ -131,7 +131,7 @@ void testSpanBoundaries()
 		Rx rx(pool);
 		rx.consume(std::span<const uint8_t>{wire.data(), cut});
 		rx.consume(std::span<const uint8_t>{wire.data() + cut, wire.size() - cut});
-		const Ref r = rx.pop_packet();
+		const Packet r = rx.pop_packet();
 		all_ok = all_ok && matches(r, p);
 	}
 	check(all_ok, "a frame survives a span split at every one of " +
@@ -158,7 +158,7 @@ void testDefaultHeapFormat()
 	// incompatibility §3 warns about.
 	static_assert(DefaultRx::length_size == 2, "1024 needs a two-byte length field");
 	rx.consume(std::span<const uint8_t>{cobs_test::frame(p, DefaultRx::length_size)});
-	const DefaultRx::Ref r = rx.pop_packet();
+	const DefaultRx::Packet r = rx.pop_packet();
 	check(r.size() == p.size(), "the default heap format receives a frame through Receiver");
 }
 
@@ -175,7 +175,7 @@ void testProtocolLimitIsEnforced()
 	Pool pool;
 	Rx rx(pool);
 	static_assert(Rx::max_receive_size == kMaxDecoded,
-	              "Cobs republishes the policy's limit under its own name");
+	              "Endpoint republishes the storage limit under its own name");
 
 	const auto too_big = payload(0x30, kMaxDecoded + 1);
 	const auto fine    = payload(0x50, kMaxDecoded);
@@ -187,7 +187,7 @@ void testProtocolLimitIsEnforced()
 
 	check(rx.stats().oversize == 1, "a frame one byte over rx_max_size is rejected");
 	check(rx.stats().frames_delivered == 1, "and only the legal frame is delivered");
-	const Ref r = rx.pop_packet();
+	const Packet r = rx.pop_packet();
 	check(r.size() == fine.size(), "which is the one that fits");
 	check(pool.rx_available() == kBlocks - 1,
 	      "and the oversize frame never took a block at all: only the legal "
@@ -210,7 +210,7 @@ void testMalformedAndRecovery()
 	check(rx.stats().frames_delivered == 1, "and the next frame still arrives");
 	check(rx.stats().resyncs == 0,
 	      "no resync was needed: the delimiter that exposed it already synchronized us");
-	const Ref r = rx.pop_packet();
+	const Packet r = rx.pop_packet();
 	check(matches(r, good), "with the right contents");
 	check(pool.rx_available() == kBlocks - 1, "the malformed frame's block was reclaimed");
 }
@@ -234,8 +234,8 @@ void testExhaustionDropsFramesAndRecovers()
 	check(pool.rx_available() == 0, "the pool is fully committed to the queued packets");
 
 	// Draining restores capacity and the link keeps working.
-	std::vector<Ref> drained;
-	while (Ref r = rx.pop_packet()) {
+	std::vector<Packet> drained;
+	while (Packet r = rx.pop_packet()) {
 		drained.push_back(std::move(r));
 	}
 	check(drained.size() == kBlocks, "every queued packet is popped");
@@ -243,7 +243,7 @@ void testExhaustionDropsFramesAndRecovers()
 	check(pool.rx_available() == kBlocks, "releasing them restores the whole pool");
 
 	rx.consume(std::span<const uint8_t>{one});
-	const Ref again = rx.pop_packet();
+	const Packet again = rx.pop_packet();
 	check(matches(again, p), "and reception continues normally afterwards");
 	check(pool.rx_stats().rejected == 0, "no block was ever double-freed");
 }
@@ -275,14 +275,14 @@ void testGapDropsOnlyTheFrameInFlight()
 	rx.consume(std::span<const uint8_t>{engine_frame(later)});
 
 	check(rx.stats().frames_delivered == 2, "exactly one further frame is delivered");
-	const Ref a = rx.pop_packet();
-	const Ref b = rx.pop_packet();
+	const Packet a = rx.pop_packet();
+	const Packet b = rx.pop_packet();
 	check(matches(a, first), "the packet from before the gap is intact");
 	check(matches(b, later), "and the next one is the frame that started after resync");
 	check(!rx.pop_packet(), "nothing was invented from the damaged region");
 }
 
-/* ======================= PacketRef ownership ============================ */
+/* ======================= cobs::Packet ownership ============================ */
 
 // One frame in the queue, then every handle operation, checked through pool
 // occupancy: the block must be held while any handle refers to it and freed
@@ -296,10 +296,10 @@ void testHandleSemantics()
 		Pool pool;
 		Rx rx(pool);
 		feed(rx, wire);
-		Ref a = rx.pop_packet();
+		Packet a = rx.pop_packet();
 		check(pool.rx_available() == kBlocks - 1, "a popped packet holds its block");
 		{
-			Ref b = a;
+			Packet b = a;
 			a.reset();
 			check(pool.rx_available() == kBlocks - 1,
 			      "after a copy, releasing the original does not free the packet");
@@ -312,8 +312,8 @@ void testHandleSemantics()
 		Pool pool;
 		Rx rx(pool);
 		feed(rx, wire);
-		Ref a = rx.pop_packet();
-		Ref b = std::move(a);
+		Packet a = rx.pop_packet();
+		Packet b = std::move(a);
 		check(!a, "a moved-from handle is empty");
 		check(matches(b, p), "the moved-to handle owns the packet");
 		check(pool.rx_available() == kBlocks - 1, "and it is still held exactly once");
@@ -325,8 +325,8 @@ void testHandleSemantics()
 		Rx rx(pool);
 		feed(rx, wire);
 		feed(rx, wire);
-		Ref a = rx.pop_packet();
-		Ref b = rx.pop_packet();
+		Packet a = rx.pop_packet();
+		Packet b = rx.pop_packet();
 		check(pool.rx_available() == kBlocks - 2, "two packets held");
 		b = a;
 		check(pool.rx_available() == kBlocks - 1, "copy assignment released b's packet");
@@ -337,8 +337,8 @@ void testHandleSemantics()
 
 		feed(rx, wire);
 		feed(rx, wire);
-		Ref c = rx.pop_packet();
-		Ref d = rx.pop_packet();
+		Packet c = rx.pop_packet();
+		Packet d = rx.pop_packet();
 		d = std::move(c);
 		check(pool.rx_available() == kBlocks - 1, "move assignment released d's packet");
 		check(matches(d, p) && !c, "and transferred c's");
@@ -347,8 +347,8 @@ void testHandleSemantics()
 		Pool pool;
 		Rx rx(pool);
 		feed(rx, wire);
-		Ref a = rx.pop_packet();
-		Ref& alias = a;
+		Packet a = rx.pop_packet();
+		Packet& alias = a;
 
 		a = alias;
 		check(static_cast<bool>(a) && matches(a, p),
@@ -391,7 +391,7 @@ void testRetentionConsumesCapacity()
 	Rx rx(pool);
 	const auto wire = engine_frame(payload(0xF0, 2));
 
-	std::vector<Ref> retained;
+	std::vector<Packet> retained;
 	for (std::size_t i = 0; i < kBlocks; ++i) {
 		feed(rx, wire);
 		retained.push_back(rx.pop_packet());
@@ -866,7 +866,7 @@ void testPacketInternalsAreSealed()
  * so the obligation was real but written down nowhere, invisible in the
  * signatures, and — once the field became private — impossible for the
  * contract test to check. A policy that read the contract and believed it
- * handed back a packet whose owner was null, and the first PacketRef release
+ * handed back a packet whose owner was null, and the first cobs::Packet release
  * dereferenced it.
  *
  * Receiver sets `owner` now, which is where establishing ownership belongs
@@ -939,7 +939,7 @@ void testContractIsSelfSufficient()
 /* ========================= the refcount's width ========================= */
 
 /*
- * PacketRef's copy constructor does `++refs` with no check, so the counter's
+ * cobs::Packet's copy constructor does `++refs` with no check, so the counter's
  * WIDTH is the only thing preventing a wrap — and a wrap is a
  * use-after-free, not a leak:
  *
@@ -955,7 +955,7 @@ void testContractIsSelfSufficient()
  */
 void testRefcountDoesNotWrap()
 {
-	using LocalRef = typename RecRx::Ref;
+	using LocalRef = typename RecRx::Packet;
 	RecordingHeap pool;
 	RecRx rx(pool);
 

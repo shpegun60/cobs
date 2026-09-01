@@ -15,8 +15,6 @@ HEADERS="
  Cobs.h
  Codec.h
  Format.h
- CobsMsg.h
- PacketRef.h
  Storage.h
 "
 

@@ -7,7 +7,7 @@
 This document refines `UART_COBS_ARCHITECTURE.md` into the contract the
 implementation must satisfy. Where the two disagree, **this document wins**:
 the architecture document is the original design sketch and still shows a
-virtual `IByteTx` and a single large templated `Cobs`, both of which the
+virtual `IByteTx` and a single large templated `cobs::Endpoint`, both of which the
 decisions below replace.
 
 Nothing here is implementation. It exists so that the implementation can be
@@ -24,7 +24,7 @@ only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 
 | Question | Decision |
 | --- | --- |
-| Transport binding | delegates, bound as a PAIR by `set_transport`, so `Cobs` is templated on storage alone |
+| Transport binding | delegates, bound as a PAIR by `set_transport`, so `cobs::Endpoint` is templated on storage alone |
 | Frame format | every engine frame is `COBS([length][body]) 00`; the length is fixed-width, little-endian, and counts only the body after it |
 | Length width | 1 byte if `max(rx_max_size, tx_max_size) <= 255`, else 2. One width per engine, both directions; peers must agree |
 | Decoder | standalone **non-template** class, no storage, no transport |
@@ -37,11 +37,11 @@ only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 | Delimiter inside a block | frame discarded, decoder is immediately synchronized |
 | Oversize / allocation failure | decided by `cobs::detail::Receiver` from the DECLARED length against `rx_max_size`, never by the decoder. `DropUntilDelimiter` only when the failure is found mid-frame; the two that are found AT the delimiter — an oversize header with no body, and a refused `acquire_rx(0)` — cost a frame and no resync (§6.1.2) |
 | Ready queue | intrusive, threaded through the packets themselves |
-| RX lifetime | intrusive refcount, `PacketRef`, payload immutable after publication |
+| RX lifetime | intrusive refcount, `cobs::Packet`, payload immutable after publication |
 | Refcount | plain (single execution domain); no atomic policy in v1 |
-| Storage | a checked compile-time strategy (§9) and the single source of truth for memory strategy and quotas. It names one `Format`; `Cobs<StorageT>` remains the whole engine signature. Defaults to `cobs::Heap<>`; embedded targets opt into `cobs::Pool` |
-| Protocol limits | `StorageT::Format::max_receive_size` / `max_send_size`, both BODY limits — the decoded frame is `length_size` bytes longer. Republished by `Cobs` under the same names |
-| TX ownership | move-only `CobsMsg`, exclusive until the transport accepts it |
+| Storage | a checked compile-time strategy (§9) and the single source of truth for memory strategy and quotas. It names one `Format`; `cobs::Endpoint<StorageT>` remains the whole engine signature. Defaults to `cobs::Heap<>`; embedded targets opt into `cobs::Pool` |
+| Protocol limits | `StorageT::Format::max_receive_size` / `max_send_size`, both BODY limits — the decoded frame is `length_size` bytes longer. Republished by `cobs::Endpoint` under the same names |
+| TX ownership | move-only `cobs::Message`, exclusive until the transport accepts it |
 | Transport busy before encoding | message stays `Building` |
 | `send()` failure after encoding | message stays `Encoded`, the same wire frame is retryable |
 | TX queue | none |
@@ -58,11 +58,11 @@ cobs::codec::Decoder   pure framing state machine
                        no storage, no transport, no ownership
                        writes into a caller-supplied span
 
-Cobs<StorageT>         ownership, acquisition, ready queue, TX state
+cobs::Endpoint<StorageT>         ownership, acquisition, ready queue, TX state
                        thin glue over cobs::codec::Decoder; transport by delegate
 ```
 
-The split is not cosmetic. `Cobs` is templated on storage, so an application
+The split is not cosmetic. `cobs::Endpoint` is templated on storage, so an application
 using two different strategies instantiates it twice. The decoder
 is where the subtle logic lives, and duplicating it per instantiation would
 mean duplicating the code that most needs to be reviewed and fuzzed exactly
@@ -89,7 +89,7 @@ including the half-bound states: a sender with an empty `tx_busy` is refused,
 and two empty delegates are a clean unbind. Rebinding is refused outright
 while a transfer is in flight.
 
-Because the transport is not a template parameter, `Cobs` is templated on
+Because the transport is not a template parameter, `cobs::Endpoint` is templated on
 storage alone, and one instantiation works above a UART, a TCP socket or a
 test double without being recompiled per transport. The binding also matches
 the house style: `Uart` already delivers everything through `tiny::delegate`.
@@ -165,7 +165,7 @@ Peer B: RX 64,   TX 1024  -> length_size 2
 ```
 
 Peers with different `length_size` are wire-incompatible even for a one-byte
-frame. `Cobs<A>::length_size` is constexpr so an integration build can
+frame. `cobs::Endpoint<A>::length_size` is constexpr so an integration build can
 static_assert the format it expects.
 
 Below the length field, the framing rules are unchanged:
@@ -250,7 +250,7 @@ Both formulas are header-inclusive because the header is part of what gets
 COBS-encoded. `tx_max_size` is the ceiling the builder refuses to grow past,
 not the size of anything.
 
-Each limit is republished by `Cobs` as `max_receive_size` and `max_send_size`.
+Each limit is republished by `cobs::Endpoint` as `max_receive_size` and `max_send_size`.
 Peers do NOT have to declare the same numbers — an asymmetric pair is the
 normal case, and §3's example is exactly that. Three different conditions are
 worth keeping apart, because only the first is about the wire:
@@ -282,12 +282,16 @@ from the truth, on a layer where being one header out is the easiest mistake
 there is.
 
 ```cpp
+namespace cobs {
+
 template<class StorageT = cobs::Heap<>>
-class Cobs final {
+class Endpoint final {
     using Format = typename StorageT::Format;
     static constexpr std::size_t max_receive_size = Format::max_receive_size;
     static constexpr std::size_t max_send_size    = Format::max_send_size;
 };
+
+} // namespace cobs
 ```
 
 `Format` is now a first-class protocol type. Replacing heap storage with a pool
@@ -379,8 +383,12 @@ Worked values, all verified against the canonical encoder:
 ### 4.3 One template parameter
 
 ```cpp
+namespace cobs {
+
 template<class StorageT = cobs::Heap<>>
-class Cobs;
+class Endpoint;
+
+} // namespace cobs
 ```
 
 That is the whole signature. The transport arrives by delegate (§2.1), and the
@@ -388,15 +396,15 @@ storage names its protocol `Format`, so there is no second engine parameter
 that can disagree with it:
 
 ```cpp
-Cobs<> cobs;                        // cobs::Heap with the default Format
-Cobs<MyStorage> cobs;               // custom storage for its Format
+cobs::Endpoint<> cobs;                        // cobs::Heap with the default Format
+cobs::Endpoint<MyStorage> cobs;               // custom storage for its Format
 ```
 
 Storage lives INSIDE the engine, by value (§9.4), so there is no separate
 object to hand in. Storage needing runtime arguments is constructed in place:
 
 ```cpp
-Cobs<MyStorage> cobs{std::in_place, region_base, region_size};
+cobs::Endpoint<MyStorage> cobs{std::in_place, region_base, region_size};
 ```
 
 Every component underneath refers to `StorageT::Format`; no layer reconstructs
@@ -633,7 +641,7 @@ cobs::RxBlock<StorageT> {
     payload
 }
 
-Cobs { readyHead, readyTail }
+cobs::Endpoint { readyHead, readyTail }
 ```
 
 No second allocation, no fixed queue capacity to overflow, no dynamic queue
@@ -645,18 +653,20 @@ while memory remained, or the reverse.
 ### 6.3 Ownership transfer on pop
 
 The ready queue holds one reference. `pop_packet()` hands that reference to
-the caller's `PacketRef`:
+the caller's `cobs::Packet`:
 
 ```text
-queue owns refs = 1   →   pop   →   PacketRef adopts refs = 1
+queue owns refs = 1   →   pop   →   cobs::Packet adopts refs = 1
 ```
 
 No increment and no decrement occurs during the pop; the reference moves.
 
-### 6.4 `PacketRef` is storage-typed
+### 6.4 `cobs::Packet` is storage-typed
 
 ```cpp
-template<class StorageT> class PacketRef;
+namespace cobs {
+template<class StorageT> class Packet;
+}
 ```
 
 and the packet knows its owner:
@@ -716,9 +726,9 @@ would re-open the ordering problem that the transport layer already solved.
 
 ## 8. TX
 
-### 8.1 `CobsMsg` state machine
+### 8.1 `cobs::Message` state machine
 
-`CobsMsg` is move-only.
+`cobs::Message` is move-only.
 
 ```text
 Empty  --make_msg()-->  Building  --push()-->  Encoded  --send() ok-->  Transferred
@@ -743,7 +753,7 @@ would have appended to no longer exist.
 When `send()` succeeds, ownership moves:
 
 ```text
-CobsMsg  →  Cobs::activeTx        (CobsMsg becomes empty)
+cobs::Message  →  cobs::Endpoint::activeTx        (cobs::Message becomes empty)
 ```
 
 and `proceed()` does only this:
@@ -801,7 +811,7 @@ Both quantities come from the size functions of §4.2 rather than from a magic
 constant, and both are **per message**: the block is sized for the capacity
 this message was granted (§9.1.0), not for the largest Format allows.
 
-`CobsMsg` is a CONTAINER, and carries three numbers. Confusing any two of them
+`cobs::Message` is a CONTAINER, and carries three numbers. Confusing any two of them
 is a bug:
 
 ```text
@@ -817,7 +827,7 @@ through `write<T>()`, `write_bytes()` and `write_array()`, each of which grows
 the block when it has to.
 
 ```text
-make_msg()     Cobs::default_capacity_hint — a practical reserve
+make_msg()     cobs::Endpoint::default_capacity_hint — a practical reserve
 make_msg(0)    a zero initial capacity REQUEST; pushed straight away it
                sends the canonical empty frame, but it may still be
                written into and grown like any other message
@@ -888,9 +898,9 @@ capacity. Headroom itself is never copied.
 
 ### 8.3.1.1 What the serializers accept
 
-`write<T>()` and `write_array<T>()` share ONE constraint — the `CobsScalar`
-concept — so there is one rule to explain rather than two nearly identical
-ones:
+`write<T>()` and `write_array<T>()` share ONE internal constraint —
+`cobs::detail::NativeScalar` — so there is one rule to explain rather than two
+nearly identical ones:
 
 ```text
 write<T>        arithmetic (except bool), enumerations, std::byte
@@ -925,7 +935,7 @@ If raw object representation is ever genuinely required, it belongs behind a
 deliberately alarming name — `write_object_representation()` — so that nobody
 mistakes it for ordinary wire serialization.
 
-#### 8.3.1.2 `CobsScalar` is not a promise of a stable wire format
+#### 8.3.1.2 `detail::NativeScalar` is not a stable-wire promise
 
 The concept keeps out the types with no sane representation. It does NOT, and
 cannot, guarantee that what it lets through means the same thing on both ends
@@ -1075,7 +1085,7 @@ Two consequences worth keeping in the document, because both are easy to
 ## 9. Storage contract
 
 Memory is a checked compile-time strategy: one type, one template parameter,
-arbitrarily many implementations. `Cobs` never learns whether bytes come from
+arbitrarily many implementations. `cobs::Endpoint` never learns whether bytes come from
 a heap, a static pool, external SDRAM, a TLSF arena or debug storage that
 poisons released blocks. It acquires and releases RX/TX blocks through one
 `cobs::Storage` contract. There are no virtuals and no runtime dispatch.
@@ -1101,10 +1111,14 @@ struct SomeStorage {
     void release_tx(cobs::TxBlock block) noexcept;
 };
 
-struct cobs::TxBlock {
+namespace cobs {
+
+struct TxBlock {
     std::byte*  memory   = nullptr;
     std::size_t capacity = 0;   // payload bytes, not physical bytes
 };
+
+} // namespace cobs
 
 static_assert(cobs::Storage<SomeStorage>);
 ```
@@ -1142,7 +1156,7 @@ storage can keep its size class in the typed block header or recover it from
 the pointer as a private implementation detail.
 
 The last one is easy to miss because it is not one of the four operations.
-`Cobs`'s constructors are unconditionally `noexcept` and construct storage in
+`cobs::Endpoint`'s constructors are unconditionally `noexcept` and construct storage in
 place, so a storage constructor that throws reaches `std::terminate` rather
 than the caller. That is consistent with a layer built entirely on `noexcept`
 plus explicit failure returns — there is nowhere for an exception to go — but
@@ -1193,7 +1207,7 @@ so alignment and padding remain invisible.
 These are two separate jobs and the contract keeps them separate:
 
 ```text
-CobsMsg      knows its current capacity and what it now needs
+cobs::Message      knows its current capacity and what it now needs
              -> computes the geometric target (§8.3.1) and asks once
 
 Storage      knows how it carves memory
@@ -1208,7 +1222,7 @@ Removing it costs nothing, because the container was already computing a
 geometric target before it asked.
 
 That division is also what lets storage with completely different strategies —
-exact, single-slab, segregated — share one `CobsMsg` with no `if constexpr`
+exact, single-slab, segregated — share one `cobs::Message` with no `if constexpr`
 anywhere. It is checked directly: the test suite runs custom storage whose rule
 is `2n + 1`, and the container does not notice.
 
@@ -1227,7 +1241,7 @@ RX   the frame declares its body length in the header, which arrives before
 ```
 
 Note what this does NOT claim: that the application knows the payload size up
-front. It often does not, which is why `CobsMsg` is a container that grows
+front. It often does not, which is why `cobs::Message` is a container that grows
 (§8.3.1). What remains asymmetric is only the number of attempts — TX can ask
 again because nothing has reached the wire yet, while RX gets one chance, and
 the length prefix is what makes that one chance exact instead of worst-case.
@@ -1271,7 +1285,7 @@ worth it.
 
 ### 9.1.2 Storage is taken at its word
 
-On RX, `Cobs` never asks how much memory it actually got. The exchange is:
+On RX, `cobs::Endpoint` never asks how much memory it actually got. The exchange is:
 
 > Your `Format` declares `max_receive_size = 1024`. If `acquire_rx(n)` returns
 > non-null with `n <= 1024`, you are **obliged** to have given valid storage for a packet
@@ -1337,7 +1351,7 @@ and `owner` are private to the RX vertical, and `owner` in particular is set by
 stamp it themselves, which made it a hidden FIFTH obligation — absent from the
 signatures, absent from this list, and unverifiable by the contract test once
 the field became private. Storage written to the letter of §9 therefore
-returned a block whose owner was null, and the first `PacketRef` release
+returned a block whose owner was null, and the first `cobs::Packet` release
 dereferenced it. The suite includes minimal custom storage with exactly one
 `Format`, one `RxBlock`, and four operations so this cannot return.
 
@@ -1361,7 +1375,7 @@ Three further obligations that are easy to get wrong:
 
 ### 9.1.4 Block counts are not part of the contract
 
-`Cobs` never asks how many blocks exist, so the generic contract does not
+`cobs::Endpoint` never asks how many blocks exist, so the generic contract does not
 mention them. How much memory a strategy is willing to hand out, and by what
 scheme, is entirely its own business:
 
@@ -1377,16 +1391,16 @@ That said, storage that HAS counts has to be sized, and this is the rule for
 `cobs::Pool`:
 
 > `TxBlocks` must cover the maximum number of TX blocks simultaneously owned
-> anywhere in the pipeline: non-empty `CobsMsg` objects held by the application
-> plus the one block that may be held by `Cobs::activeTx`. If the application
+> anywhere in the pipeline: non-empty `cobs::Message` objects held by the application
+> plus the one block that may be held by `cobs::Endpoint::activeTx`. If the application
 > keeps a pending queue filled while one frame is in flight, this is
 > `pending_depth + 1`. If sending removes the head and the queue is not
 > replenished until that transfer completes, the active block merely replaces
 > the former head and no extra block is required.
 
 The second case matters because "queue depth plus one" over-states the need:
-ownership of the same block simply moves from the queued `CobsMsg` to
-`Cobs::activeTx`.
+ownership of the same block simply moves from the queued `cobs::Message` to
+`cobs::Endpoint::activeTx`.
 
 > An empty result from `make_msg()` is the back-pressure signal that the
 > configured TX storage has been exhausted; callers must handle it.
@@ -1415,11 +1429,11 @@ Storage
 └── acquire_tx()   / release_tx()
 ```
 
-`Cobs` reads those numbers from `StorageT::Format` and never reconstructs
+`cobs::Endpoint` reads those numbers from `StorageT::Format` and never reconstructs
 them. It republishes them under `max_receive_size` and `max_send_size` (§4.1).
 
 The default is **`cobs::Heap`**, as `UART_COBS_ARCHITECTURE.md` §1 has
-said from the start, which makes the common spelling `Cobs<>`. It is
+said from the start, which makes the common spelling `cobs::Endpoint<>`. It is
 parameterized rather than unbounded, because "no limit" is not available to
 us: the length field is itself fixed-width, so the largest frame the format can
 describe has to be decided when the type is instantiated. The PER-FRAME
@@ -1427,23 +1441,27 @@ allocation is exact (§6.1.1); `Format::max_receive_size` is the ceiling above
 which a declared length is refused.
 
 ```cpp
+namespace cobs {
+
 template<class Format = cobs::Format<1024, 1024>>
-class cobs::Heap;
+class Heap;
 
 template<class StorageT = cobs::Heap<>>
-class Cobs;
+class Endpoint;
+
+} // namespace cobs
 ```
 
-so `Cobs<>` gets workable defaults and a bigger heap-backed link is still one
+so `cobs::Endpoint<>` gets workable defaults and a bigger heap-backed link is still one
 line:
 
 ```cpp
 using Wire = cobs::Format<4096, 512>;
-Cobs<cobs::Heap<Wire>> cobs;
+cobs::Endpoint<cobs::Heap<Wire>> cobs;
 ```
  A fixed pool
 default would look more embedded-minded and be worse: it would force the
-library to invent a block count on the user's behalf, and every `Cobs` object
+library to invent a block count on the user's behalf, and every `cobs::Endpoint` object
 would then carry that fixed quota whatever its workload. A target where
 `malloc` is unwelcome is exactly a target whose author chooses storage
 deliberately:
@@ -1451,7 +1469,7 @@ deliberately:
 ```cpp
 using Wire = cobs::Format<1024, 1024>;
 using Memory = cobs::Pool<Wire, /* RX blocks */ 8, /* TX blocks */ 2>;
-Cobs<Memory> cobs;
+cobs::Endpoint<Memory> cobs;
 ```
 
 RX and TX limits are separate on purpose. A device that receives 1 KB commands
@@ -1461,36 +1479,40 @@ than paying for the larger number twice.
 ### 9.3 What storage must not contain
 
 ```text
-Cobs<StorageT>
+cobs::Endpoint<StorageT>
         |                    |
      protocol             memory
         |                    |
   decoder / encoder     acquire / release
   RX and TX state       strategy and quotas
   ready queue           anything: heap, pool, SDRAM, external region
-  PacketRef / CobsMsg
+  cobs::Packet / cobs::Message
 ```
 
 A storage strategy that starts to know about encoding, decoder state, the ready
-queue or `PacketRef` behaviour has stopped being storage. Keeping it focused is
+queue or `cobs::Packet` behaviour has stopped being storage. Keeping it focused is
 what makes "write your own storage" a small job rather than a diploma in
 metaprogramming.
 
-### 9.4 `Cobs` owns storage by value
+### 9.4 `cobs::Endpoint` owns storage by value
 
 ```cpp
+namespace cobs {
+
 template<class StorageT = cobs::Heap<>>
-class Cobs final {
+class Endpoint final {
     [[no_unique_address]] StorageT m_storage{};
 };
+
+} // namespace cobs
 ```
 
-By value, so that `Cobs<> cobs;` works with no ceremony, a stateless heap
+By value, so that `cobs::Endpoint<> cobs;` works with no ceremony, a stateless heap
 strategy costs nothing (`[[no_unique_address]]`), and a `cobs::Pool` can
 simply contain its RX and TX pools.
 
-**`Cobs` is therefore neither copyable nor movable.** That is not tidiness:
-`PacketRef` holds a pointer to storage living inside the `Cobs` object,
+**`cobs::Endpoint` is therefore neither copyable nor movable.** That is not tidiness:
+`cobs::Packet` holds a pointer to storage living inside the `cobs::Endpoint` object,
 so moving one would turn every outstanding packet's owner pointer into a
 souvenir of a previous life.
 
@@ -1498,16 +1520,16 @@ Storage needing runtime arguments is constructed in place, so it
 need not be copyable or movable at all:
 
 ```cpp
-Cobs<MyStorage> cobs{std::in_place, region_base, region_size};
+cobs::Endpoint<MyStorage> cobs{std::in_place, region_base, region_size};
 ```
 
 There is deliberately no constructor taking a ready-made storage object. It
 would only serve copyable ones, and one way in is enough.
 
 This also corrects an argument made earlier in review. It is **not** true that
-a fixed strategy forces the whole `Cobs` object into DMA-accessible RAM. That
+a fixed strategy forces the whole `cobs::Endpoint` object into DMA-accessible RAM. That
 follows only if storage keeps its TX blocks inside itself; storage holding
-pointers or spans into external RX/TX regions leaves `Cobs` placeable
+pointers or spans into external RX/TX regions leaves `cobs::Endpoint` placeable
 anywhere, and only the **TX region** must be DMA-visible — the transport reads
 it directly, unlike the RX pool, which only the CPU ever writes.
 

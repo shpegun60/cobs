@@ -7,11 +7,6 @@
  */
 
 #include "Cobs.h"
-#include "CobsMsg.h"
-#include "detail/Receiver.h"
-#include "PacketRef.h"
-#include "Storage.h"
-#include "detail/BlockPool.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -22,20 +17,20 @@ namespace {
 using Heap = cobs::Heap<cobs::Format<1024, 1024>>;
 using Pool = cobs::Pool<cobs::Format<1024, 1024>, 8, 2>;
 using Block = cobs::RxBlock<Heap>;
-using Ref = PacketRef<Heap>;
-using Message = CobsMsg<Heap>;
+using Packet = cobs::Packet<Heap>;
+using Message = cobs::Message<Heap>;
 using Decoder = cobs::codec::Decoder;
 using Receiver = cobs::detail::Receiver<Heap>;
-using Endpoint = Cobs<Heap>;
-using PoolEndpoint = Cobs<Pool>;
+using Endpoint = cobs::Endpoint<Heap>;
+using PoolEndpoint = cobs::Endpoint<Pool>;
 using Sender = typename Endpoint::Sender;
 using BusyQuery = typename Endpoint::TxBusy;
 using RxStats = typename Receiver::Stats;
 using TxStats = typename Endpoint::TxStats;
 using PoolStats = cobs::detail::PoolStats;
 
-static_assert(sizeof(Ref) == sizeof(void*),
-	"a PacketRef is exactly one typed pointer");
+static_assert(sizeof(Packet) == sizeof(void*),
+	"a cobs::Packet is exactly one typed pointer");
 static_assert(sizeof(cobs::TxBlock) == sizeof(std::byte*) + sizeof(std::size_t),
 	"TxBlock is exactly one pointer plus its reported capacity");
 static_assert(sizeof(Heap) == 1,
@@ -47,7 +42,7 @@ static_assert(sizeof(Heap) == 1,
 #if INTPTR_MAX == INT64_MAX
 COBS_EXPECT_SIZE(cobs::TxBlock, 16);
 COBS_EXPECT_SIZE(Block, 24);
-COBS_EXPECT_SIZE(Ref, 8);
+COBS_EXPECT_SIZE(Packet, 8);
 COBS_EXPECT_SIZE(Message, 48);
 COBS_EXPECT_SIZE(Decoder, 48);
 COBS_EXPECT_SIZE(Receiver, 136);
@@ -63,7 +58,7 @@ COBS_EXPECT_SIZE(PoolStats, 16);
 #elif defined(__arm__) && INTPTR_MAX == INT32_MAX
 COBS_EXPECT_SIZE(cobs::TxBlock, 8);
 COBS_EXPECT_SIZE(Block, 16);
-COBS_EXPECT_SIZE(Ref, 4);
+COBS_EXPECT_SIZE(Packet, 4);
 COBS_EXPECT_SIZE(Message, 24);
 COBS_EXPECT_SIZE(Decoder, 24);
 COBS_EXPECT_SIZE(Receiver, 80);
@@ -90,7 +85,7 @@ extern "C" {
 [[maybe_unused]] std::byte cobs_layout_size_t[sizeof(std::size_t)]{};
 [[maybe_unused]] std::byte cobs_layout_tx_block[sizeof(cobs::TxBlock)]{};
 [[maybe_unused]] std::byte cobs_layout_rx_block[sizeof(Block)]{};
-[[maybe_unused]] std::byte cobs_layout_packet_ref[sizeof(Ref)]{};
+[[maybe_unused]] std::byte cobs_layout_packet[sizeof(Packet)]{};
 [[maybe_unused]] std::byte cobs_layout_message[sizeof(Message)]{};
 [[maybe_unused]] std::byte cobs_layout_decoder[sizeof(Decoder)]{};
 [[maybe_unused]] std::byte cobs_layout_receiver[sizeof(Receiver)]{};
@@ -108,11 +103,11 @@ extern "C" {
 int main()
 {
 	std::printf("\n[Layout]\n");
-	std::printf("pointer=%zu size_t=%zu cobs::TxBlock=%zu cobs::RxBlock=%zu PacketRef=%zu\n",
-		sizeof(void*), sizeof(std::size_t), sizeof(cobs::TxBlock), sizeof(Block), sizeof(Ref));
-	std::printf("CobsMsg=%zu Decoder=%zu Receiver=%zu Endpoint=%zu\n",
+	std::printf("pointer=%zu size_t=%zu cobs::TxBlock=%zu cobs::RxBlock=%zu cobs::Packet=%zu\n",
+		sizeof(void*), sizeof(std::size_t), sizeof(cobs::TxBlock), sizeof(Block), sizeof(Packet));
+	std::printf("cobs::Message=%zu Decoder=%zu Receiver=%zu Endpoint=%zu\n",
 		sizeof(Message), sizeof(Decoder), sizeof(Receiver), sizeof(Endpoint));
-	std::printf("Heap=%zu Pool=%zu CobsPool=%zu sender=%zu busy=%zu\n",
+	std::printf("Heap=%zu Pool=%zu PoolEndpoint=%zu sender=%zu busy=%zu\n",
 		sizeof(Heap), sizeof(Pool), sizeof(PoolEndpoint), sizeof(Sender), sizeof(BusyQuery));
 	std::printf("RxStats=%zu TxStats=%zu PoolStats=%zu\n",
 		sizeof(RxStats), sizeof(TxStats), sizeof(PoolStats));
