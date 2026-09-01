@@ -31,6 +31,7 @@
 #include "CobsFrameFormat.h"
 #include "CobsHeapAllocator.h"
 #include "PacketRef.h"
+#include "Storage.h"
 
 #include <array>
 #include <cstddef>
@@ -46,6 +47,9 @@
 // application normally uses Cobs rather than instantiating CobsRx directly.
 template<class Allocator = CobsHeapAllocator<>>
 class CobsRx final {
+	static_assert(cobs::Storage<Allocator>,
+		"CobsRx allocator must satisfy the cobs::Storage contract");
+
 public:
 	// Exposed so a user taking the default can still name the policy they must
 	// construct — without it the default would save nothing:

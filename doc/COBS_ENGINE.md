@@ -1,5 +1,9 @@
 # COBS Engine — implementation contract
 
+> Refactor tracking: `COBS_REFACTOR_PLAN.md` records the locked decisions,
+> target architecture, migration phases, and verification gates. This file
+> remains the current behavioural contract until that migration is complete.
+
 This document refines `UART_COBS_ARCHITECTURE.md` into the contract the
 implementation must satisfy. Where the two disagree, **this document wins**:
 the architecture document is the original design sketch and still shows a

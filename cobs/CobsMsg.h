@@ -72,6 +72,7 @@
 
 #include "CobsEncoder.h"
 #include "CobsFrameFormat.h"
+#include "Storage.h"
 #include "TxAllocation.h"
 
 #include <cstddef>
@@ -166,6 +167,9 @@ concept CobsScalar =
 // states tx_max_size, so the geometry follows from it (COBS_ENGINE.md §9.2).
 template<class Allocator>
 class CobsMsg final {
+	static_assert(cobs::Storage<Allocator>,
+		"CobsMsg allocator must satisfy the cobs::Storage contract");
+
 	// surrender_block() is private for the same reason PacketRef::adopt() is:
 	// it hands out ownership without freeing it, so exactly one type may call
 	// it — the one that will keep the block alive until the transport is done.

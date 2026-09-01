@@ -8,6 +8,7 @@
  * Anything a policy exposes beyond the contract (pool occupancy, statistics,
  * exhaustion counts) is tested separately, where it belongs.
  */
+#include "Storage.h"
 #include "CobsFixedAllocator.h"
 #include "CobsHeapAllocator.h"
 
@@ -16,6 +17,52 @@
 #include <vector>
 
 namespace {
+
+using ContractHeap = CobsHeapAllocator<128, 96>;
+using ContractPool = CobsFixedAllocator<128, 2, 96, 1>;
+
+static_assert(cobs::Storage<ContractHeap>,
+	"the built-in heap policy must satisfy the checked storage contract");
+static_assert(cobs::Storage<ContractPool>,
+	"the built-in fixed policy must satisfy the checked storage contract");
+
+struct MissingTxOperations {
+	struct Packet {};
+	static constexpr std::size_t rx_max_size = 8;
+	static constexpr std::size_t tx_max_size = 8;
+
+	Packet* allocate_rx(std::size_t) noexcept;
+	void deallocate_rx(Packet*) noexcept;
+};
+
+struct WrongTxResult {
+	struct Packet {};
+	static constexpr std::size_t rx_max_size = 8;
+	static constexpr std::size_t tx_max_size = 8;
+
+	Packet* allocate_rx(std::size_t) noexcept;
+	void deallocate_rx(Packet*) noexcept;
+	std::byte* allocate_tx(std::size_t) noexcept;
+	void deallocate_tx(std::byte*, std::size_t) noexcept;
+};
+
+struct ThrowingAllocateRx {
+	struct Packet {};
+	static constexpr std::size_t rx_max_size = 8;
+	static constexpr std::size_t tx_max_size = 8;
+
+	Packet* allocate_rx(std::size_t); // deliberately not noexcept
+	void deallocate_rx(Packet*) noexcept;
+	TxAllocation allocate_tx(std::size_t) noexcept;
+	void deallocate_tx(std::byte*, std::size_t) noexcept;
+};
+
+static_assert(!cobs::Storage<MissingTxOperations>,
+	"a storage implementation must provide both TX operations");
+static_assert(!cobs::Storage<WrongTxResult>,
+	"allocate_tx must return the ownership descriptor, not a bare pointer");
+static_assert(!cobs::Storage<ThrowingAllocateRx>,
+	"storage operations are required to be noexcept");
 
 int g_checks = 0;
 int g_failures = 0;

@@ -33,6 +33,7 @@
 #include "CobsMsg.h"
 #include "CobsRx.h"
 #include "PacketRef.h"
+#include "Storage.h"
 
 #include "tiny_delegate.hpp"
 
@@ -51,6 +52,9 @@ enum class SendResult : uint8_t {
 
 template<class Allocator = CobsHeapAllocator<>>
 class Cobs final {
+	static_assert(cobs::Storage<Allocator>,
+		"Cobs allocator must satisfy the cobs::Storage contract");
+
 public:
 	using AllocatorType = Allocator;
 	using Msg = CobsMsg<Allocator>;

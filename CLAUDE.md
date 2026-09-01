@@ -4,6 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
+The canonical architecture migration plan, locked decisions, phase checklist,
+and acceptance criteria are in `doc/COBS_REFACTOR_PLAN.md`. Consult it before
+changing COBS names, ownership, storage, delegates, state fields, or file
+boundaries.
+
 A Qt Widgets application (qmake, C++20) intended as a desktop host/testbed for a reusable UART + COBS communication stack. The Qt GUI itself is currently a bare scaffold (`main.cpp`, `mainwindow.*`); the substance of the project is the transport-stack design in `doc/UART_COBS_ARCHITECTURE.md` and its STM32 implementation in `uart/Uart.h` (not part of the Qt build — it needs an STM32 HAL).
 
 Local dependencies live in `libs/` (cloned from the author's GitHub, on `INCLUDEPATH`):
