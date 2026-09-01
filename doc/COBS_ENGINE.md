@@ -1690,6 +1690,22 @@ run of bare delimiters    → no packets delivered
 leading delimiter         → harmless
 ```
 
+### 11.7 Transport delegate lifetime
+
+The endpoint boundary must exercise all three modes intentionally supported by
+its owning `tiny::delegate` type:
+
+- a move-only captured lambda remains callable after the source callable and
+  source delegate objects leave scope;
+- `tiny::bind<&T::method>(object)` calls the same long-lived transport object
+  without an adapter or a copied transport;
+- `tiny::borrow(callable)` observes state changed on the original callable's
+  target after binding.
+
+These are API-contract tests, not tests of an incidental implementation detail.
+Replacing the delegates with function pointers, a `delegate_ref`-only surface,
+or a transport template would break at least one of them.
+
 ---
 
 ## 12. Explicitly not in v1

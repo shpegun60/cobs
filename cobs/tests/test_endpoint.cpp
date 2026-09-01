@@ -645,6 +645,94 @@ void testStorageDoesNotChangeFormat()
 	pool.poll();
 }
 
+/* =============== the chosen owning-delegate boundary =================== */
+
+void testDelegateBindingModes()
+{
+	g_strategy = "delegate";
+	using Engine = cobs::Endpoint<cobs::Heap<cobs::Format<32, 32>>>;
+	const std::vector<uint8_t> payload{0x11, 0x00, 0x22};
+
+	{	// Ordinary callables are owned, including a move-only capture.
+		Engine endpoint;
+		std::vector<uint8_t> captured;
+		int marker = 0;
+		bool busy = false;
+		{
+			auto send_callable =
+				[&captured, &marker, stamp = std::make_unique<int>(0x5A)](
+					const std::span<const uint8_t> frame) noexcept {
+					marker = *stamp;
+					captured.assign(frame.begin(), frame.end());
+					return true;
+				};
+			auto busy_callable = [&busy]() noexcept { return busy; };
+			typename Engine::Sender sender{std::move(send_callable)};
+			typename Engine::BusyQuery query{std::move(busy_callable)};
+			check(!sender.non_owning() && !query.non_owning(),
+			      "capturing callables select owning delegate storage");
+			check(endpoint.bind(std::move(sender), std::move(query)),
+			      "an owning delegate pair binds");
+		}
+
+		auto message = endpoint.make_message(payload.size());
+		check(message.append_bytes(std::span<const uint8_t>{payload}),
+		      "a message is built after the source callables left scope");
+		check(endpoint.send(message) == cobs::SendResult::Sent && marker == 0x5A &&
+		          captured == cobs_test::frame(payload, Engine::length_size),
+		      "the endpoint still owns and invokes the move-only lambda");
+		endpoint.poll();
+		check(!endpoint.tx_active(), "the owned busy query remains callable too");
+	}
+
+	{	// Member binding intentionally borrows the long-lived object.
+		Engine endpoint;
+		FakeTransport transport;
+		auto sender = tiny::bind<&FakeTransport::send>(transport);
+		auto query = tiny::bind<&FakeTransport::tx_busy>(transport);
+		static_assert(std::is_same_v<decltype(sender), typename Engine::Sender>);
+		static_assert(std::is_same_v<decltype(query), typename Engine::BusyQuery>);
+		check(sender.non_owning() && query.non_owning(),
+		      "member binding keeps explicit non-owning semantics");
+		check(endpoint.bind(std::move(sender), std::move(query)),
+		      "a bound-member pair binds without an adapter");
+		auto message = endpoint.make_message(payload.size());
+		check(message.append_bytes(std::span<const uint8_t>{payload}),
+		      "the bound-member message is built");
+		check(endpoint.send(message) == cobs::SendResult::Sent &&
+		          transport.sent.back() == cobs_test::frame(payload, Engine::length_size),
+		      "the endpoint invokes the bound transport methods");
+		transport.finish();
+		endpoint.poll();
+	}
+
+	{	// borrow() keeps observing the original callable objects, not copies.
+		Engine endpoint;
+		FakeTransport transport;
+		auto send_callable = [&transport](const std::span<const uint8_t> frame) noexcept {
+			return transport.send(frame);
+		};
+		auto busy_callable = [&transport]() noexcept { return transport.tx_busy(); };
+		typename Engine::Sender sender{tiny::borrow(send_callable)};
+		typename Engine::BusyQuery query{tiny::borrow(busy_callable)};
+		check(sender.non_owning() && query.non_owning(),
+		      "borrowed callables remain explicitly non-owning");
+		check(endpoint.bind(std::move(sender), std::move(query)),
+		      "a borrowed callable pair binds");
+		auto message = endpoint.make_message(payload.size());
+		check(message.append_bytes(std::span<const uint8_t>{payload}),
+		      "the borrowed-callable message is built");
+		transport.busy = true;
+		check(endpoint.send(message) == cobs::SendResult::Busy,
+		      "the borrowed busy callable observes later external state");
+		transport.busy = false;
+		check(endpoint.send(message) == cobs::SendResult::Sent,
+		      "the same borrowed pair starts the transfer once external state changes");
+		transport.finish();
+		endpoint.poll();
+	}
+}
+
 } // namespace
 
 int main()
@@ -652,6 +740,8 @@ int main()
 	group("Engine");
 	runEngine<cobs::Heap<cobs::Format<64, 64>>>("heap");
 	runEngine<cobs::Pool<cobs::Format<64, 64>, 4, 2>>("fixed");
+	group("DelegateLifetime");
+	testDelegateBindingModes();
 
 	group("FixedSpecific");
 	testFixedExhaustion();

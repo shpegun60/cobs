@@ -835,7 +835,7 @@ protocol changes must never be bundled together.
 - [ ] Permit white-box tests to include `detail` explicitly.
 - [x] Require application tests to include only `Cobs.h`.
 - [ ] Add wire-equivalence fixtures across storage implementations.
-- [ ] Add transport-delegate lifetime tests for owning lambdas/binds/borrows.
+- [x] Add transport-delegate lifetime tests for owning lambdas/binds/borrows.
 
 ### Phase 7 - build and documentation
 
@@ -1007,3 +1007,10 @@ The following are not part of this refactor:
   Endpoint stayed 304 bytes on x64 and 168 bytes on ARM. UART host remained
   131/131 and the complete STM32 port/probe matrix passed with only the known
   H7RS vendor warning.
+- Locked the transport callback model at the public endpoint boundary with
+  executable lifetime tests: a move-only captured lambda remains owned after
+  every source object leaves scope, `tiny::bind` reaches the original member
+  object, and `tiny::borrow` observes later external state changes. This makes
+  the decision to retain the universal owning delegate observable rather than
+  documentary. MinGW and WSL ASan/UBSan passed 23,033 COBS checks; ARM layout,
+  UART host 131/131, and the full F1/G4/H7RS port/probe matrix remained green.
