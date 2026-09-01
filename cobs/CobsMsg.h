@@ -71,9 +71,7 @@
 #define COBS_MSG_H_
 
 #include "Codec.h"
-#include "Format.h"
 #include "Storage.h"
-#include "TxAllocation.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -82,7 +80,7 @@
 #include <type_traits>
 
 // The only legitimate destination for a surrendered block.
-template<class Allocator>
+template<class StorageT>
 class Cobs;
 
 /*
@@ -165,55 +163,43 @@ concept CobsScalar =
 
 // One template parameter, like everything else in this layer: the storage
 // names its protocol Format, so memory strategy cannot redefine geometry.
-template<class Allocator>
+template<class StorageT>
 class CobsMsg final {
-	static_assert(cobs::Storage<Allocator>,
-		"CobsMsg allocator must satisfy the cobs::Storage contract");
+	static_assert(cobs::Storage<StorageT>,
+		"CobsMsg storage must satisfy the cobs::Storage contract");
 
 	// surrender_block() is private for the same reason PacketRef::adopt() is:
 	// it hands out ownership without freeing it, so exactly one type may call
 	// it — the one that will keep the block alive until the transport is done.
-	friend class Cobs<Allocator>;
+	friend class Cobs<StorageT>;
 
 public:
-	using Format = typename Allocator::Format;
+	using Format = typename StorageT::Format;
 
 	static constexpr std::size_t max_payload_size = Format::max_send_size;
 	// Part of the wire format, republished so an integration build can assert
 	// the format it expects (COBS_ENGINE.md §3).
 	static constexpr std::size_t length_size = Format::length_size;
 
-	// What Cobs holds while the transport borrows the frame: the block to
-	// return, and the capacity to return it WITH — the same number the policy
-	// reported at allocation, so a segregated policy finds its size class
-	// without searching. Kept together so that surrendering a block without
-	// it is not expressible.
-	struct TxBlock {
-		std::byte*  memory   = nullptr;
-		std::size_t capacity = 0;
-	};
-
 	CobsMsg() noexcept = default;
 
 	/*
-	 * Takes a block from the policy and starts EMPTY. `hint` is a capacity
+	 * Takes a block from storage and starts EMPTY. `hint` is a capacity
 	 * hint, not a size: it saves the first growth for a caller who knows
 	 * roughly how much is coming, and nothing more.
 	 *
-	 * Exhaustion, or a hint beyond the policy's declared limit, yields an
+	 * Exhaustion, or a hint beyond the Format's declared limit, yields an
 	 * Empty message rather than a failure code: `if (!msg)` is the check
 	 * either way.
 	 */
-	explicit CobsMsg(Allocator& allocator, const std::size_t hint = 0) noexcept
-		: m_pool(&allocator)
+	explicit CobsMsg(StorageT& storage, const std::size_t hint = 0) noexcept
+		: m_storage(&storage)
 	{
 		if (hint > max_payload_size) {
 			return;
 		}
-		const TxAllocation allocation = allocator.allocate_tx(hint);
-		if (allocation.memory != nullptr) {
-			m_block = allocation.memory;
-			m_capacity = allocation.capacity;
+		m_block = storage.acquire_tx(hint);
+		if (m_block.memory != nullptr) {
 			m_state = State::Building;
 		}
 	}
@@ -224,8 +210,7 @@ public:
 	CobsMsg& operator=(const CobsMsg&) = delete;
 
 	CobsMsg(CobsMsg&& other) noexcept
-		: m_pool(other.m_pool), m_block(other.m_block),
-		  m_capacity(other.m_capacity), m_size(other.m_size),
+		: m_storage(other.m_storage), m_block(other.m_block), m_size(other.m_size),
 		  m_wire(other.m_wire), m_state(other.m_state)
 	{
 		other.disown();
@@ -235,9 +220,8 @@ public:
 	{
 		if (this != &other) {
 			release(); // whatever this message held is returned first
-			m_pool = other.m_pool;
+			m_storage = other.m_storage;
 			m_block = other.m_block;
-			m_capacity = other.m_capacity;
 			m_size = other.m_size;
 			m_wire = other.m_wire;
 			m_state = other.m_state;
@@ -246,10 +230,10 @@ public:
 		return *this;
 	}
 
-	[[nodiscard]] explicit operator bool() const noexcept { return m_block != nullptr; }
+	[[nodiscard]] explicit operator bool() const noexcept { return m_block.memory != nullptr; }
 
 	[[nodiscard]] std::size_t size() const noexcept { return m_size; }
-	[[nodiscard]] std::size_t capacity() const noexcept { return m_capacity; }
+	[[nodiscard]] std::size_t capacity() const noexcept { return m_block.capacity; }
 	[[nodiscard]] bool encoded() const noexcept { return m_state == State::Encoded; }
 
 	/* ------------------------------ building ----------------------------- */
@@ -263,7 +247,7 @@ public:
 	 * What is NOT accepted, and why, is in the CobsScalar concept above.
 	 *
 	 * Returns false, with the message completely unchanged, if the value does
-	 * not fit the policy's limit or the growth it needs cannot be allocated.
+	 * not fit the Format's limit or the growth it needs cannot be acquired.
 	 * The message remains usable — but it is now INCOMPLETE, so the result has
 	 * to be acted on before push(), or a truncated frame goes out.
 	 */
@@ -322,14 +306,15 @@ public:
 		if (m_state != State::Building) {
 			return false;
 		}
-		if (required <= m_capacity) {
+		if (required <= m_block.capacity) {
 			return true; // the common case: no allocation, nothing moves
 		}
 		if (required > max_payload_size) {
 			return false;
 		}
 
-		const TxAllocation fresh = m_pool->allocate_tx(grow_target(m_capacity, required));
+		const cobs::TxBlock fresh =
+			m_storage->acquire_tx(grow_target(m_block.capacity, required));
 		if (fresh.memory == nullptr) {
 			return false; // strong guarantee: the old block is untouched
 		}
@@ -342,18 +327,17 @@ public:
 			// encode time, so there is nothing else worth carrying across.
 			std::memcpy(payload_of(fresh.memory, fresh.capacity), raw(), m_size);
 		}
-		m_pool->deallocate_tx(m_block, m_capacity); // returned with its OWN capacity
-		m_block = fresh.memory;
-		m_capacity = fresh.capacity;
+		m_storage->release_tx(m_block); // returned with its OWN capacity
+		m_block = fresh;
 		return true;
 	}
 
 	// Guards against pushing a message into a DIFFERENT engine of the same
 	// type, which would return the block to the wrong pool. The types cannot
-	// catch that: two Cobs<CobsFixedAllocator<...>> objects are one type.
-	[[nodiscard]] bool belongs_to(const Allocator& allocator) const noexcept
+	// catch that: two Cobs<cobs::Pool<...>> objects are one type.
+	[[nodiscard]] bool belongs_to(const StorageT& storage) const noexcept
 	{
-		return m_pool == &allocator;
+		return m_storage == &storage;
 	}
 
 	/* ------------------------------ encoding ----------------------------- */
@@ -373,7 +357,7 @@ public:
 	 */
 	[[nodiscard]] std::span<const uint8_t> encode() noexcept
 	{
-		if (m_block == nullptr) {
+		if (m_block.memory == nullptr) {
 			return {};
 		}
 		// The decoded frame is [length][payload], so all the geometry below is
@@ -410,7 +394,7 @@ public:
 private:
 	/*
 	 * The next capacity to ask for: about 1.5x the current one, but never less
-	 * than what is actually required and never more than the policy allows.
+	 * than what is actually required and never more than the Format allows.
 	 *
 	 *      0 -> 1 -> 2 -> 3 -> 4 -> 6 -> 9 -> 13 -> 19 -> ...
 	 *
@@ -486,16 +470,16 @@ private:
 	 * instant. Leaves the message Empty. Only called after the transport has
 	 * already accepted the frame (§8.2).
 	 *
-	 * The capacity travels with the pointer because it is what the policy
+	 * The capacity travels with the pointer because it is what storage
 	 * reported for THIS block — which a growth may have changed since the
 	 * message was created, and which is not the logical size and not a frame
-	 * length. Recomputing it later would hand the policy a different block
+	 * length. Recomputing it later would hand storage a different block
 	 * than it gave out.
 	 */
-	[[nodiscard]] TxBlock surrender_block() noexcept
+	[[nodiscard]] cobs::TxBlock surrender_block() noexcept
 	{
-		const TxBlock block{m_block, m_capacity};
-		m_block = nullptr; // so disown() cannot free what the transport holds
+		const cobs::TxBlock block = m_block;
+		m_block = {}; // so disown() cannot free what the transport holds
 		disown();
 		return block;
 	}
@@ -511,32 +495,33 @@ private:
 		       Format::raw_offset_for_capacity(capacity) + Format::length_size;
 	}
 
-	[[nodiscard]] uint8_t* raw() const noexcept { return payload_of(m_block, m_capacity); }
+	[[nodiscard]] uint8_t* raw() const noexcept
+	{
+		return payload_of(m_block.memory, m_block.capacity);
+	}
 
 	void release() noexcept
 	{
-		if (m_block != nullptr) {
-			m_pool->deallocate_tx(m_block, m_capacity);
+		if (m_block.memory != nullptr) {
+			m_storage->release_tx(m_block);
 		}
 		disown();
 	}
 
 	void disown() noexcept
 	{
-		m_pool = nullptr;
-		m_block = nullptr;
-		m_capacity = 0;
+		m_storage = nullptr;
+		m_block = {};
 		m_size = 0;
 		m_wire = 0;
 		m_state = State::Empty;
 	}
 
-	Allocator*  m_pool     = nullptr;
-	std::byte*  m_block    = nullptr;
-	std::size_t m_capacity = 0; // payload bytes this block permits
-	std::size_t m_size     = 0; // payload bytes written; <= m_capacity
-	std::size_t m_wire     = 0; // encoded frame length, once Encoded
-	State       m_state    = State::Empty;
+	StorageT*     m_storage = nullptr;
+	cobs::TxBlock m_block{};
+	std::size_t   m_size  = 0; // payload bytes written; <= m_block.capacity
+	std::size_t   m_wire  = 0; // encoded frame length, once Encoded
+	State         m_state = State::Empty;
 };
 
 #endif /* COBS_MSG_H_ */

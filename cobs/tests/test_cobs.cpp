@@ -2,13 +2,11 @@
  * The assembled engine, end to end, over a fake transport built from the same
  * delegates a real one would supply.
  *
- * Like test_allocators, the whole body runs TWICE — once over the heap policy
+ * Like test_storage, the whole body runs TWICE — once over the heap strategy
  * and once over the fixed one — from a single template. If Cobs ever had to
  * know which it was talking to, the abstraction would have leaked.
  */
 #include "Cobs.h"
-#include "CobsFixedAllocator.h"
-#include "CobsHeapAllocator.h"
 #include "reference_frame.h"
 
 #include <cstdio>
@@ -23,7 +21,7 @@ namespace {
 
 int g_checks = 0;
 int g_failures = 0;
-const char* g_policy = "";
+const char* g_strategy = "";
 
 void group(const char* name) { std::printf("\n[%s]\n", name); }
 
@@ -31,10 +29,10 @@ void check(const bool ok, const std::string& what)
 {
 	++g_checks;
 	if (ok) {
-		std::printf("  ok    %s: %s\n", g_policy, what.c_str());
+		std::printf("  ok    %s: %s\n", g_strategy, what.c_str());
 	} else {
 		++g_failures;
-		std::printf("  FAIL  %s: %s\n", g_policy, what.c_str());
+		std::printf("  FAIL  %s: %s\n", g_strategy, what.c_str());
 	}
 }
 
@@ -85,13 +83,13 @@ void bind(C& cobs, FakeTransport& t)
 	check(cobs.set_transport(sender_for<C>(t), busy_for<C>(t)), "the transport binds");
 }
 
-/* ==================== the engine, for either policy ===================== */
+/* =================== the engine, for either storage ===================== */
 
-template<class Allocator>
+template<class StorageT>
 void runEngine(const char* name)
 {
-	g_policy = name;
-	using Engine = Cobs<Allocator>;
+	g_strategy = name;
+	using Engine = Cobs<StorageT>;
 
 	static_assert(!std::is_copy_constructible_v<Engine>, "Cobs must not be copyable");
 	static_assert(!std::is_move_constructible_v<Engine>,
@@ -293,9 +291,9 @@ void runEngine(const char* name)
 
 void testFixedExhaustion()
 {
-	g_policy = "fixed";
-	using Allocator = CobsFixedAllocator<cobs::Format<32, 32>, 2, 1>;
-	Cobs<Allocator> cobs;
+	g_strategy = "fixed";
+	using Memory = cobs::Pool<cobs::Format<32, 32>, 2, 1>;
+	Cobs<Memory> cobs;
 	FakeTransport t;
 	bind(cobs, t);
 
@@ -321,16 +319,16 @@ void testFixedExhaustion()
 // look leaked to anything watching its occupancy.
 void testDestructorReclaimsActiveTx()
 {
-	g_policy = "fixed";
-	using Allocator = CobsFixedAllocator<cobs::Format<32, 32>, 2, 2>;
+	g_strategy = "fixed";
+	using Memory = cobs::Pool<cobs::Format<32, 32>, 2, 2>;
 	FakeTransport t;
 	{
-		Cobs<Allocator> cobs;
+		Cobs<Memory> cobs;
 		bind(cobs, t);
 		auto msg = cobs.make_msg();
 		check(msg.write(uint32_t{0x01020304u}), "a frame is built");
 		check(cobs.push(msg) == SendResult::Sent, "a frame is in flight at destruction");
-		check(cobs.allocator().tx_available() == 1, "one TX block is out");
+		check(cobs.storage().tx_available() == 1, "one TX block is out");
 		// The transport is finished with it — precondition 2 is satisfied.
 		t.finish();
 	}
@@ -344,8 +342,8 @@ void testDefaultCapacityHint()
 {
 	{	// The heap policy grants exactly what is asked, so the default is
 		// visible directly: a short frame never reallocates.
-		g_policy = "heap";
-		using Engine = Cobs<CobsHeapAllocator<cobs::Format<64, 1024>>>;
+		g_strategy = "heap";
+		using Engine = Cobs<cobs::Heap<cobs::Format<64, 1024>>>;
 		static_assert(Engine::default_capacity_hint == 32);
 		Engine cobs;
 
@@ -378,8 +376,8 @@ void testDefaultCapacityHint()
 	}
 	{	// A policy whose limit is BELOW the default must still work: the
 		// default is clamped, so make_msg() can never fail on its own default.
-		g_policy = "fixed";
-		using Engine = Cobs<CobsFixedAllocator<cobs::Format<32, 16>, 2, 1>>;
+		g_strategy = "fixed";
+		using Engine = Cobs<cobs::Pool<cobs::Format<32, 16>, 2, 1>>;
 		static_assert(Engine::default_capacity_hint == 16,
 		              "the default must clamp to a smaller tx_max_size");
 		Engine cobs;
@@ -396,33 +394,34 @@ void testDefaultCapacityHint()
  * CobsMsg:
  *
  *     CobsMsg -> surrender_block() -> Cobs::m_activeTx -> proceed()
- *             -> deallocate_tx(memory, reported_capacity)
+ *             -> release_tx(the same TxBlock descriptor)
  *
  * Neither shipped policy can catch a regression here. The heap one reports
  * capacity == requested, so a mix-up is invisible; the fixed one ignores the
  * capacity at free time entirely. So this uses a policy that over-allocates
- * the way a segregated allocator would, and checks the number that comes back
+ * the way segregated storage would, and checks the number that comes back
  * at the far end of the chain.
  */
-class OverallocPolicy final {
+class OvergrantStorage final {
 public:
-	using Packet = RxPacket<OverallocPolicy>;
 	using Format = cobs::Format<64, 512>;
-	[[nodiscard]] Packet* allocate_rx(const std::size_t requested_size) noexcept
+	using RxBlock = cobs::RxBlock<OvergrantStorage>;
+
+	[[nodiscard]] RxBlock* acquire_rx(const std::size_t requested_size) noexcept
 	{
 		if (requested_size > Format::max_receive_size) { return nullptr; }
-		void* const memory = ::operator new(sizeof(Packet) + requested_size, std::nothrow);
+		void* const memory = ::operator new(sizeof(RxBlock) + requested_size, std::nothrow);
 		if (memory == nullptr) { return nullptr; }
-		return std::construct_at(static_cast<Packet*>(memory));
+		return std::construct_at(static_cast<RxBlock*>(memory));
 	}
-	void deallocate_rx(Packet* const p) noexcept
+	void release_rx(RxBlock* const block) noexcept
 	{
-		if (p == nullptr) { return; }
-		std::destroy_at(p);
-		::operator delete(static_cast<void*>(p));
+		if (block == nullptr) { return; }
+		std::destroy_at(block);
+		::operator delete(static_cast<void*>(block));
 	}
 
-	[[nodiscard]] TxAllocation allocate_tx(const std::size_t requested) noexcept
+	[[nodiscard]] cobs::TxBlock acquire_tx(const std::size_t requested) noexcept
 	{
 		if (requested > Format::max_send_size) { return {}; }
 		const std::size_t doubled = requested * 2u + 1u;
@@ -434,10 +433,10 @@ public:
 		last_granted = capacity;
 		return {static_cast<std::byte*>(memory), capacity};
 	}
-	void deallocate_tx(std::byte* const memory, const std::size_t capacity) noexcept
+	void release_tx(const cobs::TxBlock block) noexcept
 	{
-		if (memory != nullptr) { ++frees; last_freed = capacity; }
-		::operator delete(static_cast<void*>(memory));
+		if (block.memory != nullptr) { ++frees; last_freed = block.capacity; }
+		::operator delete(static_cast<void*>(block.memory));
 	}
 
 	std::size_t allocations = 0;
@@ -448,8 +447,8 @@ public:
 
 void testReportedCapacitySurvivesTheEngine()
 {
-	g_policy = "overalloc";
-	using Engine = Cobs<OverallocPolicy>;
+	g_strategy = "overalloc";
+	using Engine = Cobs<OvergrantStorage>;
 	Engine cobs;
 	FakeTransport t;
 	bind(cobs, t);
@@ -463,12 +462,12 @@ void testReportedCapacitySurvivesTheEngine()
 	check(cobs.push(msg) == SendResult::Sent, "and pushed");
 	check(t.sent.size() == 1 && t.sent[0] == cobs_test::frame(payload, Engine::length_size),
 	      "the transport got the canonical frame");
-	check(cobs.allocator().frees == 0, "nothing is freed while the transport reads");
+	check(cobs.storage().frees == 0, "nothing is freed while the transport reads");
 
 	t.finish();
 	cobs.proceed();
-	check(cobs.allocator().frees == 1, "proceed reclaims the block");
-	check(cobs.allocator().last_freed == 21,
+	check(cobs.storage().frees == 1, "proceed reclaims the block");
+	check(cobs.storage().last_freed == 21,
 	      "returning it with the capacity the POLICY reported, not the 10 requested "
 	      "nor the 12 written");
 
@@ -483,7 +482,7 @@ void testReportedCapacitySurvivesTheEngine()
 		check(cobs.push(grown) == SendResult::Sent, "it sends");
 		t.finish();
 		cobs.proceed();
-		check(cobs.allocator().last_freed == after_growth,
+		check(cobs.storage().last_freed == after_growth,
 		      "and comes back with the GROWN capacity, not the original 9");
 	}
 }
@@ -504,9 +503,9 @@ void testReportedCapacitySurvivesTheEngine()
  */
 void testComplementaryPeers()
 {
-	g_policy = "pair";
-	using A = Cobs<CobsHeapAllocator<cobs::Format<1024, 64>>>;
-	using B = Cobs<CobsHeapAllocator<cobs::Format<64, 1024>>>;
+	g_strategy = "pair";
+	using A = Cobs<cobs::Heap<cobs::Format<1024, 64>>>;
+	using B = Cobs<cobs::Heap<cobs::Format<64, 1024>>>;
 
 	static_assert(A::length_size == 2 && B::length_size == 2,
 	              "the larger limit picks the width, so the pair agrees");
@@ -576,10 +575,10 @@ void testComplementaryPeers()
 
 void testStorageDoesNotChangeFormat()
 {
-	g_policy = "format";
+	g_strategy = "format";
 	using Wire = cobs::Format<64, 64>;
-	using HeapEngine = Cobs<CobsHeapAllocator<Wire>>;
-	using PoolEngine = Cobs<CobsFixedAllocator<Wire, 2, 1>>;
+	using HeapEngine = Cobs<cobs::Heap<Wire>>;
+	using PoolEngine = Cobs<cobs::Pool<Wire, 2, 1>>;
 
 	static_assert(std::is_same_v<typename HeapEngine::Format, Wire>);
 	static_assert(std::is_same_v<typename PoolEngine::Format, Wire>);
@@ -615,8 +614,8 @@ void testStorageDoesNotChangeFormat()
 int main()
 {
 	group("Engine");
-	runEngine<CobsHeapAllocator<cobs::Format<64, 64>>>("heap");
-	runEngine<CobsFixedAllocator<cobs::Format<64, 64>, 4, 2>>("fixed");
+	runEngine<cobs::Heap<cobs::Format<64, 64>>>("heap");
+	runEngine<cobs::Pool<cobs::Format<64, 64>, 4, 2>>("fixed");
 
 	group("FixedSpecific");
 	testFixedExhaustion();

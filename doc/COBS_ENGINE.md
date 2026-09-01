@@ -24,23 +24,23 @@ only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 
 | Question | Decision |
 | --- | --- |
-| Transport binding | delegates, bound as a PAIR by `set_transport`, so `Cobs` is templated on the allocator alone |
+| Transport binding | delegates, bound as a PAIR by `set_transport`, so `Cobs` is templated on storage alone |
 | Frame format | every engine frame is `COBS([length][body]) 00`; the length is fixed-width, little-endian, and counts only the body after it |
 | Length width | 1 byte if `max(rx_max_size, tx_max_size) <= 255`, else 2. One width per engine, both directions; peers must agree |
-| Decoder | standalone **non-template** class, no allocator, no transport |
+| Decoder | standalone **non-template** class, no storage, no transport |
 | Decoder output | SEGMENTED: `NeedOutput` may fire many times per frame, and `decoded_size` is the total across segments |
 | RX decode | two-stage — header into a local 1–2 byte buffer, then the body straight into a packet allocated at exactly the declared length |
-| RX allocation size | `allocate_rx(declared_length)`; a 20-byte frame costs 20 payload bytes on a heap policy |
+| RX acquisition size | `acquire_rx(declared_length)`; a 20-byte frame costs 20 payload bytes with `cobs::Heap` |
 | Transport gap | `DropUntilDelimiter`, absorbed entirely by COBS |
 | Bare `0x00` | synchronization / no-op, never a packet |
 | Empty packet | a frame whose declared length is 0. `01 00` — a valid COBS frame with an empty decoded body — is an INVALID ENGINE FRAME, since it carries no length field: it is counted as `length_mismatch`, NOT as `malformed`, which stays reserved for structural COBS errors |
 | Delimiter inside a block | frame discarded, decoder is immediately synchronized |
-| Oversize / allocation failure | decided by CobsRx from the DECLARED length against `rx_max_size`, never by the decoder. `DropUntilDelimiter` only when the failure is found mid-frame; the two that are found AT the delimiter — an oversize header with no body, and a refused `allocate_rx(0)` — cost a frame and no resync (§6.1.2) |
+| Oversize / allocation failure | decided by CobsRx from the DECLARED length against `rx_max_size`, never by the decoder. `DropUntilDelimiter` only when the failure is found mid-frame; the two that are found AT the delimiter — an oversize header with no body, and a refused `acquire_rx(0)` — cost a frame and no resync (§6.1.2) |
 | Ready queue | intrusive, threaded through the packets themselves |
 | RX lifetime | intrusive refcount, `PacketRef`, payload immutable after publication |
 | Refcount | plain (single execution domain); no atomic policy in v1 |
-| Allocator | a compile-time **policy** (§9) and the single source of truth for memory strategy and quotas. It names one `Format`; `Cobs<Allocator>` remains the whole engine signature. Defaults to `CobsHeapAllocator<>`; embedded targets opt into a fixed pool |
-| Protocol limits | `Allocator::Format::max_receive_size` / `max_send_size`, both BODY limits — the decoded frame is `length_size` bytes longer. Republished by `Cobs` under the same names |
+| Storage | a checked compile-time strategy (§9) and the single source of truth for memory strategy and quotas. It names one `Format`; `Cobs<StorageT>` remains the whole engine signature. Defaults to `cobs::Heap<>`; embedded targets opt into `cobs::Pool` |
+| Protocol limits | `StorageT::Format::max_receive_size` / `max_send_size`, both BODY limits — the decoded frame is `length_size` bytes longer. Republished by `Cobs` under the same names |
 | TX ownership | move-only `CobsMsg`, exclusive until the transport accepts it |
 | Transport busy before encoding | message stays `Building` |
 | `send()` failure after encoding | message stays `Encoded`, the same wire frame is retryable |
@@ -54,16 +54,16 @@ only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 ## 2. Component split
 
 ```text
-cobs::codec::Decoder            pure framing state machine
-                       no allocator, no transport, no ownership
+cobs::codec::Decoder   pure framing state machine
+                       no storage, no transport, no ownership
                        writes into a caller-supplied span
 
-Cobs<Allocator>        ownership, allocation, ready queue, TX state
+Cobs<StorageT>         ownership, acquisition, ready queue, TX state
                        thin glue over cobs::codec::Decoder; transport by delegate
 ```
 
-The split is not cosmetic. `Cobs` is templated on the allocator, so an
-application using two different allocators instantiates it twice. The decoder
+The split is not cosmetic. `Cobs` is templated on storage, so an application
+using two different strategies instantiates it twice. The decoder
 is where the subtle logic lives, and duplicating it per instantiation would
 mean duplicating the code that most needs to be reviewed and fuzzed exactly
 once. Keeping it non-template also means it can be tested with no HAL, no pool
@@ -89,8 +89,8 @@ including the half-bound states: a sender with an empty `tx_busy` is refused,
 and two empty delegates are a clean unbind. Rebinding is refused outright
 while a transfer is in flight.
 
-Because the transport is not a template parameter, `Cobs` is templated on the
-allocator alone, and one instantiation works above a UART, a TCP socket or a
+Because the transport is not a template parameter, `Cobs` is templated on
+storage alone, and one instantiation works above a UART, a TCP socket or a
 test double without being recompiled per transport. The binding also matches
 the house style: `Uart` already delivers everything through `tiny::delegate`.
 
@@ -105,7 +105,9 @@ being wrong by an order of magnitude.
 is in flight:
 
 ```cpp
-if (m_activeTx != nullptr && !tx_busy()) { release(m_activeTx); }
+if (m_activeTx.memory != nullptr && !tx_busy()) {
+    m_storage.release_tx(m_activeTx);
+}
 ```
 
 An idle link short-circuits on the null pointer and never calls it at all. On
@@ -211,7 +213,7 @@ in §4 a tight bound rather than a loose capacity estimate.
 ### 4.1 The two protocol limits
 
 There are two, one per direction, and they are stated by `cobs::Format`. The
-storage policy names that type but does not duplicate its values (§9):
+storage strategy names that type but does not duplicate its values (§9):
 
 ```text
 max_receive_size    the largest BODY this instance will receive
@@ -235,7 +237,7 @@ storage per frame, from the length prefix (§3):
 
 ```text
 RX   the declared body length N, known from the header before the body
-     arrives, so allocate_rx(N) is exact; rx_max_size is the CEILING above
+     arrives, so acquire_rx(N) is exact; rx_max_size is the CEILING above
      which a declared length is refused
 
 TX   the capacity C granted for that allocation, C <= tx_max_size
@@ -280,9 +282,9 @@ from the truth, on a layer where being one header out is the easiest mistake
 there is.
 
 ```cpp
-template<class Allocator = CobsHeapAllocator<>>
+template<class StorageT = cobs::Heap<>>
 class Cobs final {
-    using Format = typename Allocator::Format;
+    using Format = typename StorageT::Format;
     static constexpr std::size_t max_receive_size = Format::max_receive_size;
     static constexpr std::size_t max_send_size    = Format::max_send_size;
 };
@@ -298,8 +300,10 @@ configured. A pool is parameterized by the **payload capacity it offers**,
 never by its raw block size:
 
 ```cpp
+namespace cobs {
 template<class Format, std::size_t RxBlocks, std::size_t TxBlocks>
-class CobsFixedAllocator;
+class Pool;
+}
 ```
 
 A block is a packet header followed by its payload, and the header's size is
@@ -314,8 +318,9 @@ ABI, and the ABI moves only the RAM cost. The two pools are sized differently
 because they hold different things:
 
 ```text
-RX block   sizeof(RxPacket) + rx_max_size      1048 bytes on x86-64,
-                                               1036 on Cortex-M, for 1024
+RX block   sizeof(cobs::RxBlock<StorageT>)
+             + rx_max_size                     1048 bytes on x86-64,
+                                               1040 on Cortex-M, for 1024
 TX block   cobs::codec::max_wire_size(length_size
              + tx_max_size)                    1032 bytes anywhere, since
                                                it contains no C++ object
@@ -374,7 +379,7 @@ Worked values, all verified against the canonical encoder:
 ### 4.3 One template parameter
 
 ```cpp
-template<class Allocator = CobsHeapAllocator<>>
+template<class StorageT = cobs::Heap<>>
 class Cobs;
 ```
 
@@ -383,19 +388,19 @@ storage names its protocol `Format`, so there is no second engine parameter
 that can disagree with it:
 
 ```cpp
-Cobs<> cobs;                        // heap policy
-Cobs<MyAllocator> cobs;             // anybody else's storage for its Format
+Cobs<> cobs;                        // cobs::Heap with the default Format
+Cobs<MyStorage> cobs;               // custom storage for its Format
 ```
 
-The policy lives INSIDE the engine, by value (§9.4), so there is no separate
-object to hand in. A policy needing runtime arguments is constructed in place:
+Storage lives INSIDE the engine, by value (§9.4), so there is no separate
+object to hand in. Storage needing runtime arguments is constructed in place:
 
 ```cpp
-Cobs<MyAllocator> cobs{std::in_place, region_base, region_size};
+Cobs<MyStorage> cobs{std::in_place, region_base, region_size};
 ```
 
-Every component underneath refers to `Allocator::Format`; no layer
-reconstructs wire geometry from allocator constants.
+Every component underneath refers to `StorageT::Format`; no layer reconstructs
+wire geometry from storage constants.
 
 ---
 
@@ -545,7 +550,7 @@ Synced + code != 0x00
       → parse the declared length N
           N > rx_max_size  → stats.oversize++,           DropUntilDelimiter
           N == 0           → stats.length_mismatch++,    DropUntilDelimiter
-          allocate_rx(N)
+          acquire_rx(N)
               success      → attach exactly N bytes of the packet
               failure      → stats.allocation_failure++, DropUntilDelimiter
 ```
@@ -570,7 +575,7 @@ size-aware, which without a length prefix are mutually exclusive:
 frame starts
   → decode the header into 1-2 local bytes      the ONLY temporary storage
   → declared length N
-  → allocate_rx(N)                              exact, once
+  → acquire_rx(N)                              exact, once
   → decode the body straight into the packet    no staging buffer
   → delimiter
   → N == actual ? publish : free and drop
@@ -593,8 +598,8 @@ declared > rx_max_size, body began  oversize,        resync
 declared > rx_max_size, no body     oversize,        frame lost
 actual < declared                   length_mismatch, frame lost
 actual > declared                   length_mismatch, resync
-allocate_rx(N) fails, N > 0         allocation_failure, resync
-allocate_rx(0) fails                allocation_failure, frame lost
+acquire_rx(N) fails, N > 0         allocation_failure, resync
+acquire_rx(0) fails                allocation_failure, frame lost
 ```
 
 Two of those pairs are the same verdict reached at different moments, and the
@@ -620,11 +625,11 @@ A completed packet is already an allocated object, so it is its own queue
 node:
 
 ```text
-RxPacket {
+cobs::RxBlock<StorageT> {
     refs
     size
     next_ready
-    allocator ownership metadata
+    typed storage ownership metadata
     payload
 }
 
@@ -633,7 +638,7 @@ Cobs { readyHead, readyTail }
 
 No second allocation, no fixed queue capacity to overflow, no dynamic queue
 memory, O(1) push and pop. The queue length is bounded naturally by the
-number of blocks the allocator owns — which is the property a separate
+number of blocks storage owns — which is the property a separate
 container would have destroyed, by making it possible for the queue to fill
 while memory remained, or the reverse.
 
@@ -648,22 +653,22 @@ queue owns refs = 1   →   pop   →   PacketRef adopts refs = 1
 
 No increment and no decrement occurs during the pop; the reference moves.
 
-### 6.4 `PacketRef` is allocator-typed
+### 6.4 `PacketRef` is storage-typed
 
 ```cpp
-template<class Allocator> class PacketRef;
+template<class StorageT> class PacketRef;
 ```
 
 and the packet knows its owner:
 
 ```cpp
-if (--packet->refs == 0) {
-    packet->owner->deallocate(packet);
+if (--block->refs == 0) {
+    block->owner->release_rx(block);
 }
 ```
 
 No `void*` owner, no deleter function pointer stored per packet. Type-erasing
-the deallocation would amount to re-implementing `shared_ptr` inside the
+release would amount to re-implementing `shared_ptr` inside the
 packet, which is what this design exists to avoid.
 
 The refcount is a plain integer in v1. A single execution domain needs
@@ -673,7 +678,7 @@ cross-task sharing actually appears.
 ### 6.5 Immutability, stated precisely
 
 > **Decoded payload bytes are immutable after publication; ownership and
-> queue metadata (`refs`, `next_ready`, allocator bookkeeping) remain
+> queue metadata (`refs`, `next_ready`, typed storage owner) remain
 > mutable internally.**
 
 "The packet is immutable" is too strong and would eventually lead someone to
@@ -761,8 +766,8 @@ its memory. COBS manages lifetime; delivery outcome is the transport's
 business, reported through its own counters and handler.
 
 Release is polled rather than driven from the transport's completion
-callback. The callback runs in interrupt context, and deallocating there
-would require an interrupt-safe allocator for no benefit beyond one loop
+callback. The callback runs in interrupt context, and releasing there would
+require interrupt-safe storage for no benefit beyond one loop
 iteration of latency.
 
 ### 8.3 Zero-copy TX: one block, encoded in place
@@ -794,19 +799,19 @@ payload     = frame_raw + H                       what write() fills
 
 Both quantities come from the size functions of §4.2 rather than from a magic
 constant, and both are **per message**: the block is sized for the capacity
-this message was granted (§9.1.0), not for the largest the policy allows.
+this message was granted (§9.1.0), not for the largest Format allows.
 
 `CobsMsg` is a CONTAINER, and carries three numbers. Confusing any two of them
 is a bug:
 
 ```text
-capacity()   payload bytes the current block permits; granted by the policy,
-             and the number deallocate_tx() gets back
+capacity()   payload bytes the current block permits; granted by storage and
+             returned inside the same TxBlock descriptor
 size()       payload bytes actually WRITTEN; what encode() frames
 m_wire       the encoded frame length, once encode() has run
 ```
 
-`make_msg(hint)` sets `size()` to zero and asks the policy for `hint` bytes of
+`make_msg(hint)` sets `size()` to zero and asks storage for `hint` bytes of
 capacity. The hint is a hint: it spares growths, and nothing else. Bytes arrive
 through `write<T>()`, `write_bytes()` and `write_array()`, each of which grows
 the block when it has to.
@@ -821,9 +826,9 @@ make_msg(N)    the caller knows a useful number
 
 `default_capacity_hint` is **32**, and not zero, for a measured reason. A
 message built field by field from a capacity of zero walks the whole ladder
-below; on the heap policy that is 14 allocations and 453 requested bytes for a
+below; with `cobs::Heap` that is 14 allocations and 453 requested bytes for a
 100-byte payload. From 32 the same payload costs four allocations, and a
-typical short frame costs one. It is free on a single-slab policy, which
+typical short frame costs one. It is free with `cobs::Pool`, which
 reports `tx_max_size` whatever it was asked for. The value is clamped to
 `tx_max_size`, so `make_msg()` can never fail because of its own default.
 
@@ -833,7 +838,7 @@ trap with good documentation.
 ### 8.3.1 Growth
 
 Capacity grows geometrically, about 1.5x, computed by the CONTAINER — never by
-the policy (§9.1.0):
+storage (§9.1.0):
 
 ```text
 delta  = max(1, capacity >> 1)
@@ -860,8 +865,8 @@ from a capacity of 64, a 500-byte append asks for 500, not 96 then 144 then
 216. A request past `tx_max_size` is refused outright; nothing is clamped
 silently.
 
-The single-slab `CobsFixedAllocator` reports `tx_max_size` from the first
-allocation, so on that policy the growth path is reachable but never taken: a
+The single-slab `cobs::Pool` reports `tx_max_size` from the first
+acquisition, so with that strategy the growth path is reachable but never taken: a
 message can be created with no hint at all and filled to the protocol limit
 with one allocation, no reallocation and no copy.
 
@@ -870,7 +875,7 @@ only on an actual growth. Its order matters, because a failure must change
 nothing:
 
 ```text
-1. allocate the new block
+1. acquire the new block
 2. if that fails -> return false; old block, size and contents all intact
 3. copy size() payload bytes from old raw() to new raw()
 4. release the old block WITH ITS OWN capacity
@@ -1004,7 +1009,7 @@ block size    = wire_capacity
 
 The block is exactly `wire_capacity` bytes: the worst-case encoded frame for
 `H + C` decoded bytes plus its delimiter fills it precisely. Every one of these
-follows from the capacity the policy granted, never from `tx_max_size` — that
+follows from the capacity storage granted, never from `tx_max_size` — that
 is what makes a short message cheap.
 
 One consequence worth stating for tests: the header shifts every COBS block
@@ -1066,41 +1071,41 @@ Two consequences worth keeping in the document, because both are easy to
 
 ---
 
-## 9. Allocator policy
+## 9. Storage contract
 
-Memory is a **policy**: one type, one template parameter, arbitrarily many
-implementations. `Cobs` never learns whether the bytes come from a heap, a
-static pool, external SDRAM, a TLSF arena or a debug allocator that poisons
-freed blocks — it asks for RX memory, returns RX memory, asks for TX memory,
-returns TX memory. No virtuals and no runtime dispatch: the compiler welds the
-protocol to the memory at instantiation.
+Memory is a checked compile-time strategy: one type, one template parameter,
+arbitrarily many implementations. `Cobs` never learns whether bytes come from
+a heap, a static pool, external SDRAM, a TLSF arena or debug storage that
+poisons released blocks. It acquires and releases RX/TX blocks through one
+`cobs::Storage` contract. There are no virtuals and no runtime dispatch.
 
-The point of a single policy is that a user supplying their own memory writes
-**one** implementation, not a matched pair. `MyRxAllocator` plus `MyTxAllocator`
-would be two nearly identical bodies of code and two chances to get the same
-thing wrong.
+One storage type serves both directions. A custom implementation therefore
+states shared placement/configuration once while retaining independent RX and
+TX quotas.
 
 ### 9.1 The contract
 
-One protocol type, one packet type and four memory operations. That is all of
-it. Directional limits live only in `Format`.
+One protocol type, exactly `cobs::RxBlock<Storage>`, and four memory operations.
+Directional limits live only in `Format`.
 
 ```cpp
-struct SomeCobsAllocator {
+struct SomeStorage {
     using Format = cobs::Format<1024, 64>;
-    using Packet = RxPacket<SomeCobsAllocator>;
+    using RxBlock = cobs::RxBlock<SomeStorage>;
 
-    [[nodiscard]] Packet* allocate_rx(std::size_t requested_size) noexcept;
-    void deallocate_rx(Packet* packet) noexcept;
+    [[nodiscard]] RxBlock* acquire_rx(std::size_t requested_size) noexcept;
+    void release_rx(RxBlock* block) noexcept;
 
-    [[nodiscard]] TxAllocation allocate_tx(std::size_t requested_capacity) noexcept;
-    void deallocate_tx(std::byte* memory, std::size_t capacity) noexcept;
+    [[nodiscard]] cobs::TxBlock acquire_tx(std::size_t requested_capacity) noexcept;
+    void release_tx(cobs::TxBlock block) noexcept;
 };
 
-struct TxAllocation {
+struct cobs::TxBlock {
     std::byte*  memory   = nullptr;
     std::size_t capacity = 0;   // payload bytes, not physical bytes
 };
+
+static_assert(cobs::Storage<SomeStorage>);
 ```
 
 Obligations on a non-null TX allocation:
@@ -1108,52 +1113,52 @@ Obligations on a non-null TX allocation:
 ```text
 requested <= capacity <= Format::max_send_size
 the block holds at least cobs::codec::max_wire_size(length_size + capacity) bytes
-deallocate_tx() is called with exactly the capacity that was reported
+the exact returned TxBlock is later passed to release_tx()
 ```
 
 The TX obligation is **header-inclusive**: what gets encoded is
 `[length][payload]`, so a block sized for the payload alone is one or two
 bytes short and `CobsMsg::encode()` runs off the end of it. Use
 `cobs::Format::tx_storage_size_for_capacity(capacity)` rather than
-open-coding it — the shared contract test does, precisely so that a policy
+open-coding it — the shared contract test does, precisely so that storage
 written against the old formula fails there instead of in the field.
 
-Two obligations that go without saying until somebody's policy does not honour
+Two obligations that go without saying until somebody's storage does not honour
 them, and which the shared contract test therefore checks:
 
 ```text
-successful live allocations remain valid, distinct and exclusively the
-caller's until they are deallocated
-deallocation of nullptr is a no-op, not an abuse
-constructing the policy is noexcept
-requested_size <= Format::max_receive_size, and a non-null packet has storage for
+successful live blocks remain valid, distinct and exclusively the caller's
+until they are released
+releasing a null RX block or empty TxBlock is a no-op, not an abuse
+constructing storage is noexcept
+requested_size <= Format::max_receive_size, and a non-null RX block has storage for
     exactly that many payload bytes
 ```
 
-`deallocate_rx` stays pointer-only. A descriptor was NOT added for symmetry
-with TX: the RX side has nothing the caller could not already know, and a
-future segregated RX policy can keep its size class in its own block header or
-recover it from the pointer, which is a policy-private matter by §9.1.2.
+`release_rx` stays pointer-only. A second descriptor is not added merely for
+symmetry: RX has nothing the caller could not already know, and segregated RX
+storage can keep its size class in the typed block header or recover it from
+the pointer as a private implementation detail.
 
-The last one is easy to miss because it is not one of the four functions.
-`Cobs`'s constructors are unconditionally `noexcept` and construct the policy
-in place, so a policy constructor that throws reaches `std::terminate` rather
+The last one is easy to miss because it is not one of the four operations.
+`Cobs`'s constructors are unconditionally `noexcept` and construct storage in
+place, so a storage constructor that throws reaches `std::terminate` rather
 than the caller. That is consistent with a layer built entirely on `noexcept`
 plus explicit failure returns — there is nowhere for an exception to go — but
-it has to be written down, because a policy author reading only the four
+it has to be written down, because a storage author reading only the four
 function signatures would not guess it.
 
 Nothing else is in the contract — no payload span, no block count, no
 alignment, and above all **no physical block size**. Every one of those is a
-detail of some particular policy.
+detail of a particular strategy.
 
-#### 9.1.0 Why `TxAllocation` came back
+#### 9.1.0 Why `cobs::TxBlock` came back
 
 An earlier revision of this section removed the TX descriptor deliberately,
-and that was right at the time: `allocate_tx` was asked for exactly the block
+and that was right at the time: `acquire_tx` was asked for exactly the block
 one message needed, so `requested` and usable capacity were the same number
 and the struct only restated what the caller already knew. A descriptor that
-reports what the allocator *happened* to hand over physically is noise, and
+reports what storage *happened* to hand over physically is noise, and
 worse, it invites the caller to use a number that can disagree with the
 declared limit.
 
@@ -1165,24 +1170,24 @@ requested      what the container asked for this time, e.g. 100
 capacity       what THIS allocation permits, e.g. 100, or 1024
 ```
 
-The capacity is a fact the container cannot derive, because it depends on how
-the policy allocates:
+The capacity is a fact the container cannot derive, because it depends on the
+storage strategy:
 
 ```text
-Heap policy         request 100  ->  capacity 100    (exact)
-Single-slab pool    request 100  ->  capacity 1024   (the slab was paid for)
-Segregated policy   request 100  ->  capacity 128    (its matching class)
+cobs::Heap          request 100  ->  capacity 100    (exact)
+cobs::Pool          request 100  ->  capacity 1024   (the slab was paid for)
+segregated storage  request 100  ->  capacity 128    (its matching class)
 ```
 
 Without it, a pool that physically holds `tx_max_size` would reallocate and
 copy on every growth while sitting on a kilobyte of already-committed RAM. With
-it, a message on that policy is born with all the capacity it will ever need
+it, a message on that storage is born with all the capacity it will ever need
 and the growth path is simply never taken. So the descriptor is back, but it
 carries a different kind of information — *how much payload this caller may
 use* rather than *how many bytes exist* — and it is expressed in payload units,
 so alignment and padding remain invisible.
 
-#### 9.1.0.1 The container decides how much to ask for; the policy decides what to give
+#### 9.1.0.1 The container decides how much to ask for; storage decides what to give
 
 These are two separate jobs and the contract keeps them separate:
 
@@ -1190,20 +1195,20 @@ These are two separate jobs and the contract keeps them separate:
 CobsMsg      knows its current capacity and what it now needs
              -> computes the geometric target (§8.3.1) and asks once
 
-Allocator    knows how it carves memory
+Storage      knows how it carves memory
              -> answers with a block and the capacity that block permits
 ```
 
-The heap policy therefore has **no growth rule at all**: it allocates exactly
+`cobs::Heap` therefore has **no growth rule at all**: it allocates exactly
 what was requested and reports exactly that. An earlier draft had it round up
 to a power of two, which was a second growth rule living one layer below the
 first — two heuristics compounding into a sequence neither of them described.
 Removing it costs nothing, because the container was already computing a
 geometric target before it asked.
 
-That division is also what lets policies with completely different strategies —
+That division is also what lets storage with completely different strategies —
 exact, single-slab, segregated — share one `CobsMsg` with no `if constexpr`
-anywhere. It is checked directly: the test suite runs a third policy whose rule
+anywhere. It is checked directly: the test suite runs custom storage whose rule
 is `2n + 1`, and the container does not notice.
 
 ### 9.1.1 Both directions are size-aware
@@ -1241,20 +1246,19 @@ the header into a one- or two-byte local buffer, `CobsRx` reads the declared
 length, allocates exactly that, and the body decodes straight into its final
 home — one pass, no staging buffer, no copy.
 
-On the heap policy a 20-byte frame therefore costs 20 payload bytes, and a
+With `cobs::Heap`, a 20-byte frame therefore costs 20 payload bytes, and a
 seven-byte TX capacity REQUEST costs ten (`cobs::codec::max_wire_size(1 + 7)`, or
 eleven with a two-byte header) rather than the worst case of the largest frame
 allowed. A single-slab pool still spends a whole block in both directions,
-which is that policy being deterministic — exactly what an STM32 target
+which is `cobs::Pool` being deterministic — exactly what an STM32 target
 wants.
 
-`deallocate_tx` takes the capacity back for the same reason `operator
-delete(void*, size_t)` exists: the caller knows it, so a segregated policy need
-not search its pools for the pointer's owner. The number passed is the
-**capacity the policy reported for THAT block** — which a growth may have
-changed since the message was created — and not the logical size, and not the
-encoded frame length. A policy is free to ignore
-it; `CobsHeapAllocator` does, since sized `operator delete` is an ABI- and
+`release_tx` takes the whole `TxBlock` back. The capacity stays beside its
+pointer for the same reason sized deletion exists: the caller knows it, so
+segregated storage need not search its pools for the pointer's owner. It is the
+**capacity storage reported for THAT block** — which growth may have changed
+since message creation — not the logical size or encoded frame length. A
+strategy is free to ignore it; `cobs::Heap` does, since sized `operator delete` is an ABI- and
 runtime-dependent optimisation whose value belongs in a benchmark rather than
 in a contract argument.
 
@@ -1264,11 +1268,11 @@ particular bytes.
 Knowing the latter would need a pre-scan of the payload, i.e. another pass. Not
 worth it.
 
-### 9.1.2 The policy is taken at its word
+### 9.1.2 Storage is taken at its word
 
 On RX, `Cobs` never asks how much memory it actually got. The exchange is:
 
-> Your `Format` declares `max_receive_size = 1024`. If `allocate_rx(n)` returns
+> Your `Format` declares `max_receive_size = 1024`. If `acquire_rx(n)` returns
 > non-null with `n <= 1024`, you are **obliged** to have given valid storage for a packet
 > header plus `n` payload bytes. If you cannot, return null.
 
@@ -1281,7 +1285,7 @@ packet->writable_payload(n)                     // exactly the n it was allocate
 ```
 
 The TX capacity report (§9.1.0) is not an exception to this, and it is worth
-being precise about why. It is not the allocator confessing how much it
+being precise about why. It is not storage confessing how much it
 managed to supply — that number could disagree with `tx_max_size`, and a
 contract with two disagreeing truths is exactly what this rule exists to
 prevent. It is a **grant**, bounded on both sides by things already agreed:
@@ -1290,24 +1294,24 @@ prevent. It is a **grant**, bounded on both sides by things already agreed:
 requested <= capacity <= tx_max_size
 ```
 
-The caller named the floor, the policy named the ceiling, and the ceiling is
+The caller named the floor, Format named the ceiling, and the ceiling is
 the declared limit. There is one direction and no disagreement possible.
 
 A pool that physically rounds a 1024-byte packet up to 1040, or a TX block to
 the next alignment boundary, keeps that entirely to itself. The spare bytes
 are nobody's business.
 
-**An RX allocation is always ONE contiguous region, `[RxPacket][payload]`.**
-An earlier draft of this section allowed a policy to allocate the header and
-the payload separately. It should not have: `RxPacket` locates its payload as
-`this + sizeof(RxPacket)`, so a split allocation is not merely discouraged but
+**An RX allocation is always ONE contiguous region, `[cobs::RxBlock][payload]`.**
+An earlier draft of this section allowed storage to allocate the header and
+the payload separately. It should not have: `cobs::RxBlock` locates its payload as
+`this + sizeof(cobs::RxBlock)`, so a split allocation is not merely discouraged but
 impossible — it would need a second pointer in every packet, paid for by every
-packet, to serve a policy that wants to scatter one across two pieces of RAM.
-A heap policy has no difficulty honouring contiguity:
+packet, to serve storage that wants to scatter one across two pieces of RAM.
+`cobs::Heap` has no difficulty honouring contiguity:
 
 ```cpp
-void* memory = ::operator new(sizeof(Packet) + requested_size, std::nothrow);
-Packet* packet = std::construct_at(static_cast<Packet*>(memory));
+void* memory = ::operator new(sizeof(RxBlock) + requested_size, std::nothrow);
+RxBlock* block = std::construct_at(static_cast<RxBlock*>(memory));
 ```
 
 so heap and pool end up with identical geometry and differ only in where the
@@ -1316,60 +1320,60 @@ region came from.
 `CobsRx` passes `writable_payload()` the same number it allocated with, which
 is also the declared body length — so the decoder is given a segment that is
 exactly the frame's size. That is load-bearing twice over: on an exact heap
-allocation a longer span would run off the end of the block, and on any policy
+allocation a longer span would run off the end of the block, and with any storage
 a longer span would swallow an over-length frame instead of rejecting it. A
-policy that declares more than it can supply is simply broken, and the place to
-catch that is inside the policy, at compile time.
+storage that declares more than it can supply is simply broken, and the place
+to catch that is inside the strategy, at compile time.
 
 ### 9.1.3 Obligations
 
 Exhaustion is a null return, never an error code: `if (packet == nullptr)` is
 the check either way.
 
-**A policy never touches the packet's fields.** `refs`, `size`, `next_ready`
+**Storage never touches the RX block's fields.** `refs`, `size`, `next_ready`
 and `owner` are private to the RX vertical, and `owner` in particular is set by
-`CobsRx`, not by the allocator. An earlier revision had both shipped policies
+`CobsRx`, not by storage. An earlier revision had both built-in strategies
 stamp it themselves, which made it a hidden FIFTH obligation — absent from the
 signatures, absent from this list, and unverifiable by the contract test once
-the field became private. A policy written to the letter of §9 therefore
-returned a packet whose owner was null, and the first `PacketRef` release
-dereferenced it. There is now a test policy that is exactly one `Format`, one
-packet type and four functions, precisely so that this cannot come back.
+the field became private. Storage written to the letter of §9 therefore
+returned a block whose owner was null, and the first `PacketRef` release
+dereferenced it. The suite includes minimal custom storage with exactly one
+`Format`, one `RxBlock`, and four operations so this cannot return.
 
-So the policy's whole job on RX is: produce storage for
-`sizeof(Packet) + requested_size`, construct the packet in it, and hand it
+So storage's whole job on RX is: produce memory for
+`sizeof(RxBlock) + requested_size`, construct the block in it, and hand it
 back; later, destroy and reclaim. Ownership is established one layer up.
 
 Three further obligations that are easy to get wrong:
 
-- **`deallocate_rx` runs the packet's destructor.** The policy owns that,
-  because only the policy knows whether the pointer is valid at all. A
+- **`release_rx` runs the block's destructor.** Storage owns that, because
+  only it knows whether the pointer is valid at all. A
   validating pool must refuse a foreign or already-freed pointer **before**
   running any destructor on it — tearing down an object on memory that may
   belong to somebody else is worse than the leak a refusal costs.
-- **RX and TX quotas are independent.** A policy may share one backing store,
+- **RX and TX quotas are independent.** A strategy may share one backing store,
   but RX exhaustion must never starve TX. A link that cannot transmit because
   the application is holding received packets is a deadlock, not back-pressure.
-- **A rejected deallocation leaks one block; it must never corrupt the
-  allocator.** Losing a block is recoverable and countable. A corrupted free
+- **A rejected release leaks one block; it must never corrupt
+  storage.** Losing a block is recoverable and countable. A corrupted free
   list is neither.
 
 ### 9.1.4 Block counts are not part of the contract
 
 `Cobs` never asks how many blocks exist, so the generic contract does not
-mention them. How much memory a policy is willing to hand out, and by what
+mention them. How much memory a strategy is willing to hand out, and by what
 scheme, is entirely its own business:
 
 ```text
-CobsHeapAllocator     no counts at all — whatever the heap allows
-CobsFixedAllocator    RxBlockCount and TxBlockCount, its own parameters
-some SDRAM policy     a bitmap, a TLSF arena, or something stranger
+cobs::Heap     no counts at all — whatever the heap allows
+cobs::Pool    RxBlockCount and TxBlockCount, its own parameters
+some SDRAM storage    a bitmap, a TLSF arena, or something stranger
 ```
 
 Keeping counts out is what lets those live side by side under one contract.
 
-That said, a policy that HAS counts has to be sized, and this is the rule for
-`CobsFixedAllocator`:
+That said, storage that HAS counts has to be sized, and this is the rule for
+`cobs::Pool`:
 
 > `TxBlocks` must cover the maximum number of TX blocks simultaneously owned
 > anywhere in the pipeline: non-empty `CobsMsg` objects held by the application
@@ -1392,7 +1396,7 @@ own mystery.
 
 ### 9.2 Protocol and memory each have one source of truth
 
-`Format` owns protocol geometry. The policy owns only memory strategy and
+`Format` owns protocol geometry. Storage owns only memory strategy and
 quotas, and names the format it serves:
 
 ```text
@@ -1402,18 +1406,18 @@ cobs::Format<Rx, Tx>
 ├── length_size / LengthType
 └── checked framing geometry
 
-CobsAllocatorPolicy
+Storage
 ├── using Format = ...
 ├── RX strategy / quota
 ├── TX strategy / quota
-├── allocate_rx(n)  / deallocate_rx()
-└── allocate_tx()   / deallocate_tx()
+├── acquire_rx(n)  / release_rx()
+└── acquire_tx()   / release_tx()
 ```
 
-`Cobs` reads those numbers from `Allocator::Format` and never reconstructs
+`Cobs` reads those numbers from `StorageT::Format` and never reconstructs
 them. It republishes them under `max_receive_size` and `max_send_size` (§4.1).
 
-The default is **`CobsHeapAllocator`**, as `UART_COBS_ARCHITECTURE.md` §1 has
+The default is **`cobs::Heap`**, as `UART_COBS_ARCHITECTURE.md` §1 has
 said from the start, which makes the common spelling `Cobs<>`. It is
 parameterized rather than unbounded, because "no limit" is not available to
 us: the length field is itself fixed-width, so the largest frame the format can
@@ -1423,9 +1427,9 @@ which a declared length is refused.
 
 ```cpp
 template<class Format = cobs::Format<1024, 1024>>
-class CobsHeapAllocator;
+class cobs::Heap;
 
-template<class Allocator = CobsHeapAllocator<>>
+template<class StorageT = cobs::Heap<>>
 class Cobs;
 ```
 
@@ -1434,74 +1438,74 @@ line:
 
 ```cpp
 using Wire = cobs::Format<4096, 512>;
-Cobs<CobsHeapAllocator<Wire>> cobs;
+Cobs<cobs::Heap<Wire>> cobs;
 ```
  A fixed pool
 default would look more embedded-minded and be worse: it would force the
 library to invent a block count on the user's behalf, and every `Cobs` object
 would then carry that fixed quota whatever its workload. A target where
-`malloc` is unwelcome is exactly a target whose author chooses the policy
+`malloc` is unwelcome is exactly a target whose author chooses storage
 deliberately:
 
 ```cpp
 using Wire = cobs::Format<1024, 1024>;
-using Allocator = CobsFixedAllocator<Wire, /* RX blocks */ 8, /* TX blocks */ 2>;
-Cobs<Allocator> cobs;
+using Memory = cobs::Pool<Wire, /* RX blocks */ 8, /* TX blocks */ 2>;
+Cobs<Memory> cobs;
 ```
 
 RX and TX limits are separate on purpose. A device that receives 1 KB commands
 and replies with 64-byte acknowledgements should be able to say so, rather
 than paying for the larger number twice.
 
-### 9.3 What the policy must not contain
+### 9.3 What storage must not contain
 
 ```text
-Cobs<Allocator>
+Cobs<StorageT>
         |                    |
      protocol             memory
         |                    |
-  decoder / encoder     allocate / deallocate
+  decoder / encoder     acquire / release
   RX and TX state       strategy and quotas
   ready queue           anything: heap, pool, SDRAM, external region
   PacketRef / CobsMsg
 ```
 
-A policy that starts to know about encoding, decoder state, the ready queue or
-`PacketRef` behaviour has stopped being a memory policy. Keeping it dumb is
-what makes "write your own allocator" a small job rather than a diploma in
+A storage strategy that starts to know about encoding, decoder state, the ready
+queue or `PacketRef` behaviour has stopped being storage. Keeping it focused is
+what makes "write your own storage" a small job rather than a diploma in
 metaprogramming.
 
-### 9.4 `Cobs` owns the policy by value
+### 9.4 `Cobs` owns storage by value
 
 ```cpp
-template<class Allocator = CobsHeapAllocator<>>
+template<class StorageT = cobs::Heap<>>
 class Cobs final {
-    [[no_unique_address]] Allocator m_allocator{};
+    [[no_unique_address]] StorageT m_storage{};
 };
 ```
 
 By value, so that `Cobs<> cobs;` works with no ceremony, a stateless heap
-policy costs nothing (`[[no_unique_address]]`), and a `CobsFixedAllocator` can
+strategy costs nothing (`[[no_unique_address]]`), and a `cobs::Pool` can
 simply contain its RX and TX pools.
 
 **`Cobs` is therefore neither copyable nor movable.** That is not tidiness:
-`PacketRef` holds a pointer to the allocator living inside the `Cobs` object,
+`PacketRef` holds a pointer to storage living inside the `Cobs` object,
 so moving one would turn every outstanding packet's owner pointer into a
 souvenir of a previous life.
 
-A policy needing runtime arguments is constructed in place from them, so it
+Storage needing runtime arguments is constructed in place, so it
 need not be copyable or movable at all:
 
 ```cpp
-Cobs<MyAllocator> cobs{std::in_place, region_base, region_size};
+Cobs<MyStorage> cobs{std::in_place, region_base, region_size};
 ```
 
-There is deliberately no constructor taking a ready-made policy object. It
+There is deliberately no constructor taking a ready-made storage object. It
 would only serve copyable ones, and one way in is enough.
 
 This also corrects an argument made earlier in review. It is **not** true that
-a fixed policy forces the whole `Cobs` object into DMA-accessible RAM. That
-follows only if the policy stores its TX blocks inside itself; a policy holding
+a fixed strategy forces the whole `Cobs` object into DMA-accessible RAM. That
+follows only if storage keeps its TX blocks inside itself; storage holding
 pointers or spans into external RX/TX regions leaves `Cobs` placeable
 anywhere, and only the **TX region** must be DMA-visible — the transport reads
 it directly, unlike the RX pool, which only the CPU ever writes.
@@ -1509,8 +1513,8 @@ it directly, unlike the RX pool, which only the CPU ever writes.
 ### 9.5 Transport is not part of it
 
 The transport is bound separately (§2.1) and never travels through the
-allocator: memory and byte movement are unrelated concerns, and coupling them
-would mean a new allocator for every transport.
+storage: memory and byte movement are unrelated concerns, and coupling them
+would mean new storage for every transport.
 
 ---
 
@@ -1533,7 +1537,7 @@ malformed          a structural COBS error — a delimiter inside a data block
 oversize           a declared length above rx_max_size
 length_mismatch    a header that is absent or truncated, or a body whose
                    actual length disagrees with what the frame declared
-allocation_failure the policy refused a packet AFTER a valid length
+allocation_failure storage refused an RX block AFTER a valid length
 frames_lost        every frame that did not reach the queue, whatever the cause
 resyncs            only the failures found BEFORE the delimiter, which leave
                    the rest of a frame in the stream to be skipped

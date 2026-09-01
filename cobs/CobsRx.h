@@ -3,7 +3,7 @@
  *
  * Contract: doc/COBS_ENGINE.md §5–§7. Everything hard already lives one layer
  * down; this is the glue that answers the decoder's NeedOutput from an
- * allocator, threads completed packets onto the intrusive ready queue, and
+ * storage, threads completed blocks onto the intrusive ready queue, and
  * hands their references to the application.
  *
  * The ownership invariant of the whole normal path (§6.3):
@@ -29,7 +29,6 @@
 
 #include "Codec.h"
 #include "Format.h"
-#include "CobsHeapAllocator.h"
 #include "PacketRef.h"
 #include "Storage.h"
 
@@ -39,36 +38,36 @@
 #include <span>
 
 // One template parameter, per the frozen contract (COBS_ENGINE.md §4.3): the
-// policy names one Format, so a separate geometry parameter could only
+// storage names one Format, so a separate geometry parameter could only
 // disagree with it.
 //
-// This is the RX half on its own, taking the policy by reference. The
-// assembled Cobs owns its policy by value (§9.4) and wraps this; an
+// This is the RX half on its own, taking storage by reference. The assembled
+// Cobs owns storage by value (§9.4) and wraps this; an
 // application normally uses Cobs rather than instantiating CobsRx directly.
-template<class Allocator = CobsHeapAllocator<>>
+template<class StorageT = cobs::Heap<>>
 class CobsRx final {
-	static_assert(cobs::Storage<Allocator>,
-		"CobsRx allocator must satisfy the cobs::Storage contract");
+	static_assert(cobs::Storage<StorageT>,
+		"CobsRx storage must satisfy the cobs::Storage contract");
 
 public:
-	// Exposed so a user taking the default can still name the policy they must
+	// Exposed so a user taking the default can still name the storage they must
 	// construct — without it the default would save nothing:
-	//     CobsRx<>::AllocatorType allocator;
-	//     CobsRx<> rx(allocator);
-	using AllocatorType = Allocator;
-	using Packet = typename Allocator::Packet;
-	using Ref = PacketRef<Allocator>;
-	using Format = typename Allocator::Format;
+	//     CobsRx<>::StorageType storage;
+	//     CobsRx<> rx(storage);
+	using StorageType = StorageT;
+	using Block = typename StorageT::RxBlock;
+	using Ref = PacketRef<StorageT>;
+	using Format = typename StorageT::Format;
 
 	/*
-	 * The largest BODY this instance accepts, from the policy (§9.2). Not the
+	 * The largest BODY this instance accepts, from Format (§9.2). Not the
 	 * largest decoded frame — that is length_size bytes more, which is why
 	 * this is no longer called max_decoded_size: that name was one header away
 	 * from the truth, on a layer where being one header out is the easiest
 	 * mistake there is.
 	 */
 	static constexpr std::size_t max_receive_size = Format::max_receive_size;
-	static_assert(max_receive_size <= UINT16_MAX, "RxPacket::size is a uint16_t");
+	static_assert(max_receive_size <= UINT16_MAX, "RxBlock::size is a uint16_t");
 
 	static constexpr std::size_t length_size = Format::length_size;
 
@@ -82,7 +81,7 @@ public:
 		uint32_t resyncs            = 0; // times we had to hunt for a delimiter
 	};
 
-	explicit CobsRx(Allocator& allocator) noexcept : m_allocator(allocator) {}
+	explicit CobsRx(StorageT& storage) noexcept : m_storage(storage) {}
 
 	// Owns references, so it must not be copied.
 	CobsRx(const CobsRx&) = delete;
@@ -91,12 +90,12 @@ public:
 	~CobsRx()
 	{
 		if (m_building != nullptr) {
-			m_allocator.deallocate_rx(m_building);
+			m_storage.release_rx(m_building);
 		}
 		// Release each queued reference through the same path a PacketRef
 		// uses, rather than duplicating the count logic here.
 		while (m_readyHead != nullptr) {
-			Packet* const p = m_readyHead;
+			Block* const p = m_readyHead;
 			m_readyHead = p->next_ready;
 			p->next_ready = nullptr;
 			(void)Ref::adopt(p); // the temporary's destructor releases it
@@ -154,7 +153,7 @@ public:
 
 	[[nodiscard]] Ref pop_packet() noexcept
 	{
-		Packet* const p = m_readyHead;
+		Block* const p = m_readyHead;
 		if (p == nullptr) {
 			return Ref{};
 		}
@@ -176,7 +175,7 @@ private:
 	 * only then — knowing exactly how many body bytes are coming — is a packet
 	 * allocated and the decoder pointed straight at its final home.
 	 *
-	 *     Header  ->  parse N  ->  allocate_rx(N)  ->  Body  ->  publish
+	 *     Header  ->  parse N  ->  acquire_rx(N)  ->  Body  ->  publish
 	 *
 	 * There is no staging buffer for the payload and no copy after allocation.
 	 * The only temporary decoded storage in the whole RX path is the one or
@@ -208,25 +207,25 @@ private:
 	/*
 	 * The only place a packet is allocated, and the only place `owner` is set.
 	 *
-	 * The policy does NOT stamp it, deliberately. §9 says a policy is two
-	 * Format, Packet and four functions; if it also had to write a private field of
+	 * Storage does NOT stamp it, deliberately. §9 says storage names Format
+	 * and RxBlock and provides four operations; if it also had to write a private field of
 	 * a type it merely allocates storage for, that would be a hidden fifth
 	 * obligation, invisible in the signatures and impossible for the contract
-	 * test to check now that the field is private. A policy written to the
+	 * test to check now that the field is private. Storage written to the
 	 * letter of the contract would then hand back a packet whose owner is
 	 * null, and the first PacketRef release would dereference it.
 	 *
 	 * So the RX vertical establishes ownership, which is also where it
-	 * belongs: the allocator supplies memory and takes it back, and nothing
+	 * belongs: storage supplies memory and takes it back, and nothing
 	 * else.
 	 */
-	[[nodiscard]] Packet* allocate_packet(const std::size_t size) noexcept
+	[[nodiscard]] Block* acquire_block(const std::size_t size) noexcept
 	{
-		Packet* const packet = m_allocator.allocate_rx(size);
-		if (packet != nullptr) {
-			packet->owner = &m_allocator;
+		Block* const block = m_storage.acquire_rx(size);
+		if (block != nullptr) {
+			block->owner = &m_storage;
 		}
-		return packet;
+		return block;
 	}
 
 	// Turns a complete header into an allocated packet, or refuses the frame.
@@ -247,19 +246,19 @@ private:
 			return;
 		}
 
-		Packet* const packet = allocate_packet(declared);
-		if (packet == nullptr) {
+		Block* const block = acquire_block(declared);
+		if (block == nullptr) {
 			++m_stats.allocation_failure;
 			abandonFrame();
 			return;
 		}
-		m_building = packet;
+		m_building = block;
 		m_declared = declared;
 		m_stage = Stage::Body;
 		// EXACTLY the declared length, never rx_max_size: the block may be
 		// that small, and a longer span would both overrun it and hide an
 		// over-length frame that has to be rejected.
-		m_decoder.attach_output(packet->writable_payload(declared));
+		m_decoder.attach_output(block->writable_payload(declared));
 	}
 
 	void onFrameComplete(const std::size_t decoded_size) noexcept
@@ -289,13 +288,13 @@ private:
 				return;
 			}
 			// A legitimately empty application packet.
-			Packet* const packet = allocate_packet(0);
-			if (packet == nullptr) {
+			Block* const block = acquire_block(0);
+			if (block == nullptr) {
 				++m_stats.allocation_failure;
 				endFrame(true);
 				return;
 			}
-			m_building = packet;
+			m_building = block;
 			publish(0);
 			return;
 		}
@@ -361,7 +360,7 @@ private:
 	void releaseBuilding() noexcept
 	{
 		if (m_building != nullptr) {
-			m_allocator.deallocate_rx(m_building);
+			m_storage.release_rx(m_building);
 			m_building = nullptr;
 		}
 	}
@@ -374,16 +373,16 @@ private:
 	}
 
 	cobs::codec::Decoder m_decoder{};
-	Allocator&  m_allocator;
+	StorageT& m_storage;
 
 	std::array<uint8_t, Format::length_size> m_lengthBytes{};
 	std::size_t m_declared = 0;
 	Stage m_stage = Stage::Header;
 	bool  m_headerAttached = false;
 
-	Packet* m_building  = nullptr;
-	Packet* m_readyHead = nullptr;
-	Packet* m_readyTail = nullptr;
+	Block* m_building  = nullptr;
+	Block* m_readyHead = nullptr;
+	Block* m_readyTail = nullptr;
 	Stats   m_stats{};
 };
 

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Every currently supported COBS header must compile as the first and only
 # project include in a translation unit. This catches accidental dependence on
-# include order before the namespace/file migration starts.
+# include order across the staged namespace/file migration.
 
 set -e
 
@@ -12,17 +12,13 @@ CXX="${CXX:-g++}"
 WARN="-Wall -Wextra -Wpedantic -Wshadow -Wconversion"
 
 HEADERS="
-Cobs.h
-Codec.h
-CobsFixedAllocator.h
-Format.h
-CobsHeapAllocator.h
-CobsMsg.h
-CobsRx.h
-PacketRef.h
-RxPacket.h
-Storage.h
-TxAllocation.h
+ Cobs.h
+ Codec.h
+ Format.h
+ CobsMsg.h
+ CobsRx.h
+ PacketRef.h
+ Storage.h
 "
 
 count=0

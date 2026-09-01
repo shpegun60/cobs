@@ -1,53 +1,290 @@
 /*
- * Checked storage contract during the staged vocabulary migration.
+ * cobs storage extension surface.
  *
- * This concept deliberately describes the allocator-policy interface that the
- * current engine already uses. It adds one compile-time definition and useful
- * diagnostics without changing allocation, ownership, or wire behaviour.
+ * This header exports every type needed to provide memory to the engine:
  *
- * Format is already the sole source of protocol geometry. The remaining
- * migration described in doc/COBS_REFACTOR_PLAN.md replaces Packet and
- * TxAllocation vocabulary and then moves allocate/deallocate to
- * acquire/release. Keeping those ownership changes separate makes this
- * checked current contract a guardrail rather than a compatibility facade.
+ *     Format<Rx, Tx>          protocol geometry
+ *     RxBlock<Storage>        typed receive ownership block
+ *     TxBlock                 transmit ownership descriptor
+ *     Storage                 checked C++20 contract
+ *     Heap / Pool             built-in strategies
+ *
+ * Protocol and memory stay separate. A storage implementation names one
+ * Format, but never duplicates its limits. RX and TX remain intentionally
+ * asymmetric: RX returns a constructed typed block followed by payload bytes;
+ * TX returns raw memory together with the exact payload capacity that must
+ * travel with it until release.
  */
 
 #ifndef COBS_STORAGE_H_
 #define COBS_STORAGE_H_
 
+#include "Codec.h"
 #include "Format.h"
-#include "TxAllocation.h"
+#include "detail/StaticBlockPool.h"
 
 #include <concepts>
 #include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <new>
+#include <span>
+
+// These two current coordinator/handle types are migrated in later slices.
+// Forward declarations keep RxBlock's friendship typed without exposing its
+// metadata or introducing a void owner/deleter callback.
+template<class StorageT>
+class CobsRx;
+
+template<class StorageT>
+class PacketRef;
 
 namespace cobs {
 
+/*
+ * One TX ownership record. `capacity` is expressed in application payload
+ * bytes, not raw allocation bytes. Storage promises that `memory` holds at
+ * least Format::tx_storage_size_for_capacity(capacity) bytes.
+ *
+ * The descriptor moves as a unit from Storage to Message to Endpoint and back
+ * to Storage. A release boundary that can lose the reported capacity is no
+ * longer expressible.
+ */
+struct TxBlock final {
+	std::byte*  memory   = nullptr;
+	std::size_t capacity = 0;
+};
+
+/*
+ * A decoded frame header followed immediately by its payload in the same
+ * allocation. Application code only gets the immutable data() view; the
+ * receiver owns decoded size and queue linkage, while PacketRef owns reference
+ * arithmetic. Storage constructs and destroys the block but does not mutate
+ * its lifetime metadata.
+ */
+template<class StorageT>
+struct RxBlock final {
+	friend class ::CobsRx<StorageT>;
+	friend class ::PacketRef<StorageT>;
+
+	[[nodiscard]] std::span<const uint8_t> data() const noexcept
+	{
+		return {payload(), size};
+	}
+
+private:
+	uint32_t refs = 1;
+	uint16_t size = 0;
+	RxBlock* next_ready = nullptr;
+	StorageT* owner = nullptr;
+
+	[[nodiscard]] std::span<uint8_t> writable_payload(
+		const std::size_t allocated) noexcept
+	{
+		return {payload(), allocated};
+	}
+
+	[[nodiscard]] uint8_t* payload() noexcept
+	{
+		return reinterpret_cast<uint8_t*>(this) + sizeof(RxBlock);
+	}
+
+	[[nodiscard]] const uint8_t* payload() const noexcept
+	{
+		return reinterpret_cast<const uint8_t*>(this) + sizeof(RxBlock);
+	}
+};
+
+/*
+ * Syntax and exception contract for a COBS memory strategy. Behavioural
+ * obligations (bounds, non-overlap, exact release, independent quotas and
+ * exhaustion) are verified by the shared storage conformance suite.
+ */
 template<class T>
 concept Storage = requires(
 	T& storage,
 	const std::size_t size,
-	typename T::Packet* packet,
-	std::byte* memory)
+	typename T::RxBlock* rx,
+	TxBlock tx)
 {
-	typename T::Packet;
 	typename T::Format;
+	typename T::RxBlock;
+	requires std::same_as<typename T::RxBlock, cobs::RxBlock<T>>;
 
 	{ T::Format::max_receive_size } -> std::convertible_to<std::size_t>;
 	{ T::Format::max_send_size } -> std::convertible_to<std::size_t>;
 
-	{ storage.allocate_rx(size) }
-		noexcept -> std::same_as<typename T::Packet*>;
+	{ storage.acquire_rx(size) }
+		noexcept -> std::same_as<typename T::RxBlock*>;
 
-	{ storage.deallocate_rx(packet) }
+	{ storage.release_rx(rx) }
 		noexcept -> std::same_as<void>;
 
-	{ storage.allocate_tx(size) }
-		noexcept -> std::same_as<TxAllocation>;
+	{ storage.acquire_tx(size) }
+		noexcept -> std::same_as<TxBlock>;
 
-	{ storage.deallocate_tx(memory, size) }
+	{ storage.release_tx(tx) }
 		noexcept -> std::same_as<void>;
 };
+
+/*
+ * Dynamic strategy. RX allocations are exact; TX reports exactly the
+ * requested payload capacity. The type is stateless and remains the default
+ * storage for Endpoint/Cobs.
+ */
+template<class WireFormat = Format<1024, 1024>>
+class Heap final {
+public:
+	using Format = WireFormat;
+	using RxBlock = cobs::RxBlock<Heap>;
+
+	static_assert(cobs::codec::size_arithmetic_fits(Format::max_send_size),
+		"max_send_size is too large for COBS size arithmetic");
+	static_assert(Format::max_receive_size <=
+		static_cast<std::size_t>(-1) - sizeof(RxBlock),
+		"max_receive_size plus an RX block header overflows size_t");
+
+	Heap() noexcept = default;
+	Heap(const Heap&) = delete;
+	Heap& operator=(const Heap&) = delete;
+
+	[[nodiscard]] RxBlock* acquire_rx(
+		const std::size_t requested_size) noexcept
+	{
+		if (requested_size > Format::max_receive_size) {
+			return nullptr;
+		}
+		void* const memory =
+			::operator new(sizeof(RxBlock) + requested_size, std::nothrow);
+		if (memory == nullptr) {
+			return nullptr;
+		}
+		return std::construct_at(static_cast<RxBlock*>(memory));
+	}
+
+	void release_rx(RxBlock* const block) noexcept
+	{
+		if (block == nullptr) {
+			return;
+		}
+		std::destroy_at(block);
+		::operator delete(static_cast<void*>(block));
+	}
+
+	[[nodiscard]] TxBlock acquire_tx(const std::size_t requested) noexcept
+	{
+		if (requested > Format::max_send_size) {
+			return {};
+		}
+		void* const memory =
+			::operator new(Format::tx_storage_size_for_capacity(requested),
+			               std::nothrow);
+		if (memory == nullptr) {
+			return {};
+		}
+		return {static_cast<std::byte*>(memory), requested};
+	}
+
+	void release_tx(const TxBlock block) noexcept
+	{
+		::operator delete(static_cast<void*>(block.memory));
+	}
+};
+
+/*
+ * Deterministic strategy. RX and TX use independent fixed pools, preserving
+ * independent quotas and failure accounting. Every successful TX acquisition
+ * reports the full slab capacity because that capacity is already paid for.
+ */
+template<class WireFormat, std::size_t RxBlocks, std::size_t TxBlocks>
+class Pool final {
+public:
+	using Format = WireFormat;
+	using RxBlock = cobs::RxBlock<Pool>;
+
+	static constexpr std::size_t rx_blocks = RxBlocks;
+	static constexpr std::size_t tx_blocks = TxBlocks;
+
+	static_assert(cobs::codec::size_arithmetic_fits(Format::max_send_size),
+		"max_send_size is too large for COBS size arithmetic");
+	static_assert(Format::max_receive_size <=
+		static_cast<std::size_t>(-1) - sizeof(RxBlock),
+		"max_receive_size plus an RX block header overflows size_t");
+
+private:
+	using RxPool = cobs_detail::StaticBlockPool<
+		sizeof(RxBlock) + Format::max_receive_size,
+		RxBlocks,
+		alignof(RxBlock)>;
+	using TxPool = cobs_detail::StaticBlockPool<
+		Format::tx_storage_size_for_capacity(Format::max_send_size),
+		TxBlocks,
+		1>;
+
+public:
+	static_assert(RxPool::block_size >=
+		sizeof(RxBlock) + Format::max_receive_size,
+		"the RX pool cannot hold its block header and maximum payload");
+	static_assert(TxPool::block_size >=
+		Format::tx_storage_size_for_capacity(Format::max_send_size),
+		"the TX pool cannot hold its maximum wire frame");
+
+	using Stats = cobs_detail::PoolStats;
+
+	Pool() noexcept = default;
+	Pool(const Pool&) = delete;
+	Pool& operator=(const Pool&) = delete;
+
+	[[nodiscard]] RxBlock* acquire_rx(
+		const std::size_t requested_size) noexcept
+	{
+		if (requested_size > Format::max_receive_size) {
+			return nullptr;
+		}
+		std::byte* const memory = m_rx.allocate();
+		if (memory == nullptr) {
+			return nullptr;
+		}
+		return std::construct_at(reinterpret_cast<RxBlock*>(memory));
+	}
+
+	void release_rx(RxBlock* const block) noexcept
+	{
+		(void)m_rx.release(reinterpret_cast<std::byte*>(block),
+			[](std::byte* const memory) noexcept {
+				std::destroy_at(reinterpret_cast<RxBlock*>(memory));
+			});
+	}
+
+	[[nodiscard]] TxBlock acquire_tx(const std::size_t requested) noexcept
+	{
+		if (requested > Format::max_send_size) {
+			return {};
+		}
+		std::byte* const memory = m_tx.allocate();
+		if (memory == nullptr) {
+			return {};
+		}
+		return {memory, Format::max_send_size};
+	}
+
+	void release_tx(const TxBlock block) noexcept
+	{
+		m_tx.deallocate(block.memory);
+	}
+
+	[[nodiscard]] std::size_t rx_available() const noexcept { return m_rx.available(); }
+	[[nodiscard]] std::size_t tx_available() const noexcept { return m_tx.available(); }
+	[[nodiscard]] const Stats& rx_stats() const noexcept { return m_rx.stats(); }
+	[[nodiscard]] const Stats& tx_stats() const noexcept { return m_tx.stats(); }
+
+private:
+	RxPool m_rx{};
+	TxPool m_tx{};
+};
+
+static_assert(Storage<Heap<>>);
+static_assert(Storage<Pool<Format<64, 64>, 1, 1>>);
 
 } // namespace cobs
 

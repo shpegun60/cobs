@@ -34,7 +34,7 @@ rm -f "$OUT/.sancheck" "$OUT/.sancheck.exe"
 # One binary per layer, so a failure names the layer without a stack trace:
 #   test_decoder         framing only
 #   test_block_pool      detail::StaticBlockPool, the raw memory primitive
-#   test_allocators      the policy contract, run against BOTH policies
+#   test_storage         the storage contract, run against BOTH strategies
 #   test_cobs_rx         the assembled RX vertical, end to end
 #   test_encoder         canonical in-place encoding over its own payload
 #   test_cobs_msg        TX block ownership and geometry, no transport
@@ -49,7 +49,7 @@ build() {
 
 build test_decoder         "$COBS/Decoder.cpp" "$HERE/test_decoder.cpp"
 build test_block_pool      "$HERE/test_block_pool.cpp"
-build test_allocators      "$HERE/test_allocators.cpp"
+build test_storage         "$HERE/test_storage.cpp"
 build test_cobs_rx         "$COBS/Decoder.cpp" "$HERE/test_cobs_rx.cpp"
 build test_encoder         "$COBS/Decoder.cpp" "$COBS/Encoder.cpp" "$HERE/test_encoder.cpp"
 build test_cobs_msg        "$COBS/Encoder.cpp" "$HERE/test_cobs_msg.cpp"
@@ -63,11 +63,11 @@ build test_layout          "$HERE/test_layout.cpp"
 # debugging aid with good manners. COBS_POOL_CHECKS now defaults to on
 # regardless, and these two prove it rather than assuming it.
 build test_block_pool_ndebug -DNDEBUG "$HERE/test_block_pool.cpp"
-build test_allocators_ndebug -DNDEBUG "$HERE/test_allocators.cpp"
+build test_storage_ndebug -DNDEBUG "$HERE/test_storage.cpp"
 
 "$OUT/test_decoder.exe"
 "$OUT/test_block_pool.exe"
-"$OUT/test_allocators.exe"
+"$OUT/test_storage.exe"
 "$OUT/test_cobs_rx.exe"
 "$OUT/test_encoder.exe"
 "$OUT/test_cobs_msg.exe"
@@ -76,4 +76,4 @@ build test_allocators_ndebug -DNDEBUG "$HERE/test_allocators.cpp"
 
 echo "=== the same guarantees, built with -DNDEBUG ==="
 "$OUT/test_block_pool_ndebug.exe"
-"$OUT/test_allocators_ndebug.exe"
+"$OUT/test_storage_ndebug.exe"

@@ -2,8 +2,8 @@
  * PacketRef — the application's handle on a decoded RX packet.
  *
  * Contract: doc/COBS_ENGINE.md §6.3–§6.5. An intrusive shared handle: the
- * count lives inside the packet, the deallocation goes through the allocator
- * the packet already names, and the whole thing is typed on the allocator at
+ * count lives inside the block, release goes through the storage instance
+ * the block already names, and the whole thing is typed on that storage at
  * compile time. There is deliberately no void* owner and no deleter function
  * pointer, because storing those would be re-implementing shared_ptr inside
  * the packet — which is the thing this design exists to avoid.
@@ -19,20 +19,20 @@
 #ifndef COBS_PACKET_REF_H_
 #define COBS_PACKET_REF_H_
 
-#include "RxPacket.h"
+#include "Storage.h"
 
 #include <cstddef>
 #include <span>
 #include <utility>
 
 // The only legitimate source of packet references.
-template<class Allocator>
+template<class StorageT>
 class CobsRx;
 
-template<class Allocator>
+template<class StorageT>
 class PacketRef final {
 	// adopt() and the raw pointer are deliberately NOT public. With both
-	// `adopt(Packet*)` and a public `get()`, an application could write
+	// `adopt(Block*)` and a public `get()`, an application could write
 	//
 	//     PacketRef b = PacketRef::adopt(a.get());
 	//
@@ -43,7 +43,7 @@ class PacketRef final {
 	friend class CobsRx;
 
 public:
-	using Packet = RxPacket<Allocator>;
+	using Block = typename StorageT::RxBlock;
 
 	PacketRef() noexcept = default;
 	~PacketRef() { release(); }
@@ -104,7 +104,7 @@ private:
 	// held by the ready queue becomes the one held here (§6.3). Named, never
 	// implicit, and reachable only by the owner that legitimately has a
 	// reference to hand over.
-	[[nodiscard]] static PacketRef adopt(Packet* const p) noexcept
+	[[nodiscard]] static PacketRef adopt(Block* const p) noexcept
 	{
 		PacketRef r;
 		r.m_p = p;
@@ -114,11 +114,11 @@ private:
 	void release() noexcept
 	{
 		if (m_p != nullptr && --m_p->refs == 0u) {
-			m_p->owner->deallocate_rx(m_p);
+			m_p->owner->release_rx(m_p);
 		}
 	}
 
-	Packet* m_p = nullptr;
+	Block* m_p = nullptr;
 };
 
 #endif /* COBS_PACKET_REF_H_ */

@@ -7,13 +7,10 @@
  */
 
 #include "Cobs.h"
-#include "CobsFixedAllocator.h"
-#include "CobsHeapAllocator.h"
 #include "CobsMsg.h"
 #include "CobsRx.h"
 #include "PacketRef.h"
-#include "RxPacket.h"
-#include "TxAllocation.h"
+#include "Storage.h"
 #include "detail/StaticBlockPool.h"
 
 #include <cstddef>
@@ -22,15 +19,15 @@
 
 namespace {
 
-using Heap = CobsHeapAllocator<cobs::Format<1024, 1024>>;
-using Fixed = CobsFixedAllocator<cobs::Format<1024, 1024>, 8, 2>;
-using Packet = RxPacket<Heap>;
+using Heap = cobs::Heap<cobs::Format<1024, 1024>>;
+using Pool = cobs::Pool<cobs::Format<1024, 1024>, 8, 2>;
+using Block = cobs::RxBlock<Heap>;
 using Ref = PacketRef<Heap>;
 using Message = CobsMsg<Heap>;
 using Decoder = cobs::codec::Decoder;
 using Receiver = CobsRx<Heap>;
 using Endpoint = Cobs<Heap>;
-using FixedEndpoint = Cobs<Fixed>;
+using PoolEndpoint = Cobs<Pool>;
 using Sender = typename Endpoint::Sender;
 using BusyQuery = typename Endpoint::TxBusy;
 using RxStats = typename Receiver::Stats;
@@ -39,8 +36,8 @@ using PoolStats = cobs_detail::PoolStats;
 
 static_assert(sizeof(Ref) == sizeof(void*),
 	"a PacketRef is exactly one typed pointer");
-static_assert(sizeof(TxAllocation) == sizeof(std::byte*) + sizeof(std::size_t),
-	"the transitional TX descriptor is pointer plus capacity");
+static_assert(sizeof(cobs::TxBlock) == sizeof(std::byte*) + sizeof(std::size_t),
+	"TxBlock is exactly one pointer plus its reported capacity");
 static_assert(sizeof(Heap) == 1,
 	"the stateless heap policy must remain eligible for no_unique_address");
 
@@ -48,32 +45,32 @@ static_assert(sizeof(Heap) == 1,
 	static_assert(sizeof(Type) == (Expected), #Type " layout changed; review ownership and padding")
 
 #if INTPTR_MAX == INT64_MAX
-COBS_EXPECT_SIZE(TxAllocation, 16);
-COBS_EXPECT_SIZE(Packet, 24);
+COBS_EXPECT_SIZE(cobs::TxBlock, 16);
+COBS_EXPECT_SIZE(Block, 24);
 COBS_EXPECT_SIZE(Ref, 8);
 COBS_EXPECT_SIZE(Message, 48);
 COBS_EXPECT_SIZE(Decoder, 48);
 COBS_EXPECT_SIZE(Receiver, 136);
 COBS_EXPECT_SIZE(Endpoint, 304);
 COBS_EXPECT_SIZE(Heap, 1);
-COBS_EXPECT_SIZE(Fixed, 10496);
-COBS_EXPECT_SIZE(FixedEndpoint, 10800);
+COBS_EXPECT_SIZE(Pool, 10496);
+COBS_EXPECT_SIZE(PoolEndpoint, 10800);
 COBS_EXPECT_SIZE(Sender, 64);
 COBS_EXPECT_SIZE(BusyQuery, 64);
 COBS_EXPECT_SIZE(RxStats, 28);
 COBS_EXPECT_SIZE(TxStats, 12);
 COBS_EXPECT_SIZE(PoolStats, 16);
 #elif defined(__arm__) && INTPTR_MAX == INT32_MAX
-COBS_EXPECT_SIZE(TxAllocation, 8);
-COBS_EXPECT_SIZE(Packet, 16);
+COBS_EXPECT_SIZE(cobs::TxBlock, 8);
+COBS_EXPECT_SIZE(Block, 16);
 COBS_EXPECT_SIZE(Ref, 4);
 COBS_EXPECT_SIZE(Message, 24);
 COBS_EXPECT_SIZE(Decoder, 24);
 COBS_EXPECT_SIZE(Receiver, 80);
 COBS_EXPECT_SIZE(Endpoint, 168);
 COBS_EXPECT_SIZE(Heap, 1);
-COBS_EXPECT_SIZE(Fixed, 10424);
-COBS_EXPECT_SIZE(FixedEndpoint, 10592);
+COBS_EXPECT_SIZE(Pool, 10424);
+COBS_EXPECT_SIZE(PoolEndpoint, 10592);
 COBS_EXPECT_SIZE(Sender, 32);
 COBS_EXPECT_SIZE(BusyQuery, 32);
 COBS_EXPECT_SIZE(RxStats, 28);
@@ -91,16 +88,16 @@ COBS_EXPECT_SIZE(PoolStats, 16);
 extern "C" {
 [[maybe_unused]] std::byte cobs_layout_pointer[sizeof(void*)]{};
 [[maybe_unused]] std::byte cobs_layout_size_t[sizeof(std::size_t)]{};
-[[maybe_unused]] std::byte cobs_layout_tx_allocation[sizeof(TxAllocation)]{};
-[[maybe_unused]] std::byte cobs_layout_rx_packet[sizeof(Packet)]{};
+[[maybe_unused]] std::byte cobs_layout_tx_block[sizeof(cobs::TxBlock)]{};
+[[maybe_unused]] std::byte cobs_layout_rx_block[sizeof(Block)]{};
 [[maybe_unused]] std::byte cobs_layout_packet_ref[sizeof(Ref)]{};
 [[maybe_unused]] std::byte cobs_layout_message[sizeof(Message)]{};
 [[maybe_unused]] std::byte cobs_layout_decoder[sizeof(Decoder)]{};
 [[maybe_unused]] std::byte cobs_layout_receiver[sizeof(Receiver)]{};
 [[maybe_unused]] std::byte cobs_layout_endpoint[sizeof(Endpoint)]{};
 [[maybe_unused]] std::byte cobs_layout_heap[sizeof(Heap)]{};
-[[maybe_unused]] std::byte cobs_layout_fixed[sizeof(Fixed)]{};
-[[maybe_unused]] std::byte cobs_layout_fixed_endpoint[sizeof(FixedEndpoint)]{};
+[[maybe_unused]] std::byte cobs_layout_pool[sizeof(Pool)]{};
+[[maybe_unused]] std::byte cobs_layout_pool_endpoint[sizeof(PoolEndpoint)]{};
 [[maybe_unused]] std::byte cobs_layout_sender[sizeof(Sender)]{};
 [[maybe_unused]] std::byte cobs_layout_busy_query[sizeof(BusyQuery)]{};
 [[maybe_unused]] std::byte cobs_layout_rx_stats[sizeof(RxStats)]{};
@@ -111,12 +108,12 @@ extern "C" {
 int main()
 {
 	std::printf("\n[Layout]\n");
-	std::printf("pointer=%zu size_t=%zu TxAllocation=%zu RxPacket=%zu PacketRef=%zu\n",
-		sizeof(void*), sizeof(std::size_t), sizeof(TxAllocation), sizeof(Packet), sizeof(Ref));
+	std::printf("pointer=%zu size_t=%zu cobs::TxBlock=%zu cobs::RxBlock=%zu PacketRef=%zu\n",
+		sizeof(void*), sizeof(std::size_t), sizeof(cobs::TxBlock), sizeof(Block), sizeof(Ref));
 	std::printf("CobsMsg=%zu Decoder=%zu CobsRx=%zu CobsHeap=%zu\n",
 		sizeof(Message), sizeof(Decoder), sizeof(Receiver), sizeof(Endpoint));
-	std::printf("Heap=%zu Fixed=%zu CobsFixed=%zu sender=%zu busy=%zu\n",
-		sizeof(Heap), sizeof(Fixed), sizeof(FixedEndpoint), sizeof(Sender), sizeof(BusyQuery));
+	std::printf("Heap=%zu Pool=%zu CobsPool=%zu sender=%zu busy=%zu\n",
+		sizeof(Heap), sizeof(Pool), sizeof(PoolEndpoint), sizeof(Sender), sizeof(BusyQuery));
 	std::printf("RxStats=%zu TxStats=%zu PoolStats=%zu\n",
 		sizeof(RxStats), sizeof(TxStats), sizeof(PoolStats));
 	return 0;

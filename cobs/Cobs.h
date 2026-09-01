@@ -1,19 +1,19 @@
 /*
- * Cobs — the assembled engine. RX vertical, TX vertical, one memory policy.
+ * Cobs — the assembled engine. RX vertical, TX vertical, one storage strategy.
  *
  * Contract: doc/COBS_ENGINE.md. Everything difficult already lives one layer
  * down; what is here is the transport handshake and the single active
  * transfer.
  *
- *     RX:  bytes -> cobs::codec::Decoder -> policy -> RxPacket -> PacketRef
- *     TX:  CobsMsg -> encoder -> sender delegate -> activeTx -> policy
+ *     RX:  bytes -> cobs::codec::Decoder -> storage -> RxBlock -> PacketRef
+ *     TX:  CobsMsg -> encoder -> sender delegate -> activeTx -> storage
  *
  * ---------------------------------------------------------------------------
  * LIFETIME PRECONDITIONS. Not decoration — violating either is a use-after-
  * free that no amount of internal bookkeeping can repair:
  *
  *  1. A Cobs object must OUTLIVE every PacketRef and every CobsMsg it handed
- *     out. Both hold a pointer to the policy living inside this object, and
+ *     out. Both hold a pointer to the storage living inside this object, and
  *     both call back into it when they release. That is also why Cobs is
  *     neither copyable nor movable: moving it would turn every outstanding
  *     packet's owner pointer into a souvenir of a previous life.
@@ -29,7 +29,6 @@
 #define COBS_H_
 
 #include "Format.h"
-#include "CobsHeapAllocator.h"
 #include "CobsMsg.h"
 #include "CobsRx.h"
 #include "PacketRef.h"
@@ -50,19 +49,19 @@ enum class SendResult : uint8_t {
 	Invalid,  // the message owns no block, or belongs to another engine
 };
 
-template<class Allocator = CobsHeapAllocator<>>
+template<class StorageT = cobs::Heap<>>
 class Cobs final {
-	static_assert(cobs::Storage<Allocator>,
-		"Cobs allocator must satisfy the cobs::Storage contract");
+	static_assert(cobs::Storage<StorageT>,
+		"Cobs storage must satisfy the cobs::Storage contract");
 
 public:
-	using AllocatorType = Allocator;
-	using Msg = CobsMsg<Allocator>;
-	using Ref = PacketRef<Allocator>;
-	using Format = typename Allocator::Format;
+	using StorageType = StorageT;
+	using Msg = CobsMsg<StorageT>;
+	using Ref = PacketRef<StorageT>;
+	using Format = typename StorageT::Format;
 
 	/*
-	 * Republished so callers have one place to ask, and so a change of policy
+	 * Republished so callers have one place to ask, and so a change of storage
 	 * is visible rather than implied (§4.1). Both are BODY limits — the
 	 * largest application payload this instance will receive and send. The
 	 * decoded frame is length_size bytes longer than either, which is why
@@ -93,18 +92,18 @@ public:
 	 *
 	 * Not zero, and the reason is measured rather than aesthetic: a message
 	 * built field by field from a capacity of zero walks the whole geometric
-	 * ladder, which on the heap policy is 14 allocations and 453 requested
+	 * ladder, which on Heap is 14 allocations and 453 requested
 	 * bytes for a 100-byte payload. From 32 the same payload takes four
 	 * (32 -> 48 -> 72 -> 108), and a typical short frame takes exactly one.
 	 * An API that only performs well when the caller thought to pass a hint is
 	 * a trap with good documentation.
 	 *
-	 * It costs nothing on a single-slab policy, which reports tx_max_size
+	 * It costs nothing on Pool, which reports max_send_size
 	 * whatever it was asked for. A caller who wants no reserve at all says
 	 * make_msg(0) — a zero capacity REQUEST, not an empty-only message: it
 	 * can be written into and grown like any other.
 	 *
-	 * Clamped, because a policy may declare a limit below this default, and
+	 * Clamped, because a Format may declare a limit below this default, and
 	 * make_msg() must never fail merely because of its own default.
 	 */
 	static constexpr std::size_t default_capacity_hint =
@@ -113,7 +112,7 @@ public:
 	using Sender = tiny::delegate<bool(std::span<const uint8_t>)>;
 	using TxBusy = tiny::delegate<bool()>;
 
-	using RxStats = typename CobsRx<Allocator>::Stats;
+	using RxStats = typename CobsRx<StorageT>::Stats;
 	struct TxStats {
 		uint32_t frames_sent       = 0;
 		uint32_t send_refused_busy = 0;
@@ -122,14 +121,14 @@ public:
 
 	Cobs() noexcept = default;
 
-	// For a policy that needs runtime arguments — an external memory region, a
-	// handle to somebody else's arena. The policy is constructed in place from
+	// For storage that needs runtime arguments — an external memory region, a
+	// handle to somebody else's arena. It is constructed in place from
 	// them, so it need not be copyable or movable (§9.4). There is
-	// deliberately no constructor taking a ready-made policy: it would only
+	// deliberately no constructor taking a ready-made instance: it would only
 	// serve copyable ones, and one way in is enough.
 	template<class... Args>
 	explicit Cobs(std::in_place_t, Args&&... args) noexcept
-		: m_allocator(std::forward<Args>(args)...) {}
+		: m_storage(std::forward<Args>(args)...) {}
 
 	Cobs(const Cobs&) = delete;
 	Cobs& operator=(const Cobs&) = delete;
@@ -143,7 +142,7 @@ public:
 		// destroyed with it, so returning it only keeps the pool's own
 		// accounting honest for anything watching.
 		if (m_activeTx.memory != nullptr) {
-			m_allocator.deallocate_tx(m_activeTx.memory, m_activeTx.capacity);
+			m_storage.release_tx(m_activeTx);
 			m_activeTx = {};
 		}
 	}
@@ -236,7 +235,7 @@ public:
 		if (capacity_hint > max_send_size) {
 			return {};
 		}
-		return Msg{m_allocator, capacity_hint};
+		return Msg{m_storage, capacity_hint};
 	}
 
 	/*
@@ -249,7 +248,7 @@ public:
 	 */
 	[[nodiscard]] SendResult push(Msg& msg) noexcept
 	{
-		if (!msg || !msg.belongs_to(m_allocator)) {
+		if (!msg || !msg.belongs_to(m_storage)) {
 			return SendResult::Invalid;
 		}
 		if (!m_sender || !m_txBusy) {
@@ -290,10 +289,10 @@ public:
 	void proceed() noexcept
 	{
 		if (m_activeTx.memory != nullptr && !m_txBusy()) {
-			// The capacity the policy reported travels with the pointer, so a
-			// policy that segregates by size class knows where the block
+			// The capacity storage reported travels with the pointer, so a
+			// strategy that segregates by size class knows where the block
 			// belongs without searching (§9.1).
-			m_allocator.deallocate_tx(m_activeTx.memory, m_activeTx.capacity);
+			m_storage.release_tx(m_activeTx);
 			m_activeTx = {};
 		}
 	}
@@ -305,16 +304,16 @@ public:
 	// Const on purpose: statistics and geometry are worth reading, but a
 	// mutable reference would let a caller allocate behind the engine's back
 	// and hand out blocks it never learns about.
-	[[nodiscard]] const Allocator& allocator() const noexcept { return m_allocator; }
+	[[nodiscard]] const StorageT& storage() const noexcept { return m_storage; }
 
 private:
-	[[no_unique_address]] Allocator m_allocator{};
-	CobsRx<Allocator> m_rx{m_allocator};
+	[[no_unique_address]] StorageT m_storage{};
+	CobsRx<StorageT> m_rx{m_storage};
 
 	Sender m_sender{};
 	TxBusy m_txBusy{};
 
-	typename Msg::TxBlock m_activeTx{};
+	cobs::TxBlock m_activeTx{};
 	TxStats m_txStats{};
 };
 

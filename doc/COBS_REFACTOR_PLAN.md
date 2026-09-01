@@ -135,21 +135,21 @@ regression clues for those ABIs, not universal ABI promises:
 | Current type | x86-64 MinGW | ARM EABI, Cortex-M |
 |---|---:|---:|
 | pointer / `std::size_t` | 8 / 8 bytes | 4 / 4 bytes |
-| `TxAllocation` | 16 bytes | 8 bytes |
-| `RxPacket<CobsHeapAllocator<cobs::Format<...>>>` | 24 bytes | 16 bytes |
+| `cobs::TxBlock` | 16 bytes | 8 bytes |
+| `cobs::RxBlock<cobs::Heap<cobs::Format<...>>>` | 24 bytes | 16 bytes |
 | `PacketRef<...>` | 8 bytes | 4 bytes |
 | `CobsMsg<...>` | 48 bytes | 24 bytes |
 | `cobs::codec::Decoder` | 48 bytes | 24 bytes |
 | `CobsRx<...>` | 136 bytes | 80 bytes |
-| `Cobs<CobsHeapAllocator<cobs::Format<...>>>` | 304 bytes | 168 bytes |
-| `CobsHeapAllocator<cobs::Format<...>>` | 1 byte | 1 byte |
+| `Cobs<cobs::Heap<cobs::Format<...>>>` | 304 bytes | 168 bytes |
+| `cobs::Heap<cobs::Format<...>>` | 1 byte | 1 byte |
 | `tiny::delegate` sender | 64 bytes | 32 bytes |
 | `tiny::delegate` busy query | 64 bytes | 32 bytes |
 | RX statistics | 28 bytes | 28 bytes |
 | TX statistics | 12 bytes | 12 bytes |
 | pool statistics | 16 bytes | 16 bytes |
-| `CobsFixedAllocator<cobs::Format<1024, 1024>, 8, 2>` | 10,496 bytes | 10,424 bytes |
-| `Cobs<CobsFixedAllocator<cobs::Format<1024, 1024>, 8, 2>>` | 10,800 bytes | 10,592 bytes |
+| `cobs::Pool<cobs::Format<1024, 1024>, 8, 2>` | 10,496 bytes | 10,424 bytes |
+| `Cobs<cobs::Pool<cobs::Format<1024, 1024>, 8, 2>>` | 10,800 bytes | 10,592 bytes |
 
 The owning delegates are intentionally retained. Their size is not a
 reason to weaken their owning-callable semantics. Before layout work is marked
@@ -164,17 +164,17 @@ compiler because padding and pointer width differ.
 byte chunks
     |
     v
-CobsRx<Allocator>
+CobsRx<StorageT>
     |
-    +-- CobsDecoder decodes the length header into a local 1-2 byte buffer
+    +-- cobs::codec::Decoder decodes the length header into a local 1-2 byte buffer
     +-- the declared body length is parsed and validated
-    +-- Allocator::allocate_rx(length) obtains the exact final packet
+    +-- StorageT::acquire_rx(length) obtains the exact final RxBlock
     +-- the same decoder is attached to that packet's writable payload
     +-- a complete packet moves to the intrusive ready queue
     +-- pop_packet() transfers the queue's existing reference to PacketRef
 ```
 
-The normal allocation-to-pop path does not increment or decrement the
+The normal acquisition-to-pop path does not increment or decrement the
 reference count. Ownership moves logically from `building`, to the ready
 queue, to the returned handle. Only copying or destroying a public packet
 handle changes the count.
@@ -182,26 +182,26 @@ handle changes the count.
 ### 4.2 Transmit path
 
 ```text
-Allocator::allocate_tx(hint)
+StorageT::acquire_tx(hint) -> cobs::TxBlock
     |
     v
-CobsMsg<Allocator> builds a body and grows geometrically when required
+CobsMsg<StorageT> builds a body and grows geometrically when required
     |
     v
 length prefix is written before the body
     |
     v
-canonical COBS frame is encoded in the same allocation
+canonical COBS frame is encoded in the same block
     |
     v
 Cobs::push() gives the encoded span to the sender delegate
     |
-    +-- refused: message retains the allocation
-    +-- accepted: Cobs owns the active allocation until busy() becomes false
+    +-- refused: message retains its TxBlock
+    +-- accepted: Cobs owns the active TxBlock until busy() becomes false
 ```
 
 The transport borrows the encoded bytes. The engine remains responsible for
-returning the original allocation with the capacity reported by storage.
+returning the original TxBlock descriptor to storage unchanged.
 
 ## 5. Target vocabulary
 
@@ -416,13 +416,13 @@ concept Storage = requires(
 };
 ```
 
-This remains transitional only in operation and descriptor vocabulary. Format
-ownership is already final: storage implementations no longer duplicate
-directional protocol constants.
+This transitional form was removed in Phase 3. It is retained here only as the
+recorded migration seam; no forwarding concept, trait, or alias remains in the
+active API.
 
 ### 8.4 Final storage concept
 
-After `Format`, `RxBlock`, and `TxBlock` exist, the final vocabulary becomes:
+The active contract is now:
 
 ```cpp
 template<class T>
@@ -434,6 +434,12 @@ concept Storage = requires(
 {
     typename T::Format;
     typename T::RxBlock;
+    requires std::same_as<typename T::RxBlock, cobs::RxBlock<T>>;
+
+    { T::Format::max_receive_size }
+        -> std::convertible_to<std::size_t>;
+    { T::Format::max_send_size }
+        -> std::convertible_to<std::size_t>;
 
     { storage.acquire_rx(size) }
         noexcept -> std::same_as<typename T::RxBlock*>;
@@ -471,7 +477,8 @@ thread-safe with atomics would be a separate semantic and layout decision.
 
 ### 8.6 TX block contract
 
-`TxAllocation` and `CobsMsg::TxBlock` describe the same ownership record:
+The former `TxAllocation` and nested `CobsMsg::TxBlock` were replaced by one
+ownership record:
 
 ```cpp
 struct TxBlock {
@@ -480,7 +487,7 @@ struct TxBlock {
 };
 ```
 
-They should become one type. That descriptor is transferred as a unit from
+That descriptor is transferred as a unit from
 storage, to `Message`, to `Endpoint`, then back to storage. A pointer without
 its reported capacity should not be expressible at that boundary.
 
@@ -499,12 +506,12 @@ Exact field migration inventory:
 | Current owner | Current fields | Target decision |
 |---|---|---|
 | `cobs::codec::Decoder` | `m_state`, `m_output`, `m_written`, `m_decodedBefore`, `m_blockRemaining`, `m_pendingZero`, `m_hasOutput` | retained unchanged by the completed codec namespace move |
-| `CobsRx` | `m_decoder`, `m_allocator`, `m_lengthBytes`, `m_declared`, `m_stage`, `m_headerAttached`, `m_building`, `m_readyHead`, `m_readyTail`, `m_stats` | retain all; `m_allocator` becomes storage vocabulary and queue writes become private helpers |
-| `RxPacket` | `refs`, `size`, `next_ready`, `owner` | retain typed/private metadata; target type is `RxBlock<Storage>` |
+| `CobsRx` | `m_decoder`, `m_storage`, `m_lengthBytes`, `m_declared`, `m_stage`, `m_headerAttached`, `m_building`, `m_readyHead`, `m_readyTail`, `m_stats` | storage vocabulary completed; queue writes still move to private helpers |
+| `cobs::RxBlock<Storage>` | `refs`, `size`, `next_ready`, `owner` | typed/private metadata retained unchanged |
 | `PacketRef` | `m_p` | retain the one-pointer handle; target type is `Packet<Storage>` |
-| `CobsMsg` | `m_pool`, `m_block`, `m_capacity`, `m_size`, `m_wire`, `m_state` | `m_pool` becomes typed storage; pointer+capacity become one `TxBlock`; size, wire size, and explicit state remain |
-| `Cobs` | `m_allocator`, `m_rx`, `m_sender`, `m_txBusy`, `m_activeTx`, `m_txStats` | storage and receiver remain; delegates may be grouped in private `Transport`; active descriptor and counters remain |
-| `CobsFixedAllocator` | `m_rx`, `m_tx` | retain two independent pools in target `Pool` |
+| `CobsMsg` | `m_storage`, `m_block`, `m_size`, `m_wire`, `m_state` | pointer+capacity now travel in one `cobs::TxBlock`; explicit state remains |
+| `Cobs` | `m_storage`, `m_rx`, `m_sender`, `m_txBusy`, `m_activeTx`, `m_txStats` | storage and receiver remain; delegates may be grouped in private `Transport`; active descriptor and counters remain |
+| `cobs::Pool` | `m_rx`, `m_tx` | two independent pools retained |
 | `StaticBlockPool` | `m_blocks`, `m_free`, `m_stats` | retain under `detail::BlockPool`; no public ownership role |
 
 Current counter fields are also preserved: RX has `frames_delivered`,
@@ -603,7 +610,7 @@ Idle/Header
     |
     | decoded length becomes known and valid
     v
-storage.acquire_rx(N) / current allocate_rx(N)
+storage.acquire_rx(N)
     |
     | one initial reference belongs to Receiver::building
     v
@@ -669,7 +676,8 @@ transport.
 ```text
 cobs/
 |-- Cobs.h                 application umbrella and Endpoint
-|-- Storage.h              Format, Storage, RxBlock, TxBlock, Heap, Pool
+|-- Format.h               protocol geometry only
+|-- Storage.h              Storage, RxBlock, TxBlock, Heap, Pool
 |-- Codec.h                low-level codec API
 |-- Decoder.cpp
 |-- Encoder.cpp
@@ -681,9 +689,8 @@ cobs/
 ```
 
 This is a target organization, not a requirement to perform one large file
-move. Temporary forwarding headers are acceptable when they reduce migration
-risk, provided they have an explicit removal phase and do not become a second
-permanent API.
+move. Each slice is nevertheless a real move: repository consumers change
+together, and forwarding headers or compatibility aliases are not retained.
 
 ## 13. Build and integration boundary
 
@@ -755,10 +762,10 @@ protocol changes must never be bundled together.
       `Encoder.cpp`.
 - [x] Take a clean API break: do not add compatibility aliases or traits for
       old names. All repository consumers move with each real rename slice.
-- [ ] Move the remaining application, storage, and detail types into
+- [ ] Move the remaining application and detail types into
       `namespace cobs` under their final names.
 - [ ] Complete the vocabulary without changing state transitions or framing.
-- [ ] Keep delegates exactly as currently implemented.
+- [x] Keep delegates exactly as currently implemented.
 
 ### Phase 2 - protocol `Format`
 
@@ -771,13 +778,13 @@ protocol changes must never be bundled together.
 
 ### Phase 3 - final storage vocabulary
 
-- [ ] Introduce the single `TxBlock` descriptor.
-- [ ] Introduce typed `RxBlock<Storage>`.
-- [ ] Migrate `allocate/deallocate` to `acquire/release` in one controlled
+- [x] Introduce the single `TxBlock` descriptor.
+- [x] Introduce typed `RxBlock<Storage>`.
+- [x] Migrate `allocate/deallocate` to `acquire/release` in one controlled
       slice.
-- [ ] Update `Storage` from transitional to final form.
-- [ ] Preserve independent RX/TX quotas and exact release values.
-- [ ] Add a minimal custom-storage conformance example.
+- [x] Update `Storage` from transitional to final form.
+- [x] Preserve independent RX/TX quotas and exact release values.
+- [x] Add a minimal custom-storage conformance example.
 
 ### Phase 4 - close the internal surface
 
@@ -812,8 +819,7 @@ protocol changes must never be bundled together.
       API.
 - [ ] Update `BUILD.md` with exact verified commands.
 - [ ] Check parity, then archive superseded sketches.
-- [ ] Remove temporary forwarding aliases/headers according to the Phase 1
-      compatibility decision.
+- [x] Retain no forwarding aliases or headers during the migration.
 
 ### Phase 8 - isolated UART hygiene
 
@@ -900,12 +906,12 @@ The following are not part of this refactor:
 - Added positive compile-time checks for the built-in heap and fixed policies,
   plus negative checks for missing TX operations, a wrong TX return type, and
   a throwing RX allocation operation.
-- Verified 22,987 COBS checks with MinGW, the same suite with ASan+UBSan under
+- Verified 22,994 COBS checks with MinGW, the same suite with ASan+UBSan under
   WSL, 131 UART host checks, and the complete F1/G4/H7RS port/probe matrix.
-- The two existing COBS test `-Wshadow` warnings and the STM32 H7RS vendor
-  `register` warning remain; no new warnings were introduced.
+- The two former COBS test `-Wshadow` warnings were removed during the storage
+  vocabulary slice. The STM32 H7RS vendor `register` warning remains external.
 - Added a persistent smoke pass that compiles every current public COBS header
-  independently (11 after the two codec headers became one `Codec.h`).
+  independently (7 after storage extension types were consolidated).
 - Added exact x86-64 and ARM EABI layout assertions plus an inspectable
   Cortex-M object probe. Phase 0 characterization is now complete.
 - Physically replaced the old decoder/encoder files and symbols with
@@ -916,3 +922,8 @@ The following are not part of this refactor:
   `Format.h`. Storage policies now accept and name a format type; endpoint,
   receiver, and message read limits only from `Storage::Format`. Duplicate
   storage limit fields were removed, and heap/pool wire identity is tested.
+- Replaced the allocator-shaped extension API with the final storage boundary:
+  `cobs::Heap`, `cobs::Pool`, typed `cobs::RxBlock`, one `cobs::TxBlock`, and
+  `acquire/release` operations. Consolidated those extension types in
+  `Storage.h`, removed four obsolete headers without forwarding aliases, and
+  renamed the shared conformance suite to `test_storage`.
