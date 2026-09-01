@@ -14,7 +14,6 @@
 #define IRQ_GUARD_H_
 
 #include "cmsis_compiler.h" // Header file providing __get_PRIMASK(), __set_PRIMASK(), __disable_irq()
-#include "macro.h"
 /**
  * @brief RAII-based guard for managing IRQ state using PRIMASK.
  *
@@ -27,7 +26,10 @@ class IRQGuard
 {
     // Copy constructor and assignment operator are deleted to prevent multiple instances
     // from interfering with the IRQ state management.
-	_DELETE_COPY_MOVE(IRQGuard);
+	IRQGuard(const IRQGuard&) = delete;
+	IRQGuard& operator=(const IRQGuard&) = delete;
+	IRQGuard(IRQGuard&&) = delete;
+	IRQGuard& operator=(IRQGuard&&) = delete;
 public:
     /**
      * @brief Constructor.

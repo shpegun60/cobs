@@ -868,8 +868,8 @@ protocol changes must never be bundled together.
 
 ### Phase 8 - isolated UART hygiene
 
-- [ ] Remove only proven-unused packaging files.
-- [ ] Replace macro-generated deleted operations with explicit C++.
+- [x] Remove only proven-unused packaging files.
+- [x] Replace macro-generated deleted operations with explicit C++.
 - [ ] Hide helpers under `uart::detail` without logic changes.
 - [ ] Rerun every host, port, probe, and equivalence check.
 
@@ -1083,3 +1083,15 @@ The following are not part of this refactor:
   The integrated runner passed on both toolchains with 23,035 runtime checks,
   six validated compile failures, five self-contained headers, and both
   `NDEBUG` storage/pool suites; WSL ran with ASan and UBSan.
+- Audited the apparent UART packaging leftovers through actual compiler
+  dependencies rather than text search alone. SPSC's internal
+  `#include "basic_types.h"` had been resolving accidentally to
+  `uart/basic_types.h` because the UART include path came first. Added the
+  dependency's own root include path beside `libs/spsc/src` in qmake, host,
+  port, and benchmark integration, then removed the shadowing UART copy.
+  Replaced `IRQGuard`'s `_DELETE_COPY_MOVE` macro with four explicit deleted
+  special members, locked all four with type-trait assertions, and removed the
+  now-unreferenced `uart/macro.h`. No runtime, ISR, DMA, or HAL ordering code
+  changed. A compiler dependency trace now resolves
+  `libs/spsc/basic_types.h`, UART host remained 131/131, the complete
+  F1/G4/H7RS port/probe matrix passed, and root qmake regenerated and built.

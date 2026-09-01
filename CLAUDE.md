@@ -19,7 +19,7 @@ The stable COBS documentation is split by boundary:
 A Qt Widgets application (qmake, C++20) intended as a desktop host/testbed for a reusable UART + COBS communication stack. The Qt GUI itself is currently a bare scaffold (`main.cpp`, `mainwindow.*`), but `COBS.pro` includes `cobs/cobs.pri` and therefore compiles the real non-template COBS core. The separate console consumer under `cobs/tests/qmake_consumer/` instantiates and executes the full public API over both built-in storage strategies. The STM32 implementation remains in `uart/Uart.h` (not part of the Qt build — it needs an STM32 HAL).
 
 Local dependencies live in `libs/` (cloned from the author's GitHub, on `INCLUDEPATH`):
-- `libs/spsc` — wait-free SPSC containers; `spsc::cache_aligned_chunk_fifo` is the RX buffer pool of the UART engine (DMA writes straight into claimed chunk slots).
+- `libs/spsc` — wait-free SPSC containers; `spsc::cache_aligned_chunk_fifo` is the RX buffer pool of the UART engine (DMA writes straight into claimed chunk slots). UART builds need both `libs/spsc` and `libs/spsc/src` on the include path: headers live below `src` and resolve the library-owned root `basic_types.h`.
 - `libs/delegate` — `tiny::delegate`, the no-heap `std::function` replacement used for all callbacks.
 
 ## Build

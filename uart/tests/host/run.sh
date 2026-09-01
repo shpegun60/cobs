@@ -10,7 +10,8 @@ OUT="$HERE/out"
 mkdir -p "$OUT"
 
 "$CXX" -std=gnu++20 -O1 -g -Wall -Wextra \
-  -I"$HERE" -I"$PROJ/uart" -I"$PROJ/libs/spsc/src" -I"$PROJ/libs/delegate" \
+  -I"$HERE" -I"$PROJ/uart" \
+  -I"$PROJ/libs/spsc" -I"$PROJ/libs/spsc/src" -I"$PROJ/libs/delegate" \
   "$HERE/fake_hal.cpp" "$HERE/test_uart.cpp" -o "$OUT/test_uart.exe"
 
 "$OUT/test_uart.exe"

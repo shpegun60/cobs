@@ -46,7 +46,7 @@
 #include "uart_probe.h"      // benchmark instrumentation; compiles to nothing by default
 #include "irq/IRQGuard.h"
 
-#include "spsc/chunk_fifo.hpp"   // https://github.com/shpegun60/spsc
+#include "spsc/chunk_fifo.hpp"   // needs both the SPSC root and src include paths
 #include "tiny_delegate.hpp"     // https://github.com/shpegun60/delegate
 
 #include <array>

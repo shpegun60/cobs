@@ -2,7 +2,9 @@ QT += widgets
 
 CONFIG += c++20
 
-INCLUDEPATH += libs/spsc/src
+INCLUDEPATH += \
+    libs/spsc \
+    libs/spsc/src
 
 # Compile and expose the real COBS core in the host project. The separate
 # qmake consumer under cobs/tests/qmake_consumer also instantiates the complete

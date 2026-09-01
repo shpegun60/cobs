@@ -62,7 +62,10 @@ avg=<cycles> max=<cycles>` for RX/USART/RXDMA/TXDMA/SLOW/TXSTART, then
    `USER CODE 2`; `bench_loop();` in `USER CODE 3`.
 4. CubeIDE, once: right-click project → **Convert to C++**; MCU G++ Compiler
    → dialect `gnu++20`, add `-fno-exceptions -fno-rtti`; include paths
-   `${ProjDirPath}/../../../uart`, `.../libs/spsc/src`, `.../libs/delegate`.
+   `${ProjDirPath}/../../../uart`, `.../libs/spsc`,
+   `.../libs/spsc/src`, `.../libs/delegate`. Both SPSC paths are required:
+   its public headers live under `src` and include the library-owned root
+   `basic_types.h`.
 5. **Optimization at a real level** (`-O2`, or a Release build) — a `-O0`
    Debug build measures the compiler, not the driver.
 

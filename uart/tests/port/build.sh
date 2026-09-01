@@ -17,7 +17,8 @@ CMSIS_CORE="$H7RS_FW/Drivers/CMSIS/Core/Include"
 
 COMMON_FLAGS="-c -std=gnu++20 -Os -Wall -Wextra -fno-exceptions -fno-rtti \
   -ffunction-sections -fdata-sections -mthumb \
-  -I$HERE -I$PROJ/uart -I$PROJ/libs/spsc/src -I$PROJ/libs/delegate -I$CMSIS_CORE"
+  -I$HERE -I$PROJ/uart -I$PROJ/libs/spsc -I$PROJ/libs/spsc/src \
+  -I$PROJ/libs/delegate -I$CMSIS_CORE"
 
 OUT="$HERE/out"
 mkdir -p "$OUT"

@@ -10,6 +10,13 @@
 #define UART_ENGINE_IMPLEMENT // emit the HAL callback definitions here
 #include "Uart.h"
 
+#include <type_traits>
+
+static_assert(!std::is_copy_constructible_v<IRQGuard>);
+static_assert(!std::is_copy_assignable_v<IRQGuard>);
+static_assert(!std::is_move_constructible_v<IRQGuard>);
+static_assert(!std::is_move_assignable_v<IRQGuard>);
+
 static UART_HandleTypeDef s_huart;
 static DMA_HandleTypeDef  s_dma_rx;
 static DMA_HandleTypeDef  s_dma_tx;
