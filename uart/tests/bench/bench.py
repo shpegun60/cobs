@@ -3,13 +3,13 @@
 PC driver for the H7S UART bench (uart_bench.cpp over the ST-LINK VCP).
 
 Protocol: single-byte commands sent alone after a line pause so the IDLE
-event delivers them as their own chunk. Payload avoids the four command
-bytes 'R' 'S' 'T' 't' (the pattern uses 0x20..0x4F, which excludes all four).
+event delivers them as their own chunk. The 48-byte payload pattern excludes
+all six current command values: 'R', 'S', 'T', 't', '1', and '3'.
 
 Scenarios:
   0  idle            nothing on the wire, just a window
   1  rx-cont         continuous RX at full line rate
-  2  rx-burst        100-byte bursts with a pause (IDLE-heavy)
+  2  rx-burst        historical 96-byte bursts with a pause (IDLE-heavy)
   3  tx-cont         board floods 64-byte frames, PC drains (clean TX baseline)
   4  duplex-cont     TX generator + continuous RX
   5  duplex-burst    TX generator + bursty RX
@@ -29,8 +29,11 @@ except ImportError:
     sys.exit("pyserial required: pip install pyserial")
 
 CMD_PAUSE = 0.15          # line silence around a command byte -> its own chunk
-# Command bytes are 'R' 'S' 'T' 't' '1' '3'; 0x38..0x50 excludes all of them.
-PAYLOAD = bytes(range(0x38, 0x50))
+COMMANDS = frozenset(b"RSTt13")
+# Keep the historical 48-byte pattern (1,536 bytes per continuous write and
+# 96 bytes per burst), but exclude every current command value explicitly.
+# A future command addition therefore has one obvious companion edit here.
+PAYLOAD = bytes(b for b in range(0x20, 0x80) if b not in COMMANDS)[:48]
 
 # Live speed change (setBaudRate on the board): command byte -> new rate.
 SWITCH = {115200: b"1", 3000000: b"3"}
@@ -98,7 +101,7 @@ def run_scenario(port, num, seconds):
                 drain(port, max_s=0.02)
     elif rx_kind == "burst":
         while time.time() < t_end:
-            port.write(PAYLOAD[:50] * 2)  # a 100-byte burst
+            port.write(PAYLOAD * 2)       # historical 96-byte burst
             port.flush()
             time.sleep(0.02)              # ~20 ms of line silence -> IDLE
             if tx_on:

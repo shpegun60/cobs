@@ -34,14 +34,22 @@ struct Model {
 	/* --- reconfiguration (HAL_UART_Init) --- */
 	uint32_t applied_baud = 0;        // what the peripheral actually runs at
 	uint32_t init_calls   = 0;
+	uint32_t dma_init_calls = 0;
+	uint32_t rx_event_type_calls = 0;
+	uint32_t callback_registration_calls = 0;
 	uint32_t max_baud     = 10000000; // above this the kernel clock cannot go
 
 	/* --- fault injection --- */
 	int  fail_abort_receive  = 0; // N next calls return HAL_TIMEOUT (transfer stays live)
 	int  fail_abort_transmit = 0;
+	int  fail_dma_init       = 0; // N next recovery re-initializations fail
 	int  fail_arm            = 0; // N next ReceiveToIdle_DMA calls fail
+	int  fail_fifo_config    = 0; // N next FIFO restore operations fail
+	int  fail_callback_registration = 0; // 1-based registration call to fail
 	bool rx_cplt_inside_abort = false; // ST: an abort may raise the completion callback
 	bool tx_cplt_inside_abort = false;
+	bool rx_error_inside_abort_transmit = false;
+	bool tx_error_inside_abort_receive = false;
 
 	/* --- ownership bookkeeping, keyed by buffer address --- */
 	std::map<const void*, Slot> slots;
@@ -65,6 +73,8 @@ void   fail(const std::string& what) noexcept;
 void rx_bytes(const void* data, std::size_t n) noexcept; // DMA writes into the armed buffer
 void rx_idle() noexcept;                                 // partial transfer + IDLE
 void rx_tc() noexcept;                                   // buffer filled
+void rx_half() noexcept;                                 // stray HT while reception stays live
+void rx_corrupt_counter(uint32_t remaining) noexcept;    // stopped RX with impossible count
 void rx_error(uint32_t code) noexcept;                   // blocking RX error (DMA mode)
 void tx_dma_done() noexcept; // DMA drained into the peripheral; UART still shifting
 void tx_uart_tc() noexcept;  // shift register empty: TC set, HAL raises TxCplt

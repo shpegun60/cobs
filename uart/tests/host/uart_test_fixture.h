@@ -63,11 +63,11 @@ struct Fixture {
 		if (!uart.init(&huart)) {
 			return false;
 		}
-		uart.setRxHandler([](std::span<const uint8_t> b) {
-			fake::note_consumer_sees(b.data());
-			fake::model().rx_data.push_back(std::string(reinterpret_cast<const char*>(b.data()), b.size()));
-			fake::model().rx_events.push_back("data:" + std::to_string(b.size()));
-			fake::note_consumer_done(b.data());
+		uart.setRxHandler([](std::span<const uint8_t> bytes) {
+			fake::note_consumer_sees(bytes.data());
+			fake::model().rx_data.push_back(std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+			fake::model().rx_events.push_back("data:" + std::to_string(bytes.size()));
+			fake::note_consumer_done(bytes.data());
 		});
 		uart.setTxHandler([](bool ok) { fake::model().tx_results.push_back(ok); });
 		uart.setErrorHandler([](uint32_t c) { fake::model().errors.push_back(c); });

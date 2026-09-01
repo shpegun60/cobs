@@ -176,11 +176,11 @@ void step(State& st, Rng& rng)
 			}
 			return;
 		case FailAbort:
-			fake::model().fail_abort_receive = rng.below(2);
-			fake::model().fail_abort_transmit = rng.below(2);
+			fake::model().fail_abort_receive = static_cast<int>(rng.below(2));
+			fake::model().fail_abort_transmit = static_cast<int>(rng.below(2));
 			st.trail.note("failabort"); return;
 		case FailArm:
-			fake::model().fail_arm = rng.below(2);
+			fake::model().fail_arm = static_cast<int>(rng.below(2));
 			st.trail.note("failarm"); return;
 		default: continue;
 		}

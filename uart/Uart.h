@@ -1,7 +1,8 @@
 /*
  * Uart.h — zero-copy STM32 UART byte transport (always-DMA, buffer switching)
  *
- * Current contract: this header plus uart/tests/host and uart/tests/port.
+ * Current contract: this header, doc/UART_PARANOID_AUDIT.md, and the
+ * uart/tests/host + uart/tests/port verification matrices.
  * Historical rationale only: doc/old/UART_COBS_ARCHITECTURE.md, §3–§8.
  *  - One mode only: DMA normal (non-circular) via HAL_UARTEx_ReceiveToIdle_DMA.
  *  - RX: spsc::cache_aligned_chunk_fifo — DMA writes directly into a claimed
@@ -51,6 +52,7 @@
 #include "tiny_delegate.hpp"     // https://github.com/shpegun60/delegate
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 #if !defined(__cplusplus) || (__cplusplus < 202002L)
@@ -97,14 +99,21 @@
 #	define UART_ENGINE_FAIL_THRESHOLD 3
 #endif
 
-// NOTE on TX liveness: there is no per-frame deadline. A transfer is judged
-// by whether the hardware DEMONSTRATES PROGRESS, checked in the same periodic
-// audit as everything else — see healthCheck(). That is frame-length
-// independent (a 64 KB frame is treated exactly like an 8-byte one), needs no
-// baud-rate arithmetic in send(), and asks the honest question: is the
-// hardware moving, or is it dead? It is still a timeout in the end, just
-// expressed as "must make progress within N audit periods" rather than "must
-// finish within X milliseconds".
+static_assert(UART_ENGINE_MAX_INSTANCES >= 1,
+	"UART_ENGINE_MAX_INSTANCES must be at least 1");
+static_assert(UART_ENGINE_CHECK_PERIOD_MS >= 1 &&
+	UART_ENGINE_CHECK_PERIOD_MS <= UINT32_MAX,
+	"UART_ENGINE_CHECK_PERIOD_MS must fit a non-zero uint32_t interval");
+static_assert(UART_ENGINE_FAIL_THRESHOLD >= 1 &&
+	UART_ENGINE_FAIL_THRESHOLD <= UINT8_MAX,
+	"UART_ENGINE_FAIL_THRESHOLD must fit the uint8_t watchdog counters");
+
+// NOTE on TX liveness: there is no per-frame deadline. While DMA owns bytes,
+// the periodic audit asks whether its counter demonstrates progress, so a
+// healthy 64 KB frame is treated exactly like an 8-byte one. Once DMA reaches
+// zero, only the bounded UART FIFO/shift-register tail remains; that stage gets
+// a conservative baud-derived drain bound (disabled under CTS). See
+// txLivenessAudit(). No baud arithmetic is paid in send() or any ISR.
 
 // The IDLE/HT/TC events themselves are HARDWARE features present on every
 // STM32 (IDLE flag on all USART IPs, HT/TC on all DMA/BDMA/GPDMA types).
@@ -117,8 +126,10 @@
 // receiving -> IDLE/HT), which is equivalent for this driver.
 #if defined(__GNUC__)
 #	define UART_ENGINE_NOINLINE __attribute__((noinline))
+#	define UART_ENGINE_ALWAYS_INLINE inline __attribute__((always_inline))
 #else
 #	define UART_ENGINE_NOINLINE
+#	define UART_ENGINE_ALWAYS_INLINE inline
 #endif
 
 #ifndef UART_ENGINE_HAS_RXEVENT_TYPE
@@ -128,6 +139,26 @@
 /* ============================ D-cache helpers ============================= */
 
 namespace uart::detail {
+
+// Shared by every Uart<...> instantiation. It is cold, deliberately out of
+// line, and independent of chunk geometry; emitting one copy avoids cloning
+// the baud divisions into every template's watchdog.
+[[nodiscard]] UART_ENGINE_NOINLINE inline uint32_t tx_drain_audit_limit(
+		const uint32_t configured_baud) noexcept
+{
+	// Supported STM32 USARTs have at most a small FIFO plus one shifting byte.
+	// Budgeting 64 complete 12-bit wire symbols is intentionally conservative
+	// across FIFO/no-FIFO, parity and two-stop-bit modes.
+	constexpr uint32_t worst_pipeline_bit_milliseconds = 64u * 12u * 1000u;
+	const uint32_t baud = (configured_baud != 0u) ? configured_baud : 1u;
+	const uint32_t wire_ms =
+		(worst_pipeline_bit_milliseconds / baud) +
+		((worst_pipeline_bit_milliseconds % baud) != 0u ? 1u : 0u);
+	const uint32_t wire_audits =
+		(wire_ms / UART_ENGINE_CHECK_PERIOD_MS) +
+		((wire_ms % UART_ENGINE_CHECK_PERIOD_MS) != 0u ? 1u : 0u);
+	return wire_audits + UART_ENGINE_FAIL_THRESHOLD;
+}
 
 #if UART_ENGINE_DCACHE_MAINTENANCE
 
@@ -165,24 +196,25 @@ static inline void clean_dcache(const void*, const uint32_t) noexcept {}
 class Registry final {
 public:
 	struct Ops {
-		void (*rx_event)(void* self, uint16_t size);
-		void (*tx_cplt)(void* self);
-		void (*error)(void* self);
+		void (*rx_event)(void* self, uint16_t size) noexcept;
+		void (*tx_cplt)(void* self) noexcept;
+		void (*error)(void* self) noexcept;
 	};
 
 	static bool attach(UART_HandleTypeDef* const huart, void* const self, const Ops& ops) noexcept
 	{
-		if (!huart || !self) {
+		if (!huart || !huart->Instance || !self ||
+				!ops.rx_event || !ops.tx_cplt || !ops.error) {
 			return false;
 		}
 		// Guarded: other instances may already be running and their ISRs walk
 		// this table; an Entry assignment is not atomic.
 		IrqGuard guard;
 		for (const auto& e : s_entries) {
-			// Reject both a duplicate handle AND a second handle that drives
-			// the same physical peripheral: two engines on one USARTx would
-			// arm DMA over each other while each believed it owned the line.
-			if (e.huart == huart ||
+			// Reject a duplicate target, a duplicate handle, AND a second
+			// handle that drives the same physical peripheral: either alias
+			// would give one participant contradictory ownership.
+			if (e.self == self || e.huart == huart ||
 					(e.huart != nullptr && e.huart->Instance == huart->Instance)) {
 				return false; // one engine per UART
 			}
@@ -198,6 +230,9 @@ public:
 
 	static void detach(void* const self) noexcept
 	{
+		if (!self) {
+			return;
+		}
 		IrqGuard guard;
 		for (auto& e : s_entries) {
 			if (e.self == self) {
@@ -242,6 +277,11 @@ private:
 
 	static Entry* find(const UART_HandleTypeDef* const huart) noexcept
 	{
+		// nullptr must never compare equal to an unused zero-initialized slot:
+		// that would dispatch through three null operation pointers.
+		if (!huart) {
+			return nullptr;
+		}
 		for (auto& e : s_entries) {
 			if (e.huart == huart) {
 				return &e;
@@ -308,11 +348,24 @@ public:
 	// structurally valid frame.
 	using GapHandler   = tiny::delegate<void()>;
 
+	// Handler execution contexts are intentionally explicit:
+	//   RxHandler/GapHandler -> thread context, inside proceed();
+	//   ErrorHandler         -> HAL error ISR;
+	//   TxHandler            -> normally a HAL completion/error ISR, but the
+	//                           watchdog can deliver a recovered terminal event
+	//                           from proceed() in thread context.
+	// Targets must therefore be noexcept, bounded in ISR cases, and must not
+	// replace the delegate that is currently invoking them. Ordinary captures
+	// are owned inline by tiny::delegate; tiny::borrow/bind are explicitly
+	// non-owning. ISR-side TX/error targets signal the loop rather than calling
+	// mutating Uart APIs. The delegate library's heap fallback is disabled by
+	// default.
+
 	// Diagnostics, not accounting: these are plain counters incremented from
-	// both ISR and thread context, so concurrent increments can lose a count,
-	// and stats() hands out a live reference rather than a coherent snapshot.
-	// They are meant for sizing (is rx_overrun non-zero?), not for arithmetic
-	// anyone depends on. Atomics are deliberately not paid for here.
+	// both ISR and thread context, so concurrent increments can lose a count.
+	// stats() returns one IRQ-guarded value snapshot, but the counters are still
+	// meant for sizing (is rx_overrun non-zero?), not arithmetic anyone depends
+	// on. Atomics are deliberately not paid for here; values wrap modulo 2^32.
 	struct Stats {
 		uint32_t rx_overrun   = 0; // no free chunk -> bytes discarded into drop buffer
 		uint32_t rx_errors    = 0; // ORE/FE/NE/PE/DMA errors on the RX path
@@ -323,8 +376,10 @@ public:
 	Uart() = default;
 	Uart(const Uart&) = delete;
 	Uart& operator=(const Uart&) = delete;
+	Uart(Uart&&) = delete;
+	Uart& operator=(Uart&&) = delete;
 
-	~Uart()
+	~Uart() noexcept
 	{
 		if (m_huart) {
 			// Detach FIRST: from here on a HAL callback finds no registry
@@ -339,7 +394,7 @@ public:
 			// cannot arise.
 			uart::detail::Registry::detach(this);
 			AllTeardown ts(*this);
-			(void)HAL_UART_Abort(m_huart);
+			(void)stopAll();
 			m_huart = nullptr;
 		}
 	}
@@ -361,7 +416,8 @@ public:
 		}
 
 		/* --- structural checks ------------------------------------------ */
-		if (!huart || !huart->Instance || !huart->hdmarx || !huart->hdmatx) {
+		if (!huart || !huart->Instance || !huart->hdmarx || !huart->hdmatx ||
+				!huart->hdmarx->Instance || !huart->hdmatx->Instance) {
 			return false; // no handle, no peripheral, or DMA not linked (CubeMX)
 		}
 		// RESET  -> HAL_UART_Init() was never run.
@@ -423,7 +479,8 @@ public:
 		//        idle, or a published chunk keeps being written behind the
 		//        consumer's back. (Plain linked-list mode is refused too:
 		//        HAL_DMA_Abort() zeroes CBR1 for it, which would make
-		//        dmaReceivedCount() report a full chunk of stale bytes.)
+		//        the remaining-count subtraction report a full chunk of stale
+		//        bytes.)
 		//
 		//   TX — in circular mode UART_DMATransmitCplt() invokes
 		//        HAL_UART_TxCpltCallback at the end of EVERY lap while the
@@ -452,32 +509,9 @@ public:
 		if (huart->Init.BaudRate == 0u) {
 			return false; // an initialized handle with no baud rate is broken
 		}
-		// COBS uses the whole 0x00..0xFF range, so the frame must carry EIGHT
-		// payload bits. WordLength counts the parity bit as one of its data
-		// bits, so "8B + parity" actually transports only 7 payload bits and
-		// would silently mangle the encoding. Exactly two configurations
-		// qualify: 8 bits without parity, or 9 bits with it.
-		{
-			const bool parity = (huart->Init.Parity != UART_PARITY_NONE);
-			const bool eight_bit_payload =
-				((huart->Init.WordLength == UART_WORDLENGTH_8B) && !parity) ||
-				((huart->Init.WordLength == UART_WORDLENGTH_9B) && parity);
-			if (!eight_bit_payload) {
-				return false;
-			}
-		}
-		// The engine keeps RX permanently armed while allowing TX, so both
-		// directions must be enabled...
-		if (huart->Init.Mode != UART_MODE_TX_RX) {
+		if (!validByteTransport(huart)) {
 			return false;
 		}
-#ifdef USART_CR3_HDSEL
-		// ...and the line must not be shared: in half-duplex the transmitter
-		// drives the very wire our receiver is listening on.
-		if (READ_BIT(huart->Instance->CR3, USART_CR3_HDSEL) != 0u) {
-			return false;
-		}
-#endif
 		// The DMA must move BYTES. HAL programs the transfer as a count of
 		// ELEMENTS (ChunkSize), so a half-word memory width would make the
 		// controller write 2 * ChunkSize bytes into a ChunkSize buffer and
@@ -511,9 +545,9 @@ public:
 		// behind — in particular the destructor has no handle to abort, and
 		// cannot tear down a peripheral that belongs to another instance.
 		static constexpr uart::detail::Registry::Ops ops = {
-			[](void* self, uint16_t n) { static_cast<Uart*>(self)->isrRxEvent(n); },
-			[](void* self)             { static_cast<Uart*>(self)->isrTxCplt(); },
-			[](void* self)             { static_cast<Uart*>(self)->isrError(); },
+			[](void* self, uint16_t n) noexcept { static_cast<Uart*>(self)->isrRxEvent(n); },
+			[](void* self) noexcept             { static_cast<Uart*>(self)->isrTxCplt(); },
+			[](void* self) noexcept             { static_cast<Uart*>(self)->isrError(); },
 		};
 		{
 			// One guarded step: an ISR can never observe this object as
@@ -529,18 +563,17 @@ public:
 		// Under CTS flow control the peer may legitimately keep the DMA from
 		// advancing, so a frozen counter proves nothing and STALL detection
 		// is disabled. Detection of a LOST COMPLETION stays on even then —
-		// see healthCheck(). Decided once, here: the configuration cannot
-		// change while this object stays bound.
-		m_txProgressWatchEnabled = (huart->Init.HwFlowCtl != UART_HWCONTROL_CTS) &&
-		                           (huart->Init.HwFlowCtl != UART_HWCONTROL_RTS_CTS);
+		// see healthCheck(). setBaudRate() refreshes this policy after applying
+		// a possibly changed huart->Init configuration.
+		refreshTxProgressPolicy();
 
 #if (USE_HAL_UART_REGISTER_CALLBACKS == 1)
 		bool reg_ok = (HAL_UART_RegisterRxEventCallback(huart,
-			[](UART_HandleTypeDef* h, uint16_t n) { uart::detail::Registry::onRxEvent(h, n); }) == HAL_OK);
+			[](UART_HandleTypeDef* h, uint16_t n) noexcept { uart::detail::Registry::onRxEvent(h, n); }) == HAL_OK);
 		reg_ok = reg_ok && (HAL_UART_RegisterCallback(huart, HAL_UART_TX_COMPLETE_CB_ID,
-			[](UART_HandleTypeDef* h) { uart::detail::Registry::onTxCplt(h); }) == HAL_OK);
+			[](UART_HandleTypeDef* h) noexcept { uart::detail::Registry::onTxCplt(h); }) == HAL_OK);
 		reg_ok = reg_ok && (HAL_UART_RegisterCallback(huart, HAL_UART_ERROR_CB_ID,
-			[](UART_HandleTypeDef* h) { uart::detail::Registry::onError(h); }) == HAL_OK);
+			[](UART_HandleTypeDef* h) noexcept { uart::detail::Registry::onError(h); }) == HAL_OK);
 		if (!reg_ok) {
 			uart::detail::IrqGuard guard;
 			uart::detail::Registry::detach(this);
@@ -555,14 +588,21 @@ public:
 			// staying half-bound. Registered HAL callbacks (if any) are left
 			// in place — without a registry entry they resolve to no-ops.
 			uart::detail::Registry::detach(this);
+			// receiveArm() may have claimed a fifo slot before the HAL refused
+			// the transfer. A claim is not published and has not advanced the
+			// producer, so cancelling the pointer returns the object to its
+			// pristine retry state without manufacturing a gap on the next init.
+			m_active = nullptr;
 			m_huart = nullptr;
 			return false;
 		}
 		return true;
 	}
 
-	// IRQ-guarded: a handler may be (re)assigned even while reception is
-	// already running — the ISR never observes a half-written delegate.
+	// Thread-context configuration. IRQ-guarded, so a handler may be
+	// (re)assigned while the engine is running and an ISR never observes a
+	// half-written delegate. Do not call a setter from the handler being
+	// replaced: destroying a callable while its operator() is active is invalid.
 	void setRxHandler(RxHandler h) noexcept
 	{
 		uart::detail::IrqGuard guard;
@@ -595,12 +635,15 @@ public:
 	// Reception is torn down and restarted, so the layer above sees a gap and
 	// never merges bytes received at the old speed into the new stream.
 	//
-	// Returns false — with the PREVIOUS speed restored and running — when the
-	// engine is unbound, the rate is zero or unreachable for this kernel
-	// clock, or a transmission is in progress.
+	// Precondition refusals (unbound, zero rate, invalid framing, live TX) leave
+	// the current link untouched. If UART/FIFO configuration rejects the new
+	// rate, the previous baud and saved FIFO state are reapplied before RX is
+	// restarted. A later RX re-arm failure also returns false, but keeps the
+	// applied configuration and lets proceed() retry the receiver.
 	bool setBaudRate(const uint32_t baud) noexcept
 	{
-		if (m_huart == nullptr || baud == 0u || m_txBusy) {
+		if (m_huart == nullptr || baud == 0u || m_txBusy ||
+				!validByteTransport(m_huart)) {
 			return false;
 		}
 
@@ -613,11 +656,14 @@ public:
 		// retry the recovery.
 		{
 			RxTeardown ts(*this);
-			if (HAL_UART_AbortReceive(m_huart) != HAL_OK) {
+			if (!stopRx()) {
 				++m_stats.rx_errors;
 				m_started = false;
 				return false;
 			}
+			// Keep any stale/pending RX callback inert from the moment the old
+			// transfer is stopped until receiveRestart() arms the new one.
+			m_started = false;
 		}
 
 		// HAL_UART_Init only runs MspInit and resets the registered callbacks
@@ -635,22 +681,31 @@ public:
 		const uint32_t rx_thr  = m_huart->Instance->CR3 & USART_CR3_RXFTCFG;
 #endif
 		const uint32_t previous = m_huart->Init.BaudRate;
-		m_huart->Init.BaudRate = baud;
-		const bool ok = (HAL_UART_Init(m_huart) == HAL_OK);
-		if (!ok) {
-			// An unreachable rate leaves the peripheral half-configured and
-			// disabled. Put the working speed back so a bad request costs a
-			// gap, not the link.
-			m_huart->Init.BaudRate = previous;
-			(void)HAL_UART_Init(m_huart);
-		}
+		const auto apply = [&](const uint32_t rate) noexcept {
+			m_huart->Init.BaudRate = rate;
+			if (HAL_UART_Init(m_huart) != HAL_OK) {
+				return false;
+			}
 #if defined(USART_CR1_FIFOEN)
-		if (fifo_on != 0u) {
-			(void)HAL_UARTEx_EnableFifoMode(m_huart);
-			(void)HAL_UARTEx_SetTxFifoThreshold(m_huart, tx_thr);
-			(void)HAL_UARTEx_SetRxFifoThreshold(m_huart, rx_thr);
-		}
+			if (fifo_on != 0u &&
+					(HAL_UARTEx_EnableFifoMode(m_huart) != HAL_OK ||
+					 HAL_UARTEx_SetTxFifoThreshold(m_huart, tx_thr) != HAL_OK ||
+					 HAL_UARTEx_SetRxFifoThreshold(m_huart, rx_thr) != HAL_OK)) {
+				return false;
+			}
 #endif
+			return true;
+		};
+		const bool ok = apply(baud);
+		if (!ok) {
+			// An unreachable rate or failed FIFO restore leaves the peripheral
+			// half-configured. Re-apply every saved hardware property together
+			// with the previous working speed.
+			(void)apply(previous);
+		}
+		// HwFlowCtl is part of huart->Init and may legitimately be adjusted
+		// together with the baud rate. Keep the TX stall policy in sync.
+		refreshTxProgressPolicy();
 		// Voids the stale chunk (the gap the decoder needs), clears the error
 		// flags the speed change may have raised on the line, and re-arms.
 		receiveRestart();
@@ -673,6 +728,8 @@ public:
 	// Pass now_ms explicitly from the main loop — the default argument
 	// evaluates HAL_GetTick() at the CALL SITE, so `uart.proceed()` pays for
 	// a tick read on every iteration even when it returns immediately.
+	// One loop context owns proceed(); recursive calls from a handler are
+	// harmless no-ops, but this is not general multi-thread synchronization.
 	void proceed(const uint32_t now_ms = HAL_GetTick()) noexcept
 	{
 		if (m_huart == nullptr) {
@@ -687,8 +744,25 @@ public:
 	}
 
 private:
+	class ServiceScope final {
+	public:
+		explicit ServiceScope(Uart& u) noexcept : m_u(u) { m_u.m_servicing = true; }
+		~ServiceScope() noexcept { m_u.m_servicing = false; }
+		ServiceScope(const ServiceScope&) = delete;
+		ServiceScope& operator=(const ServiceScope&) = delete;
+	private:
+		Uart& m_u;
+	};
+
 	UART_ENGINE_NOINLINE void proceedSlow(const uint32_t now_ms, const bool audit_due) noexcept
 	{
+		// Handlers run inside this function. A handler that calls proceed()
+		// recursively must not observe/pop the same front chunk twice or run a
+		// nested watchdog recovery over the outer pass.
+		if (m_servicing) {
+			return;
+		}
+		ServiceScope service{*this};
 		UART_ENGINE_PROBE_SCOPE(Slow);
 		if (m_rxWorkPending) {
 			uart::detail::IrqGuard guard;
@@ -740,7 +814,7 @@ private:
 			HAL_StatusTypeDef abort_status;
 			{
 				RxTeardown ts(*this);
-				abort_status = HAL_UART_AbortReceive(m_huart);
+				abort_status = stopRx() ? HAL_OK : HAL_TIMEOUT;
 				if (abort_status != HAL_OK) {
 					// The old transfer may still be alive. Mark the receiver
 					// down BEFORE the gate drops: otherwise its callback slips
@@ -758,8 +832,9 @@ private:
 				// and re-armed onto a real chunk; publish whatever landed in
 				// it (per the now-frozen counter) so nothing real is lost.
 				if (m_started) { // an error ISR may have deferred a full restart
-					publishActive(dmaReceivedCount());
-					receiveArm();
+					if (publishReceived(m_huart->hdmarx)) {
+						receiveArm();
+					}
 				}
 			}
 		}
@@ -778,7 +853,8 @@ public:
 	// Starts DMA on caller-owned memory. The memory is only BORROWED: it must
 	// stay valid until tx_busy() returns false (COBS owns the frame, §21–22).
 	// Contract: send() is called from ONE execution context (the same loop
-	// that runs proceed()); it is not re-entrant against itself.
+	// that runs proceed()); it is not re-entrant against itself. ISR-side TX
+	// and error handlers signal that loop rather than starting another frame.
 	bool send(std::span<const uint8_t> bytes) noexcept
 	{
 		UART_ENGINE_PROBE_SCOPE(TxStart);
@@ -792,7 +868,7 @@ public:
 			return false;
 		}
 
-		uart::detail::clean_dcache(bytes.data(), bytes.size());
+		uart::detail::clean_dcache(bytes.data(), static_cast<uint32_t>(bytes.size()));
 
 		// No deadline arithmetic here at all: the periodic audit judges this
 		// transfer by progress. Just forget what the previous frame looked
@@ -806,7 +882,7 @@ public:
 		//   - flag AFTER the call: for a moment the DMA is already reading the
 		//     caller's buffer while m_txBusy still says idle, so a completion
 		//     or error arriving there is discarded by the ISRs' !m_txBusy test
-		//     and the frame hangs until the TX deadline;
+		//     and the frame hangs until the TX liveness audit recovers it;
 		//   - flag BEFORE the call is worse: an error ISR would see a busy
 		//     flag while gState is still READY, conclude the transfer had
 		//     ended, release the frame and report failure — just as the DMA
@@ -835,7 +911,13 @@ public:
 		return started;
 	}
 
-	[[nodiscard]] const Stats& stats() const noexcept { return m_stats; }
+	[[nodiscard]] Stats stats() const noexcept
+	{
+		// One coherent diagnostic sample. Updates remain deliberately cheap
+		// plain increments, but an ISR cannot tear the copy itself.
+		uart::detail::IrqGuard guard;
+		return m_stats;
+	}
 	[[nodiscard]] UART_HandleTypeDef* instance() const noexcept { return m_huart; }
 
 private:
@@ -866,6 +948,116 @@ private:
 	using TxTeardown  = TeardownScope<false, true>;
 	using AllTeardown = TeardownScope<true, true>;
 
+	static bool dmaReady(const DMA_HandleTypeDef* const hdma) noexcept
+	{
+		return hdma != nullptr && hdma->State == HAL_DMA_STATE_READY;
+	}
+
+	// STM32 H7 GPDMA can time out while HAL_DMA_Abort waits for SUSP. The
+	// UART HAL has already disabled that direction's peripheral request before
+	// returning, but a second UART abort would skip the DMA because DMAR/DMAT
+	// is now clear. Re-initialize only such a stopped direction, then let the
+	// UART abort finish its handle-state cleanup. Never reset the other DMA
+	// while its peripheral request is still live.
+	bool repairStoppedDma(DMA_HandleTypeDef* const hdma,
+			const uint32_t request) noexcept
+	{
+		if (dmaReady(hdma) || (m_huart->Instance->CR3 & request) != 0u) {
+			return true;
+		}
+		return HAL_DMA_Init(hdma) == HAL_OK && dmaReady(hdma);
+	}
+
+	[[nodiscard]] bool stopRx() noexcept
+	{
+		for (unsigned attempt = 0; attempt < 3u; ++attempt) {
+			const HAL_StatusTypeDef status = HAL_UART_AbortReceive(m_huart);
+			if (status == HAL_OK &&
+					m_huart->RxState == HAL_UART_STATE_READY &&
+					dmaReady(m_huart->hdmarx)) {
+				return true;
+			}
+			if (!repairStoppedDma(m_huart->hdmarx, USART_CR3_DMAR)) {
+				return false;
+			}
+		}
+		return false;
+	}
+
+	[[nodiscard]] bool stopTx() noexcept
+	{
+		for (unsigned attempt = 0; attempt < 3u; ++attempt) {
+			const HAL_StatusTypeDef status = HAL_UART_AbortTransmit(m_huart);
+			if (status == HAL_OK &&
+					m_huart->gState == HAL_UART_STATE_READY &&
+					dmaReady(m_huart->hdmatx)) {
+				return true;
+			}
+			if (!repairStoppedDma(m_huart->hdmatx, USART_CR3_DMAT)) {
+				return false;
+			}
+		}
+		return false;
+	}
+
+	[[nodiscard]] bool stopAll() noexcept
+	{
+		// One abort can fail on TX before the HAL reaches RX. Three attempts
+		// cover: repair TX, repair RX, then finish the UART state transition.
+		for (unsigned attempt = 0; attempt < 3u; ++attempt) {
+			const HAL_StatusTypeDef status = HAL_UART_Abort(m_huart);
+			if (status == HAL_OK &&
+					m_huart->gState == HAL_UART_STATE_READY &&
+					m_huart->RxState == HAL_UART_STATE_READY &&
+					dmaReady(m_huart->hdmatx) && dmaReady(m_huart->hdmarx)) {
+				return true;
+			}
+			if (!repairStoppedDma(m_huart->hdmatx, USART_CR3_DMAT) ||
+					!repairStoppedDma(m_huart->hdmarx, USART_CR3_DMAR)) {
+				return false;
+			}
+		}
+		return false;
+	}
+
+	static bool validByteTransport(const UART_HandleTypeDef* const huart) noexcept
+	{
+		// COBS uses all 256 byte values. WordLength includes the parity bit,
+		// therefore exactly 8B/no-parity or 9B/with-parity carries eight data
+		// bits without truncation.
+		const bool parity_none = (huart->Init.Parity == UART_PARITY_NONE);
+		const bool parity = (huart->Init.Parity == UART_PARITY_EVEN) ||
+			(huart->Init.Parity == UART_PARITY_ODD);
+		const bool eight_bit_payload =
+			((huart->Init.WordLength == UART_WORDLENGTH_8B) && parity_none) ||
+			((huart->Init.WordLength == UART_WORDLENGTH_9B) && parity);
+		if (!eight_bit_payload || huart->Init.Mode != UART_MODE_TX_RX) {
+			return false;
+		}
+		const bool valid_flow_control =
+			(huart->Init.HwFlowCtl == UART_HWCONTROL_NONE) ||
+			(huart->Init.HwFlowCtl == UART_HWCONTROL_RTS) ||
+			(huart->Init.HwFlowCtl == UART_HWCONTROL_CTS) ||
+			(huart->Init.HwFlowCtl == UART_HWCONTROL_RTS_CTS);
+		if (!valid_flow_control) {
+			return false;
+		}
+#ifdef USART_CR3_HDSEL
+		// RX remains armed during TX, which is incompatible with half-duplex.
+		if (READ_BIT(huart->Instance->CR3, USART_CR3_HDSEL) != 0u) {
+			return false;
+		}
+#endif
+		return true;
+	}
+
+	void refreshTxProgressPolicy() noexcept
+	{
+		m_txProgressWatchEnabled =
+			(m_huart->Init.HwFlowCtl != UART_HWCONTROL_CTS) &&
+			(m_huart->Init.HwFlowCtl != UART_HWCONTROL_RTS_CTS);
+	}
+
 	/* ---------------------------- ISR: RX ------------------------------- */
 
 	// HAL_UARTEx_RxEventCallback path. `size` is the write position inside the
@@ -880,12 +1072,8 @@ private:
 		if (!m_started || m_rxTeardown) {
 			return;
 		}
+		UART_HandleTypeDef* const huart = m_huart;
 
-#if UART_ENGINE_HAS_RXEVENT_TYPE
-		if (HAL_UARTEx_GetRxEventType(m_huart) == HAL_UART_RXEVENT_HT) {
-			return; // HT is disabled in receiveArm(); ignore if it slips through
-		}
-#endif
 		// On BOTH event kinds the HAL has already ENDED the reception before
 		// invoking this callback — verified in the F1, G4 and H7RS HAL
 		// sources:
@@ -905,9 +1093,20 @@ private:
 		// not an option either: HAL_UART_AbortReceive() issues
 		// UART_RXDATA_FLUSH_REQUEST on the new USART IP, discarding bytes
 		// already sitting in RDR/FIFO.
-		if (m_huart->RxState != HAL_UART_STATE_READY) {
-			++m_stats.rx_errors;
-			m_started = false; // proceed() -> receiveRestart(), tick alive
+		// READY is the overwhelmingly common IDLE/TC path. Check it BEFORE
+		// asking the HAL for the event kind: GetRxEventType() is then paid only
+		// by the exceptional still-running branch, never per received chunk.
+		if (huart->RxState != HAL_UART_STATE_READY) {
+#if UART_ENGINE_HAS_RXEVENT_TYPE
+			if (HAL_UARTEx_GetRxEventType(huart) == HAL_UART_RXEVENT_HT) {
+				return; // HT is disabled in receiveArm(); ignore if it slips through
+			}
+#else
+			// On older HALs RxState is the event discriminator: the only valid
+			// callback that leaves normal-mode ReceiveToIdle running is HT.
+			return;
+#endif
+			rejectLiveRxEvent();
 			return;
 		}
 
@@ -921,7 +1120,9 @@ private:
 		// authoritative count from it; on TC it reads 0 and the formula yields
 		// exactly ChunkSize. HAL derives its IDLE sizes the same way.
 		(void)size;
-		publishActive(dmaReceivedCount());
+		if (!publishReceived(huart->hdmarx)) {
+			return;
+		}
 		// note: if m_active == nullptr the bytes went into m_drop — discarded.
 
 		receiveArm();
@@ -946,13 +1147,33 @@ private:
 		reportGap();
 	}
 
-	// Bytes the DMA has deposited into the current buffer. Authoritative only
-	// once the reception is stopped (IDLE-abort or TC) — the count registers
-	// persist across channel/stream disable on every DMA IP.
-	[[nodiscard]] uint16_t dmaReceivedCount() const noexcept
+	// Publish the byte count from the stopped DMA. Its count register is
+	// authoritative after IDLE-abort/TC and persists across channel disable.
+	[[nodiscard]] UART_ENGINE_ALWAYS_INLINE bool publishReceived(
+			DMA_HandleTypeDef* const hdma) noexcept
 	{
-		return static_cast<uint16_t>(
-			ChunkSize - __HAL_DMA_GET_COUNTER(m_huart->hdmarx));
+		const uint32_t remaining = __HAL_DMA_GET_COUNTER(hdma);
+		if (remaining > ChunkSize) {
+			return rejectDmaCount();
+		}
+		publishActive(static_cast<uint16_t>(ChunkSize - remaining));
+		return true;
+	}
+
+	UART_ENGINE_NOINLINE bool rejectDmaCount() noexcept
+	{
+		// Reject before subtraction. Otherwise unsigned underflow becomes a
+		// huge uint16_t and D-cache maintenance walks beyond the RX chunk.
+		++m_stats.rx_errors;
+		voidActiveChunk(); // stopped hardware: one ordered gap marker
+		m_started = false;
+		return false;
+	}
+
+	UART_ENGINE_NOINLINE void rejectLiveRxEvent() noexcept
+	{
+		++m_stats.rx_errors;
+		m_started = false; // proceed() -> receiveRestart(), tick alive
 	}
 
 	// Hand the active chunk to the consumer: invalidate, commit the byte
@@ -960,9 +1181,13 @@ private:
 	// (drop mode) or nothing was received.
 	void publishActive(const uint16_t size) noexcept
 	{
-		if (m_active && size) {
-			uart::detail::invalidate_dcache(m_active->data(), size);
-			m_active->commit_size(size);
+		// Every caller is either the owning ISR or holds IrqGuard. Snapshot the
+		// volatile cross-context pointer once; repeated volatile reloads here
+		// only lengthen the per-chunk hot path.
+		RxChunk* const active = m_active;
+		if (active && size) {
+			uart::detail::invalidate_dcache(active->data(), size);
+			active->commit_size(size);
 			m_rx.publish();
 			m_active = nullptr;
 			// Doorbell LAST, so it means "work has been published", not
@@ -976,6 +1201,9 @@ private:
 	// COBS resynchronizes on the next 0x00 delimiter (architecture doc §18).
 	void receiveArm() noexcept
 	{
+		// receiveArm() runs either from the owning ISR or under IrqGuard. Keep a
+		// local copy so the volatile inter-context pointer is loaded only once.
+		RxChunk* active = m_active;
 		// Reuse an already-claimed chunk (a zero-size event, or a previous arm
 		// attempt that failed) instead of claiming a second one: a claimed
 		// slot that never gets published would leak out of the fifo cycle
@@ -986,19 +1214,20 @@ private:
 		// before proceed() has announced it, so everything the consumer finds
 		// queued is guaranteed to predate the gap. Counting chunks could not
 		// give this — the ISR keeps publishing while a slow handler runs.
-		if (m_active == nullptr && !m_rxGapPending) {
+		if (active == nullptr && !m_rxGapPending) {
 			// Claimed into a local first: reading the value OF an assignment
 			// to a volatile operand is deprecated in C++20 (an error in later
 			// drafts), and this way the store is the only volatile access.
 			RxChunk* const claimed = m_rx.try_claim();
 			m_active = claimed;
+			active = claimed;
 			if (claimed == nullptr) {
 				++m_stats.rx_overrun;
 				m_rxGapPending = true; // bytes will be lost; tell the decoder
 				m_rxWorkPending = true;
 			}
 		}
-		uint8_t* const dst = (m_active != nullptr) ? m_active->data() : m_drop.data();
+		uint8_t* const dst = (active != nullptr) ? active->data() : m_drop.data();
 
 		// AN4839: before DMA writes into a cacheable buffer, dirty lines
 		// covering it must be discarded, otherwise a later eviction would
@@ -1034,7 +1263,7 @@ private:
 		// m_active once the DMA is confirmed stopped.
 		{
 			RxTeardown ts(*this);
-			if (HAL_UART_AbortReceive(m_huart) != HAL_OK) {
+			if (!stopRx()) {
 				++m_stats.rx_errors;
 				m_started = false;
 				return;
@@ -1070,7 +1299,7 @@ private:
 	{
 		// Ignore a completion we are not expecting: either nothing is in
 		// flight, or this callback was raised by a HAL abort we are running
-		// (see m_teardown) — reporting success there would tell the layer
+		// (see m_txTeardown) — reporting success there would tell the layer
 		// above that a frame it never sent has been delivered.
 		if (!m_txBusy || m_txTeardown) {
 			return;
@@ -1201,8 +1430,9 @@ private:
 	// pointer) returns the slot through the normal fifo cycle — no leak.
 	void voidActiveChunk() noexcept
 	{
-		if (m_active) {
-			m_active->commit_size(0);
+		RxChunk* const active = m_active;
+		if (active) {
+			active->commit_size(0);
 			m_rx.publish();
 			m_active = nullptr;
 			m_rxWorkPending = true; // the marker itself is work for the drain
@@ -1238,15 +1468,32 @@ private:
 			return;
 		}
 
-		// DMA FINISHED FEEDING THE UART, which is still shifting the tail out
-		// of its FIFO and shift register. The counter sits at zero and cannot
-		// move again, so "frozen" here means progress-complete, not stalled —
-		// the rule above owns what happens next, when TC arrives. Without
-		// this the stall detector would report failure for a frame that is
-		// physically still going out, which at low baud rates (a full FIFO
-		// takes ~0.5 s to drain at 300 baud) is reachable rather than
-		// theoretical.
+		// DMA FINISHED FEEDING THE UART, which may still be shifting the tail
+		// out of its FIFO and shift register. The counter cannot move again, so
+		// use a separate frame-length-independent drain bound. Under CTS the
+		// peer may hold even this final hardware pipeline forever, so only a
+		// real TC can release ownership there.
 		if (remaining == 0u) {
+			if (!m_txProgressWatchEnabled) {
+				m_txLastRemaining = 0u;
+				m_txProgressValid = true;
+				m_txStallChecks = 0u;
+				return;
+			}
+			// First zero observation starts a NEW debounce domain; do not carry
+			// frozen non-zero samples into the UART-drain stage.
+			if (!m_txProgressValid || m_txLastRemaining != 0u) {
+				m_txLastRemaining = 0u;
+				m_txProgressValid = true;
+				m_txStallChecks = 0u;
+				return;
+			}
+			if (++m_txStallChecks >= uart::detail::tx_drain_audit_limit(
+					m_huart->Init.BaudRate)) {
+				m_txStallChecks = 0u;
+				++m_stats.tx_errors;
+				finishTx(false);
+			}
 			return;
 		}
 
@@ -1283,7 +1530,7 @@ private:
 		bool notify = false;
 		{
 			TxTeardown ts(*this);
-			if (HAL_UART_AbortTransmit(m_huart) == HAL_OK) {
+			if (stopTx()) {
 				uart::detail::IrqGuard guard;
 				if (m_txBusy) {
 					m_txBusy = false;
@@ -1292,8 +1539,9 @@ private:
 				}
 			}
 		}
-		// Outside both the guard and the gate: the handler may legitimately
-		// start the next frame straight away.
+		// Outside both the guard and the gate: callback code is never invoked
+		// while teardown ownership is held. It signals the sole send/proceed
+		// loop rather than re-entering driver control from this mixed context.
 		if (notify && m_txHandler) {
 			m_txHandler(ok);
 		}
@@ -1321,7 +1569,7 @@ private:
 
 		// RX should be actively receiving whenever we believe it is armed.
 		// RxState is present on every HAL recent enough to have ReceiveToIdle.
-		if (!bad && m_started && m_huart->RxState == HAL_UART_STATE_READY) {
+		if (!bad && m_started && m_huart->RxState != HAL_UART_STATE_BUSY_RX) {
 			bad = true; // receiver silently stopped (missed error IRQ, aborted elsewhere)
 		}
 
@@ -1363,8 +1611,7 @@ private:
 				AllTeardown ts(*this);
 				tx_was_active = m_txBusy;
 
-				(void)HAL_UART_DMAStop(m_huart);
-				if (HAL_UART_Abort(m_huart) != HAL_OK) {
+				if (!stopAll()) {
 					++m_stats.rx_errors;
 					m_started = false; // retry from proceed() every iteration
 					return;
@@ -1388,10 +1635,11 @@ private:
 
 private:
 	/*
-	 * RX chunk fifo: storage is INLINE — the whole Uart object must be placed
-	 * in DMA-accessible RAM by the user (see file header).
+	 * Frequently touched control state comes first. On Cortex-M this keeps
+	 * ISR loads/stores inside the short immediate-offset range instead of
+	 * addressing past the large inline DMA buffers on every event.
 	 */
-	RxFifo m_rx{};
+	UART_HandleTypeDef* m_huart = nullptr;
 	// The POINTER is volatile (the pointee is not): an ISR re-arms onto a new
 	// chunk while thread code is inside the unguarded HAL abort of the
 	// drop-reclaim path, and that code must then observe the new value. A
@@ -1399,51 +1647,47 @@ private:
 	// tested — an ISR write is not a visible side effect in the C++ memory
 	// model, so nothing but volatile (or an atomic) obliges it to reload.
 	RxChunk* volatile m_active = nullptr; // chunk owned by DMA (claimed, unpublished)
-
-	// Fallback DMA target when all chunks are in flight; contents are discarded.
-	alignas(32) std::array<uint8_t, ChunkSize> m_drop{};
-
-	UART_HandleTypeDef* m_huart = nullptr;
+	uint32_t m_txLastRemaining = 0;
+	uint32_t m_lastCheckTime = 0;
 	volatile bool m_started = false;
 	volatile bool m_txBusy  = false;
-
-	RxHandler    m_rxHandler{};
-	TxHandler    m_txHandler{};
-	ErrorHandler m_errHandler{};
-	GapHandler   m_gapHandler{};
-
 	// Set by the ISR when the pool ran dry, cleared by the drain loop.
 	volatile bool m_rxGapPending = false;
 	// Doorbell: raised by the ISR whenever it leaves work for the consumer,
 	// so the hot path can answer "is there anything to do?" without touching
 	// the SPSC queue and paying its acquire barrier on every iteration.
 	volatile bool m_rxWorkPending = false;
+	// Thread-context recursion gate for proceedSlow(); deliberately checked
+	// only after the public doorbell/audit fast path has selected slow work.
+	bool m_servicing = false;
 	// TX liveness observation (thread context only). Stall detection is off
 	// while CTS flow control may legitimately hold the transmitter still.
-	bool     m_txProgressWatchEnabled = false;
-	bool     m_txProgressValid = false;
-	uint32_t m_txLastRemaining = 0;
-	uint8_t  m_txStallChecks = 0;
+	bool m_txProgressWatchEnabled = false;
+	bool m_txProgressValid = false;
+	uint32_t m_txStallChecks = 0;
 
-	// Non-zero while thread code is inside a HAL teardown. ST documents that
-	// HAL_DMA_Abort() — reached through every HAL_UART_Abort*/DMAStop call —
-	// raises the TX/RX (half-)complete interrupt for a transfer it interrupts
-	// mid-stream, so the corresponding callback runs. Without this gate such a
-	// callback is indistinguishable from a real completion: TX would report
-	// success for a frame that was never sent, and RX would publish a partial
-	// chunk and re-arm DMA in the middle of the teardown. A depth counter,
-	// not a flag: recovery nests (healthCheck -> receiveRestart).
-	// One counter PER DIRECTION: RX and TX tear down independently, and a
-	// single gate would let an RX abort swallow a genuine TX completion (and
-	// vice versa) for the microseconds it runs. Full recovery raises both.
+	// Non-zero while thread code is inside a HAL teardown. Blocking UART/DMA
+	// aborts run with interrupts enabled, so an already-pending transfer IRQ
+	// can still dispatch while the HAL is changing ownership state. These
+	// per-direction depth counters make such callbacks inert without hiding a
+	// genuine event in the independent direction.
 	volatile uint8_t m_rxTeardown = 0;
 	volatile uint8_t m_txTeardown = 0;
-
-	// Watchdog state (thread context only).
-	uint32_t m_lastCheckTime = 0;
-	uint8_t  m_failCounter   = 0;
-
+	uint8_t m_failCounter = 0; // watchdog debounce (thread context only)
 	Stats m_stats{};
+
+	/*
+	 * DMA storage is INLINE — the whole Uart object must be placed in
+	 * DMA-accessible RAM by the user (see file header).
+	 */
+	RxFifo m_rx{};
+	// Fallback DMA target when all chunks are in flight; contents are discarded.
+	alignas(32) std::array<uint8_t, ChunkSize> m_drop{};
+
+	RxHandler    m_rxHandler{};
+	TxHandler    m_txHandler{};
+	ErrorHandler m_errHandler{};
+	GapHandler   m_gapHandler{};
 };
 
 /* ===================== HAL callbacks (internal variant) =================== */
@@ -1474,4 +1718,6 @@ extern "C" void HAL_UART_ErrorCallback(UART_HandleTypeDef* huart)
 #endif /* internal callbacks */
 
 #endif /* HAL_UART_MODULE_ENABLED */
+#undef UART_ENGINE_NOINLINE
+#undef UART_ENGINE_ALWAYS_INLINE
 #endif /* UART_ENGINE_UART_H_ */

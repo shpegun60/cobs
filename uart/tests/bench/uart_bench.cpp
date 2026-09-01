@@ -11,9 +11,11 @@
  *   'S'  stop: freeze the window and transmit a one-line report
  *   'T'  start the TX generator (64-byte frames back-to-back from the loop)
  *   't'  stop the TX generator
+ *   '1'  change the live link to 115200 baud from thread context
+ *   '3'  change the live link to 3 Mbaud from thread context
  *
- * Any other traffic is scenario payload; the PC generator avoids the four
- * command bytes in its payload pattern.
+ * Any other traffic is scenario payload; the PC generator avoids all six
+ * current command bytes in its payload pattern.
  *
  * CPU accounting (see doc: the hardware IRQ counters already CONTAIN the
  * library's Rx callback, so probe.rx is NOT added to the total — it exists

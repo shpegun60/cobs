@@ -17,7 +17,8 @@ This is not an additional compatibility surface. It exists so that the
 implementation can be reviewed against recorded reasoning instead of against
 somebody's memory of a conversation, and so that its invariants stay provable.
 
-The byte transport underneath is settled and frozen: see `uart/Uart.h`. The
+The byte transport underneath is settled and independently audited: see
+`uart/Uart.h` and `UART_PARANOID_AUDIT.md`. The
 only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 
 ---

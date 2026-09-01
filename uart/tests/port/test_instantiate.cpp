@@ -17,6 +17,20 @@ static_assert(!std::is_copy_assignable_v<uart::detail::IrqGuard>);
 static_assert(!std::is_move_constructible_v<uart::detail::IrqGuard>);
 static_assert(!std::is_move_assignable_v<uart::detail::IrqGuard>);
 
+// Recorded ARM EABI layout. The 64-byte control header keeps every ISR field
+// before the inline DMA storage; all supported Cortex-M ports select a 32-byte
+// SPSC cache line. A field reorder must not silently give back the RAM/codegen
+// improvement this layout provides.
+static_assert(SPSC_CACHELINE_BYTES == 32u);
+static_assert(sizeof(Uart<256, 4>) == 1664u);
+static_assert(sizeof(Uart<64, 2>) == 512u);
+static_assert(sizeof(Uart<>) == 1664u);
+static_assert(alignof(Uart<256, 4>) == 32u);
+static_assert(sizeof(Uart<>::Stats) == 16u);
+static_assert(std::is_trivially_copyable_v<Uart<>::Stats>);
+static_assert(!std::is_move_constructible_v<Uart<>>);
+static_assert(!std::is_move_assignable_v<Uart<>>);
+
 #if defined(USART_RDR_RDR_Msk) && defined(USART_ISR_PE_Msk)
 static_assert(uart::detail::new_usart_ip);
 #elif defined(USART_DR_DR_Msk) && defined(USART_SR_PE_Msk)

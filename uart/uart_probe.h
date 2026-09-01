@@ -47,7 +47,7 @@ enum class Site : uint8_t { Rx, Slow, TxStart };
 #endif
 
 struct Counter {
-	uint64_t total = 0u;  // 32-bit totals wrap in seconds at these rates
+	uint64_t total = 0u;  // CYCCNT subtraction is wrap-safe; total is 64-bit
 	uint32_t max   = 0u;
 	uint32_t calls = 0u;
 

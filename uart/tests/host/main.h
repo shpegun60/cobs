@@ -14,6 +14,10 @@
 #define HAL_UART_MODULE_ENABLED
 #define HAL_DMA_MODULE_ENABLED
 
+#ifndef USE_HAL_UART_REGISTER_CALLBACKS
+#define USE_HAL_UART_REGISTER_CALLBACKS 0
+#endif
+
 typedef enum { HAL_OK = 0, HAL_ERROR = 1, HAL_BUSY = 2, HAL_TIMEOUT = 3 } HAL_StatusTypeDef;
 
 /* ------------------------------ USART regs ------------------------------ */
@@ -23,21 +27,21 @@ typedef struct {
 
 /* Bit definitions the driver and detail/UartRegs.h look for. The presence of
  * USART_RDR_RDR_Msk + USART_ISR_PE_Msk selects the new-IP register map. */
-#define USART_RDR_RDR_Msk   (0x1FFUL)
-#define USART_ISR_PE_Msk    (0x1UL)
-#define USART_CR3_DMAR      (1UL << 6)
-#define USART_CR3_DMAT      (1UL << 7)
-#define USART_CR3_HDSEL     (1UL << 3)
-#define USART_CR3_CTSE      (1UL << 9)
-#define USART_CR3_RTSE      (1UL << 8)
+#define USART_RDR_RDR_Msk   (0x1FFU)
+#define USART_ISR_PE_Msk    (0x1U)
+#define USART_CR3_DMAR      (1U << 6)
+#define USART_CR3_DMAT      (1U << 7)
+#define USART_CR3_HDSEL     (1U << 3)
+#define USART_CR3_CTSE      (1U << 9)
+#define USART_CR3_RTSE      (1U << 8)
 
-#define UART_CLEAR_PEF      (1UL << 0)
-#define UART_CLEAR_FEF      (1UL << 1)
-#define UART_CLEAR_NEF      (1UL << 2)
-#define UART_CLEAR_OREF     (1UL << 3)
-#define UART_CLEAR_IDLEF    (1UL << 4)
+#define UART_CLEAR_PEF      (1U << 0)
+#define UART_CLEAR_FEF      (1U << 1)
+#define UART_CLEAR_NEF      (1U << 2)
+#define UART_CLEAR_OREF     (1U << 3)
+#define UART_CLEAR_IDLEF    (1U << 4)
 
-#define USART_ISR_TC        (1UL << 6)
+#define USART_ISR_TC        (1U << 6)
 #define UART_FLAG_TC        USART_ISR_TC
 
 #define READ_BIT(REG, BIT)  ((REG) & (BIT))
@@ -78,9 +82,11 @@ typedef enum { HAL_UART_RXEVENT_TC = 0, HAL_UART_RXEVENT_HT = 1,
 #define UART_STOPBITS_1_5   0x00003000U
 #define UART_PARITY_NONE    0x00000000U
 #define UART_PARITY_EVEN    0x00000400U
+#define UART_PARITY_ODD     0x00000600U
 #define UART_MODE_TX_RX     0x0000000CU
 #define UART_MODE_RX        0x00000004U
 #define UART_HWCONTROL_NONE    0x00000000U
+#define UART_HWCONTROL_RTS     0x00000100U
 #define UART_HWCONTROL_CTS     0x00000200U
 #define UART_HWCONTROL_RTS_CTS 0x00000300U
 
@@ -131,13 +137,20 @@ typedef struct __UART_HandleTypeDef {
 	HAL_UART_RxEventTypeTypeDef RxEventType;
 	uint16_t RxXferSize;
 	uint32_t FifoMode;
+	void (*RxEventCallback)(struct __UART_HandleTypeDef*, uint16_t);
+	void (*TxCpltCallback)(struct __UART_HandleTypeDef*);
+	void (*ErrorCallback)(struct __UART_HandleTypeDef*);
 } UART_HandleTypeDef;
+
+typedef uint32_t HAL_UART_CallbackIDTypeDef;
+#define HAL_UART_TX_COMPLETE_CB_ID 1U
+#define HAL_UART_ERROR_CB_ID       2U
 
 /* FIFO of the newer IP: modelled so the driver's save/restore around
  * HAL_UART_Init is executed here, not merely compiled by the port matrix. */
-#define USART_CR1_FIFOEN    (1UL << 29)
-#define USART_CR3_TXFTCFG   (7UL << 29)
-#define USART_CR3_RXFTCFG   (7UL << 25)
+#define USART_CR1_FIFOEN    (1U << 29)
+#define USART_CR3_TXFTCFG   (7U << 29)
+#define USART_CR3_RXFTCFG   (7U << 25)
 #define UART_FIFOMODE_ENABLE  USART_CR1_FIFOEN
 #define UART_FIFOMODE_DISABLE 0x00000000U
 
@@ -148,6 +161,11 @@ extern "C" {
 
 uint32_t HAL_GetTick(void);
 HAL_StatusTypeDef HAL_UART_Init(UART_HandleTypeDef*);
+HAL_StatusTypeDef HAL_DMA_Init(DMA_HandleTypeDef*);
+HAL_StatusTypeDef HAL_UART_RegisterRxEventCallback(
+	UART_HandleTypeDef*, void (*)(UART_HandleTypeDef*, uint16_t));
+HAL_StatusTypeDef HAL_UART_RegisterCallback(
+	UART_HandleTypeDef*, HAL_UART_CallbackIDTypeDef, void (*)(UART_HandleTypeDef*));
 HAL_StatusTypeDef HAL_UARTEx_EnableFifoMode(UART_HandleTypeDef*);
 HAL_StatusTypeDef HAL_UARTEx_SetTxFifoThreshold(UART_HandleTypeDef*, uint32_t);
 HAL_StatusTypeDef HAL_UARTEx_SetRxFifoThreshold(UART_HandleTypeDef*, uint32_t);
@@ -171,7 +189,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef*);
 #endif
 
 #define __HAL_DMA_GET_COUNTER(h)        ((h)->CountRemaining)
-#define __HAL_DMA_DISABLE_IT(h, it)     ((void)(h), (void)(it))
+#define __HAL_DMA_DISABLE_IT(h, it)     ((h)->Instance->dummy &= ~(it))
 #define __HAL_UART_CLEAR_FLAG(h, f)     ((h)->Instance->ICR = (f))
 #define __HAL_UART_GET_FLAG(h, f)       (((h)->Instance->ISR & (f)) == (f))
 

@@ -46,6 +46,33 @@ static void raise(std::function<void()> fn) noexcept
 	dispatch_pending();
 }
 
+static void notifyRx(UART_HandleTypeDef* const h, const uint16_t size) noexcept
+{
+#if USE_HAL_UART_REGISTER_CALLBACKS == 1
+	if (h->RxEventCallback != nullptr) { h->RxEventCallback(h, size); }
+#else
+	HAL_UARTEx_RxEventCallback(h, size);
+#endif
+}
+
+static void notifyTx(UART_HandleTypeDef* const h) noexcept
+{
+#if USE_HAL_UART_REGISTER_CALLBACKS == 1
+	if (h->TxCpltCallback != nullptr) { h->TxCpltCallback(h); }
+#else
+	HAL_UART_TxCpltCallback(h);
+#endif
+}
+
+static void notifyError(UART_HandleTypeDef* const h) noexcept
+{
+#if USE_HAL_UART_REGISTER_CALLBACKS == 1
+	if (h->ErrorCallback != nullptr) { h->ErrorCallback(h); }
+#else
+	HAL_UART_ErrorCallback(h);
+#endif
+}
+
 void dispatch_pending() noexcept
 {
 	if (g_primask != 0u || g_dispatching) {
@@ -130,7 +157,7 @@ static void endRxAndNotify(HAL_UART_RxEventTypeTypeDef evt) noexcept
 	mark(g_model.rx_dst, Slot::Free); // no longer DMA-owned; the driver still holds the claim
 	g_model.rx_armed = false;
 
-	raise([got]() { HAL_UARTEx_RxEventCallback(g_model.huart, got); });
+	raise([got]() { notifyRx(g_model.huart, got); });
 }
 
 void rx_idle() noexcept
@@ -146,6 +173,29 @@ void rx_tc() noexcept
 	endRxAndNotify(HAL_UART_RXEVENT_TC);
 }
 
+void rx_half() noexcept
+{
+	if (!g_model.rx_armed) { return; }
+	g_model.huart->RxEventType = HAL_UART_RXEVENT_HT;
+	const uint16_t got = static_cast<uint16_t>(
+		g_model.rx_len - g_model.huart->hdmarx->CountRemaining);
+	raise([got]() { notifyRx(g_model.huart, got); });
+}
+
+void rx_corrupt_counter(const uint32_t remaining) noexcept
+{
+	if (!g_model.rx_armed) { return; }
+	auto* const h = g_model.huart;
+	h->Instance->CR3 &= ~USART_CR3_DMAR;
+	h->RxState = HAL_UART_STATE_READY;
+	h->RxEventType = HAL_UART_RXEVENT_IDLE;
+	h->hdmarx->CountRemaining = remaining;
+	h->hdmarx->State = HAL_DMA_STATE_READY;
+	mark(g_model.rx_dst, Slot::Free);
+	g_model.rx_armed = false;
+	raise([]() { notifyRx(g_model.huart, 0u); });
+}
+
 void rx_error(uint32_t code) noexcept
 {
 	UART_HandleTypeDef* const h = g_model.huart;
@@ -158,7 +208,7 @@ void rx_error(uint32_t code) noexcept
 		mark(g_model.rx_dst, Slot::Free);
 		g_model.rx_armed = false;
 	}
-	raise([]() { HAL_UART_ErrorCallback(g_model.huart); });
+	raise([]() { notifyError(g_model.huart); });
 }
 
 // Stage 1: the DMA has moved the last byte into the peripheral. The HAL only
@@ -178,7 +228,7 @@ void tx_uart_tc() noexcept
 	if (!g_model.tx_armed) { return; }
 	g_model.tx_armed = false;
 	g_model.huart->gState = HAL_UART_STATE_READY;
-	raise([]() { HAL_UART_TxCpltCallback(g_model.huart); });
+	raise([]() { notifyTx(g_model.huart); });
 }
 
 void tx_done() noexcept
@@ -203,7 +253,7 @@ void tx_error() noexcept
 	g_model.tx_armed = false;
 	g_model.huart->gState = HAL_UART_STATE_READY;
 	g_model.huart->Instance->CR3 &= ~USART_CR3_DMAT;
-	raise([]() { HAL_UART_ErrorCallback(g_model.huart); });
+	raise([]() { notifyError(g_model.huart); });
 }
 
 } // namespace fake
@@ -219,7 +269,66 @@ uint32_t HAL_DMA_GetError(const DMA_HandleTypeDef* h) { return h->ErrorCode; }
 
 HAL_UART_RxEventTypeTypeDef HAL_UARTEx_GetRxEventType(const UART_HandleTypeDef* h)
 {
+	++fake::model().rx_event_type_calls;
 	return h->RxEventType;
+}
+
+HAL_StatusTypeDef HAL_DMA_Init(DMA_HandleTypeDef* h)
+{
+	auto& m = fake::model();
+	++m.dma_init_calls;
+	if (m.fail_dma_init > 0) {
+		--m.fail_dma_init;
+		h->State = HAL_DMA_STATE_TIMEOUT;
+		h->ErrorCode |= HAL_DMA_ERROR_TIMEOUT;
+		return HAL_ERROR;
+	}
+	if (m.huart != nullptr && h == m.huart->hdmarx) {
+		if (m.rx_armed) { fake::note_consumer_done(m.rx_dst); }
+		m.rx_armed = false;
+	}
+	if (m.huart != nullptr && h == m.huart->hdmatx) {
+		m.tx_armed = false;
+	}
+	h->State = HAL_DMA_STATE_READY;
+	h->ErrorCode = HAL_DMA_ERROR_NONE;
+	return HAL_OK;
+}
+
+HAL_StatusTypeDef HAL_UART_RegisterRxEventCallback(
+	UART_HandleTypeDef* h, void (*callback)(UART_HandleTypeDef*, uint16_t))
+{
+	auto& m = fake::model();
+	++m.callback_registration_calls;
+	if (m.fail_callback_registration > 0 &&
+			m.callback_registration_calls ==
+				static_cast<uint32_t>(m.fail_callback_registration)) {
+		return HAL_ERROR;
+	}
+	h->RxEventCallback = callback;
+	return HAL_OK;
+}
+
+HAL_StatusTypeDef HAL_UART_RegisterCallback(
+	UART_HandleTypeDef* h, const HAL_UART_CallbackIDTypeDef id,
+	void (*callback)(UART_HandleTypeDef*))
+{
+	auto& m = fake::model();
+	++m.callback_registration_calls;
+	if (m.fail_callback_registration > 0 &&
+			m.callback_registration_calls ==
+				static_cast<uint32_t>(m.fail_callback_registration)) {
+		return HAL_ERROR;
+	}
+	if (id == HAL_UART_TX_COMPLETE_CB_ID) {
+		h->TxCpltCallback = callback;
+		return HAL_OK;
+	}
+	if (id == HAL_UART_ERROR_CB_ID) {
+		h->ErrorCallback = callback;
+		return HAL_OK;
+	}
+	return HAL_ERROR;
 }
 
 // Models the real HAL_UART_Init faithfully in the two ways that matter here:
@@ -252,6 +361,10 @@ HAL_StatusTypeDef HAL_UART_Init(UART_HandleTypeDef* h)
 
 HAL_StatusTypeDef HAL_UARTEx_EnableFifoMode(UART_HandleTypeDef* h)
 {
+	if (fake::model().fail_fifo_config > 0) {
+		--fake::model().fail_fifo_config;
+		return HAL_ERROR;
+	}
 	h->FifoMode = UART_FIFOMODE_ENABLE;
 	h->Instance->CR1 |= USART_CR1_FIFOEN;
 	return HAL_OK;
@@ -259,12 +372,20 @@ HAL_StatusTypeDef HAL_UARTEx_EnableFifoMode(UART_HandleTypeDef* h)
 
 HAL_StatusTypeDef HAL_UARTEx_SetTxFifoThreshold(UART_HandleTypeDef* h, uint32_t thr)
 {
+	if (fake::model().fail_fifo_config > 0) {
+		--fake::model().fail_fifo_config;
+		return HAL_ERROR;
+	}
 	h->Instance->CR3 = (h->Instance->CR3 & ~USART_CR3_TXFTCFG) | (thr & USART_CR3_TXFTCFG);
 	return HAL_OK;
 }
 
 HAL_StatusTypeDef HAL_UARTEx_SetRxFifoThreshold(UART_HandleTypeDef* h, uint32_t thr)
 {
+	if (fake::model().fail_fifo_config > 0) {
+		--fake::model().fail_fifo_config;
+		return HAL_ERROR;
+	}
 	h->Instance->CR3 = (h->Instance->CR3 & ~USART_CR3_RXFTCFG) | (thr & USART_CR3_RXFTCFG);
 	return HAL_OK;
 }
@@ -290,6 +411,9 @@ HAL_StatusTypeDef HAL_UARTEx_ReceiveToIdle_DMA(UART_HandleTypeDef* h, uint8_t* d
 
 	h->hdmarx->CountRemaining = len;
 	h->hdmarx->State = HAL_DMA_STATE_BUSY;
+	// All audited STM32 HALs enable HT on every DMA start. The driver must
+	// explicitly clear it again after each successful arm.
+	h->hdmarx->Instance->dummy |= DMA_IT_HT;
 	h->RxState = HAL_UART_STATE_BUSY_RX;
 	h->RxXferSize = len;
 	h->Instance->CR3 |= USART_CR3_DMAR;
@@ -307,6 +431,7 @@ HAL_StatusTypeDef HAL_UART_Transmit_DMA(UART_HandleTypeDef* h, const uint8_t* sr
 	m.tx_src = src;
 	m.tx_len = len;
 	h->hdmatx->CountRemaining = len;
+	h->hdmatx->Instance->dummy |= DMA_IT_HT;
 	h->Instance->ISR &= ~USART_ISR_TC; // TC clears when a new transfer starts
 	h->gState = HAL_UART_STATE_BUSY_TX;
 	h->hdmatx->State = HAL_DMA_STATE_BUSY;
@@ -321,16 +446,25 @@ HAL_StatusTypeDef HAL_UART_AbortReceive(UART_HandleTypeDef* h)
 		m.rx_cplt_inside_abort = false;
 		fake::rx_idle(); // ST: the interrupted transfer may still raise its callback
 	}
+	if (m.tx_error_inside_abort_receive) {
+		m.tx_error_inside_abort_receive = false;
+		fake::tx_error();
+	}
+	// Real HAL disables the UART request before HAL_DMA_Abort. If that abort
+	// times out, a retry through HAL_UART_AbortReceive alone skips the DMA
+	// because DMAR is already clear; the driver must repair the DMA handle.
+	h->Instance->CR3 &= ~USART_CR3_DMAR;
 	if (m.fail_abort_receive > 0) {
 		--m.fail_abort_receive;
 		h->ErrorCode |= HAL_UART_ERROR_DMA;
+		h->hdmarx->ErrorCode |= HAL_DMA_ERROR_TIMEOUT;
+		h->hdmarx->State = HAL_DMA_STATE_TIMEOUT;
 		return HAL_TIMEOUT; // transfer deliberately left live
 	}
 	if (m.rx_armed) {
 		fake::note_consumer_done(m.rx_dst);
 		m.rx_armed = false;
 	}
-	h->Instance->CR3 &= ~USART_CR3_DMAR;
 	h->hdmarx->State = HAL_DMA_STATE_READY;
 	h->RxState = HAL_UART_STATE_READY;
 	return HAL_OK;
@@ -343,13 +477,19 @@ HAL_StatusTypeDef HAL_UART_AbortTransmit(UART_HandleTypeDef* h)
 		m.tx_cplt_inside_abort = false;
 		fake::tx_done();
 	}
+	if (m.rx_error_inside_abort_transmit) {
+		m.rx_error_inside_abort_transmit = false;
+		fake::rx_error(HAL_UART_ERROR_ORE);
+	}
+	h->Instance->CR3 &= ~USART_CR3_DMAT;
 	if (m.fail_abort_transmit > 0) {
 		--m.fail_abort_transmit;
 		h->ErrorCode |= HAL_UART_ERROR_DMA;
+		h->hdmatx->ErrorCode |= HAL_DMA_ERROR_TIMEOUT;
+		h->hdmatx->State = HAL_DMA_STATE_TIMEOUT;
 		return HAL_TIMEOUT;
 	}
 	m.tx_armed = false;
-	h->Instance->CR3 &= ~USART_CR3_DMAT;
 	h->hdmatx->State = HAL_DMA_STATE_READY;
 	h->gState = HAL_UART_STATE_READY;
 	return HAL_OK;
@@ -357,9 +497,9 @@ HAL_StatusTypeDef HAL_UART_AbortTransmit(UART_HandleTypeDef* h)
 
 HAL_StatusTypeDef HAL_UART_Abort(UART_HandleTypeDef* h)
 {
-	const HAL_StatusTypeDef a = HAL_UART_AbortReceive(h);
-	const HAL_StatusTypeDef b = HAL_UART_AbortTransmit(h);
-	return (a == HAL_OK && b == HAL_OK) ? HAL_OK : HAL_TIMEOUT;
+	// Same order and early-return behaviour as the audited F1/G4/H7RS HALs.
+	if (HAL_UART_AbortTransmit(h) != HAL_OK) { return HAL_TIMEOUT; }
+	return HAL_UART_AbortReceive(h);
 }
 
 HAL_StatusTypeDef HAL_UART_DMAStop(UART_HandleTypeDef* h)

@@ -67,7 +67,7 @@ void testBaudChangePreservesFifoConfiguration()
 	f.configure();
 	// A FIFO-enabled peripheral, as CubeMX leaves it.
 	f.usart.CR1 |= USART_CR1_FIFOEN;
-	f.usart.CR3 |= (2UL << 29) | (3UL << 25); // non-default TX/RX thresholds
+	f.usart.CR3 |= (2U << 29) | (3U << 25); // non-default TX/RX thresholds
 	f.huart.FifoMode = UART_FIFOMODE_ENABLE;
 	check(f.uart.init(&f.huart), "the engine starts on a FIFO-enabled peripheral");
 
@@ -79,6 +79,59 @@ void testBaudChangePreservesFifoConfiguration()
 	      "FIFO mode survives the reconfiguration");
 	check((f.usart.CR3 & USART_CR3_TXFTCFG) == tx_thr, "the TX threshold survives");
 	check((f.usart.CR3 & USART_CR3_RXFTCFG) == rx_thr, "the RX threshold survives");
+}
+
+void testFailedFifoRestoreRollsBackTheWholeChange()
+{
+	fake::reset();
+	Fixture f;
+	f.configure();
+	f.usart.CR1 |= USART_CR1_FIFOEN;
+	f.usart.CR3 |= (2U << 29) | (3U << 25);
+	f.huart.FifoMode = UART_FIFOMODE_ENABLE;
+	check(f.uart.init(&f.huart), "FIFO rollback fixture starts");
+	fake::model().fail_fifo_config = 1;
+
+	check(!f.uart.setBaudRate(2000000u), "a failed FIFO restore fails the speed change");
+	check(f.huart.Init.BaudRate == 115200u && fake::model().applied_baud == 115200u,
+	      "the previous baud is restored together with FIFO state");
+	check((f.usart.CR1 & USART_CR1_FIFOEN) != 0u,
+	      "FIFO mode is restored after the failed attempt");
+	check(fake::model().rx_armed, "reception is live after transactional rollback");
+}
+
+void testBaudChangeRefreshesCtsWatchPolicy()
+{
+	fake::reset();
+	Fixture f;
+	f.start();
+	f.huart.Init.HwFlowCtl = UART_HWCONTROL_RTS_CTS;
+	check(f.uart.setBaudRate(1000000u), "baud change can enable CTS flow control");
+
+	static std::vector<uint8_t> frame(1024, 0xA5);
+	f.uart.send(std::span<const uint8_t>{frame.data(), frame.size()});
+	audits(f, 4 * UART_ENGINE_FAIL_THRESHOLD);
+	check(f.uart.tx_busy(), "newly enabled CTS disables false TX-stall recovery");
+	check(fake::model().tx_results.empty(), "CTS hold produces no terminal event");
+}
+
+void testBaudChangeCanReenableStallDetection()
+{
+	fake::reset();
+	Fixture f;
+	f.configure();
+	f.huart.Init.HwFlowCtl = UART_HWCONTROL_RTS_CTS;
+	check(f.uart.init(&f.huart), "CTS-to-unflowed fixture starts");
+	f.uart.setTxHandler([](bool ok) noexcept { fake::model().tx_results.push_back(ok); });
+	f.huart.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+	check(f.uart.setBaudRate(1000000u), "baud change can disable CTS flow control");
+
+	static std::vector<uint8_t> frame(1024, 0x5A);
+	f.uart.send(std::span<const uint8_t>{frame.data(), frame.size()});
+	audits(f, UART_ENGINE_FAIL_THRESHOLD + 2);
+	check(!f.uart.tx_busy(), "stall detection is re-enabled after CTS is removed");
+	check(fake::model().tx_results.size() == 1u && !fake::model().tx_results[0],
+	      "the frozen transfer reports one failure");
 }
 
 // A rate this kernel clock cannot produce leaves the peripheral half
@@ -116,4 +169,8 @@ void testBaudChangeRejectsNonsense()
 	f.uart.init(&f.huart);
 	check(!f.uart.setBaudRate(0u), "a zero rate is refused");
 	check(fake::model().init_calls == 0u, "neither attempt reconfigured anything");
+
+	f.huart.Init.WordLength = UART_WORDLENGTH_7B;
+	check(!f.uart.setBaudRate(1000000u), "invalid byte framing is refused before teardown");
+	check(fake::model().rx_armed, "invalid framing leaves the working receiver untouched");
 }

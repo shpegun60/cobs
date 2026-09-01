@@ -427,6 +427,7 @@ explicitly revised together:
 - Start here for components, API, and ownership.
 - Read `PROTOCOL.md` when implementing a peer or reviewing framing changes.
 - Read `STORAGE.md` when selecting or writing a memory strategy.
+- Read `UART_PARANOID_AUDIT.md` for the independent STM32 DMA byte transport.
 - Read `BUILD.md` for exact verified commands.
 - Read `COBS_ENGINE.md` for the detailed rationale and overlap proof.
 - Read `COBS_REFACTOR_PLAN.md` for locked migration decisions and history.

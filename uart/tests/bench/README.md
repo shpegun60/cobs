@@ -44,12 +44,15 @@ reports. Lifetime averages are never used ("привиди попередньо�
 
 Single-byte commands, sent alone after a line pause (arrive as their own
 1-byte chunk via IDLE): `R` reset window, `S` freeze + send report,
-`T`/`t` TX generator on/off (64-byte 0x55 frames, back-to-back).
-Payload must avoid those four bytes — `bench.py` uses 0x20..0x4F.
+`T`/`t` TX generator on/off (64-byte 0x55 frames, back-to-back), and `1`/`3`
+deferred live changes to 115200/3M baud.
+Payload must avoid every command byte. `bench.py` builds an explicit
+command-free 48-byte pattern, preserving the historical 1,536-byte continuous
+writes and 96-byte bursts even after the live-baud commands were added.
 
 Report is one line ending `\r\n`, fields `NAME=<total>cy/<calls>
 avg=<cycles> max=<cycles>` for RX/USART/RXDMA/TXDMA/SLOW/TXSTART, then
-`BYTES/CH/GAP/TXFR`, `WIN=<ms> CPU=<x.xx>%`, `OVR/ERR/RST`.
+`BYTES/CH/GAP/TXFR`, `WIN=<ms> CPU=<x.xxx>%`, `OVR/ERR/RST`.
 
 ## Wiring into the Cube project (already done; repeat after a regen if lost)
 
@@ -90,6 +93,23 @@ Note on 115200 baud: cycles-per-event numbers (avg/max) are baud-independent
 — they are the LL-decision inputs. CPU% at this baud will be tiny; project
 it to a target baud as `events/s × cycles/event` rather than re-running at
 every speed.
+
+## Fresh audited run (2026-09-01)
+
+The current UART audit was flashed to a NUCLEO-H7S3L8 revision Y and reran the
+complete historical `256x4` matrix at 115200/1M/3M/6M/10M, the `128x4` and
+`512x4` 10M chunk points, and all six 10M scenarios on the current `128x8`
+default. All 40 recorded windows had zero `GAP`, `OVR`, `ERR`, and `RST`.
+Live 115200 -> 3M -> 115200 changes also passed.
+
+- `results_256_audited_2026-09-01.csv`: 30 historical-matrix windows;
+- `results_chunk128x4_10M_audited_2026-09-01.csv`: 128x4 RX points;
+- `results_chunk512x4_10M_audited_2026-09-01.csv`: 512x4 RX points;
+- `results_default128x8_10M_audited_2026-09-01.csv`: six current-default
+  scenarios.
+
+The detailed old/new comparison and exact silicon verdict live in
+`doc/UART_PARANOID_AUDIT.md`.
 
 ## Design verdict (from the 115200→10M sweep, results_*.csv)
 

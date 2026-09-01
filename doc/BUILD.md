@@ -110,8 +110,9 @@ sh cobs/tests/check_arm_layout.sh
 
 ## UART regression matrix
 
-The COBS refactor keeps UART behaviour frozen. Its host interleaving suite and
-STM32 portability/probe matrix are:
+The current UART ownership, callback, recovery, and performance contracts are
+recorded in `UART_PARANOID_AUDIT.md`. Its host interleaving suite and STM32
+portability/probe matrix are:
 
 ```bash
 export PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH"

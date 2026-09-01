@@ -21,11 +21,10 @@ void testRxErrorDuringTxTeardown()
 	const uint8_t frame[4] = {1, 2, 3, 0};
 	f.uart.send(std::span<const uint8_t>{frame, 4});
 
-	// The TX abort (driven by the stall watchdog) will raise a real TX
-	// completion from inside itself, and an RX error lands in the same window.
-	fake::model().tx_cplt_inside_abort = true;
+	// Inject the RX error from inside HAL_UART_AbortTransmit itself: the TX
+	// teardown gate is already raised, while the RX gate is deliberately not.
+	fake::model().rx_error_inside_abort_transmit = true;
 	fake::rx_bytes("half", 4);
-	fake::rx_error(HAL_UART_ERROR_ORE);
 
 	fake::tx_progress(0); // counter never moves -> stall
 	for (int i = 0; i < UART_ENGINE_FAIL_THRESHOLD + 2; ++i) {
@@ -33,8 +32,8 @@ void testRxErrorDuringTxTeardown()
 		f.loop();
 	}
 
-	check(fake::model().tx_results.size() <= 1,
-	      "at most one TX terminal event despite the overlapping RX error");
+	check(fake::model().tx_results.size() == 1 && !fake::model().tx_results[0],
+	      "exactly one failed TX terminal event despite the overlapping RX error");
 	check(!f.uart.tx_busy(), "TX ownership was returned");
 	check(fake::model().rx_armed, "reception recovered from its own error");
 	const std::string seq = events();
@@ -52,17 +51,16 @@ void testTxErrorDuringRxTeardown()
 	const uint8_t frame[4] = {4, 5, 6, 0};
 	f.uart.send(std::span<const uint8_t>{frame, 4});
 
-	// The RX restart raises its own completion from inside the abort, and the
-	// TX DMA fails in the same window.
-	fake::model().rx_cplt_inside_abort = true;
+	// Inject the TX failure from inside HAL_UART_AbortReceive itself: the RX
+	// teardown gate is already raised, while the TX gate is deliberately not.
+	fake::model().tx_error_inside_abort_receive = true;
 	fake::rx_bytes("xy", 2);
 	fake::rx_error(HAL_UART_ERROR_DMA); // forces an RX teardown
-	fake::tx_error();
 	f.loop();
 	f.loop();
 
-	check(fake::model().tx_results.size() <= 1,
-	      "at most one TX terminal event despite the overlapping RX teardown");
+	check(fake::model().tx_results.size() == 1 && !fake::model().tx_results[0],
+	      "exactly one failed TX terminal event despite the overlapping RX teardown");
 	check(fake::model().rx_armed, "the receiver came back");
 	checkNoViolations("no ownership violation across crossed teardowns");
 }
@@ -106,10 +104,9 @@ void testSendFailureLeavesNoTrace()
 	      "and completes with exactly one success");
 }
 
-// The state the new guard is about: the DMA has fed the UART, the shift
-// register and FIFO are still draining, TC has not arrived. That is
-// progress-complete, not a stall — however long it lasts.
-void testDrainingUartIsNeverAStall()
+// DMA has fed the UART while its shift register/FIFO are still draining.
+// A normal bounded tail is progress-complete, not a stall.
+void testDrainingUartWithinBudgetIsNotAStall()
 {
 	fake::reset();
 	Fixture f;
@@ -119,11 +116,11 @@ void testDrainingUartIsNeverAStall()
 	f.uart.send(std::span<const uint8_t>{frame, 4});
 	fake::tx_dma_done(); // counter at zero, TC still clear
 
-	for (int i = 0; i < 10 * UART_ENGINE_FAIL_THRESHOLD; ++i) {
+	for (int i = 0; i < 2; ++i) {
 		fake::advance_tick(UART_ENGINE_CHECK_PERIOD_MS + 1);
 		f.loop();
 	}
-	check(f.uart.tx_busy(), "a UART still shifting its tail is never called stalled");
+	check(f.uart.tx_busy(), "a UART tail inside its drain budget is not called stalled");
 	check(fake::model().tx_results.empty(), "no terminal event while the line is still busy");
 
 	fake::tx_uart_tc();
@@ -167,6 +164,7 @@ void testAbortTimeoutDuringStallKeepsOwnership()
 	f.uart.send(std::span<const uint8_t>{big.data(), big.size()});
 	fake::tx_progress(64);                     // moves once...
 	fake::model().fail_abort_transmit = 100;   // ...and every abort will time out
+	fake::model().fail_dma_init = 100;         // ...and hardware reset cannot recover it yet
 
 	for (int i = 0; i < 4 * UART_ENGINE_FAIL_THRESHOLD; ++i) {
 		fake::advance_tick(UART_ENGINE_CHECK_PERIOD_MS + 1);
@@ -179,6 +177,7 @@ void testAbortTimeoutDuringStallKeepsOwnership()
 
 	// Once the hardware finally lets go, the next audit resolves it.
 	fake::model().fail_abort_transmit = 0;
+	fake::model().fail_dma_init = 0;
 	for (int i = 0; i < UART_ENGINE_FAIL_THRESHOLD + 2; ++i) {
 		fake::advance_tick(UART_ENGINE_CHECK_PERIOD_MS + 1);
 		f.loop();
@@ -186,4 +185,25 @@ void testAbortTimeoutDuringStallKeepsOwnership()
 	check(!f.uart.tx_busy(), "recovery completes once the abort succeeds");
 	check(fake::model().tx_results.size() == 1 && !fake::model().tx_results[0],
 	      "reported exactly once, as failure");
+}
+
+void testFullRecoveryRepairsBothDmaDirections()
+{
+	fake::reset();
+	Fixture f;
+	f.start();
+	const uint8_t frame[4] = {1, 2, 3, 0};
+	f.uart.send(std::span<const uint8_t>{frame, 4});
+	fake::model().fail_abort_transmit = 1;
+	fake::model().fail_abort_receive = 1;
+	f.huart.ErrorCode = HAL_UART_ERROR_DMA;
+
+	audits(f, UART_ENGINE_FAIL_THRESHOLD + 1);
+	check(fake::model().dma_init_calls == 2u,
+	      "full recovery repairs TX and RX after sequential abort timeouts");
+	check(!f.uart.tx_busy() && fake::model().tx_results.size() == 1u &&
+	      !fake::model().tx_results[0],
+	      "the interrupted TX borrow receives exactly one failure");
+	check(fake::model().rx_armed, "RX is armed after both DMA directions recover");
+	checkNoViolations("two-direction DMA repair preserves every buffer owner");
 }
