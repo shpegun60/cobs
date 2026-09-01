@@ -99,7 +99,7 @@ The script builds with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` and adds
 
 ## Architecture
 
-`doc/UART_COBS_ARCHITECTURE.md` is the original design sketch. It remains
+`doc/old/UART_COBS_ARCHITECTURE.md` is the archived original design sketch. It remains
 useful as historical rationale, but its sample API and parts of its UART model
 are not current. The implemented boundaries are:
 

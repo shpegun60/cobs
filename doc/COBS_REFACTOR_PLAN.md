@@ -764,9 +764,20 @@ When the target API is stable, split durable documentation by audience:
 - `BUILD.md`: supported build/test commands and toolchain assumptions;
 - this plan: migration history and decision record.
 
-Only after content parity is checked should obsolete design sketches move to
-`doc/old`. `UART_COBS_ARCHITECTURE.md` must not silently remain an apparently
-current source of truth when its API examples are historical.
+Content parity was checked before archival:
+
+| Original sketch topic | Current durable source |
+|---|---|
+| layer split, public API, ownership, delegates, lifetimes | `ARCHITECTURE.md` |
+| frame grammar, length field, decoder, gaps, errors, size math | `PROTOCOL.md` |
+| Heap/Pool/custom memory, blocks, quotas, release obligations | `STORAGE.md` |
+| detailed state traces and in-place overlap proof | `COBS_ENGINE.md` |
+| supported build and regression commands | `BUILD.md` |
+| implemented UART ISR/DMA/recovery behavior | `uart/Uart.h` plus host/port tests |
+
+After that audit, the superseded sketch moved to
+`doc/old/UART_COBS_ARCHITECTURE.md` with an explicit historical banner. Its
+old API examples remain available as design history without looking current.
 
 ## 16. Migration phases
 
@@ -848,7 +859,7 @@ protocol changes must never be bundled together.
 - [x] Produce `ARCHITECTURE.md`, `PROTOCOL.md`, and `STORAGE.md` from the stable
       API.
 - [x] Update `BUILD.md` with exact verified commands.
-- [ ] Check parity, then archive superseded sketches.
+- [x] Check parity, then archive superseded sketches.
 - [x] Retain no forwarding aliases or headers during the migration.
 
 ### Phase 8 - isolated UART hygiene
@@ -1041,3 +1052,11 @@ The following are not part of this refactor:
   passed 23,033 COBS checks on MinGW and under WSL ASan/UBSan, the ARM layout
   assertions, UART host 131/131, the F1/G4/H7RS port/probe matrix, the qmake
   consumer, and the root Qt build.
+- Completed the documentation parity map, then physically moved the original
+  `UART_COBS_ARCHITECTURE.md` sketch under `doc/old`. Added a prominent
+  historical-only banner, updated every repository reference, and changed the
+  UART header to identify itself and its host/port suites as the current
+  implementation contract. No forwarding copy remains at the old path. The
+  archived body is unchanged below its new banner, all relative links resolve,
+  UART host stayed 131/131, and the full F1/G4/H7RS port/probe matrix passed
+  with only the known vendor warning.

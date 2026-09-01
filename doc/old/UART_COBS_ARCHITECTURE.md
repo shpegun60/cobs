@@ -1,4 +1,19 @@
-# UART + COBS Transport Architecture
+# UART + COBS Transport Architecture (historical sketch)
+
+> **ARCHIVED — NOT A CURRENT API OR IMPLEMENTATION CONTRACT**
+>
+> This document records the original design exploration. Its examples use
+> superseded names and models, including `get_msg()`, allocator-shaped
+> operations, a virtual `IByteTx`, and an earlier monolithic COBS surface.
+> Do not implement against them.
+>
+> Current sources of truth are
+> [ARCHITECTURE.md](../ARCHITECTURE.md) for components and ownership,
+> [PROTOCOL.md](../PROTOCOL.md) for wire behavior,
+> [STORAGE.md](../STORAGE.md) for memory strategies, and
+> [BUILD.md](../BUILD.md) for verification. Current UART behavior is defined
+> by `uart/Uart.h` and its host/port tests. The text below is preserved as
+> design history.
 
 ## 1. Goal
 

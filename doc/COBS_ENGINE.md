@@ -7,7 +7,7 @@
 
 This document preserves the detailed rationale, transition tables, arithmetic,
 and overlap proof behind those stable documents. It refined the original
-`UART_COBS_ARCHITECTURE.md` sketch while the implementation was being built.
+`old/UART_COBS_ARCHITECTURE.md` sketch while the implementation was being built.
 Current API or extension work starts from the split documents above; this file
 explains why their constraints exist. The old sketch still shows a virtual
 `IByteTx` and a single large templated `cobs::Endpoint`, both superseded by the
