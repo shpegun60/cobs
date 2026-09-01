@@ -128,32 +128,33 @@ build alone is not evidence that either COBS or UART compiles.
 
 ### 3.1 Host layout snapshot
 
-The following values were measured on the pre-refactor x86-64 MinGW build,
-where pointers and `std::size_t` are both 8 bytes. They are regression clues,
-not portable ABI promises:
+The following values were measured on the pre-refactor x86-64 MinGW build and
+with the repository's `arm-none-eabi-g++` Cortex-M4 configuration. They are
+regression clues for those ABIs, not universal ABI promises:
 
-| Current type | Size |
-|---|---:|
-| `TxAllocation` | 16 bytes |
-| `RxPacket<CobsHeapAllocator<...>>` | 24 bytes |
-| `PacketRef<...>` | 8 bytes |
-| `CobsMsg<...>` | 48 bytes |
-| `CobsDecoder` | 48 bytes |
-| `CobsRx<...>` | 136 bytes |
-| `Cobs<CobsHeapAllocator<...>>` | 304 bytes |
-| `CobsHeapAllocator<...>` | 1 byte before `[[no_unique_address]]` embedding |
-| `tiny::delegate` sender | 64 bytes |
-| `tiny::delegate` busy query | 64 bytes |
-| RX statistics | 28 bytes |
-| TX statistics | 12 bytes |
-| pool statistics | 16 bytes |
-| `CobsFixedAllocator<1024, 8, 1024, 2>` | 10,496 bytes |
-| `Cobs<CobsFixedAllocator<1024, 8, 1024, 2>>` | 10,800 bytes |
+| Current type | x86-64 MinGW | ARM EABI, Cortex-M |
+|---|---:|---:|
+| pointer / `std::size_t` | 8 / 8 bytes | 4 / 4 bytes |
+| `TxAllocation` | 16 bytes | 8 bytes |
+| `RxPacket<CobsHeapAllocator<...>>` | 24 bytes | 16 bytes |
+| `PacketRef<...>` | 8 bytes | 4 bytes |
+| `CobsMsg<...>` | 48 bytes | 24 bytes |
+| `CobsDecoder` | 48 bytes | 24 bytes |
+| `CobsRx<...>` | 136 bytes | 80 bytes |
+| `Cobs<CobsHeapAllocator<...>>` | 304 bytes | 168 bytes |
+| `CobsHeapAllocator<...>` | 1 byte | 1 byte |
+| `tiny::delegate` sender | 64 bytes | 32 bytes |
+| `tiny::delegate` busy query | 64 bytes | 32 bytes |
+| RX statistics | 28 bytes | 28 bytes |
+| TX statistics | 12 bytes | 12 bytes |
+| pool statistics | 16 bytes | 16 bytes |
+| `CobsFixedAllocator<1024, 8, 1024, 2>` | 10,496 bytes | 10,424 bytes |
+| `Cobs<CobsFixedAllocator<1024, 8, 1024, 2>>` | 10,800 bytes | 10,592 bytes |
 
-The two 64-byte delegates are intentionally retained. Their size is not a
+The owning delegates are intentionally retained. Their size is not a
 reason to weaken their owning-callable semantics. Before layout work is marked
-complete, repeat the probe with the actual ARM compiler because padding and
-pointer width differ from this host snapshot.
+complete, exact assertions must pass under both host and the recorded ARM
+compiler because padding and pointer width differ.
 
 ## 4. Current runtime architecture
 
@@ -734,8 +735,8 @@ protocol changes must never be bundled together.
 ### Phase 0 - characterization and checked current contract
 
 - [x] Record the verified pre-refactor baseline.
-- [ ] Add self-contained compile smoke tests for each public header.
-- [ ] Record host and ARM-relevant object-layout probes.
+- [x] Add self-contained compile smoke tests for each public header.
+- [x] Record host and ARM-relevant object-layout probes.
 - [x] Add the transitional `cobs::Storage` concept over current method names.
 - [x] Assert that both built-in policies satisfy it.
 - [x] Add negative compile-time checks for missing/wrong/non-`noexcept`
@@ -895,5 +896,7 @@ The following are not part of this refactor:
   WSL, 131 UART host checks, and the complete F1/G4/H7RS port/probe matrix.
 - The two existing COBS test `-Wshadow` warnings and the STM32 H7RS vendor
   `register` warning remain; no new warnings were introduced.
-- Remaining Phase 0 work is public-header smoke coverage and durable
-  host/ARM-relevant layout probes.
+- Added a persistent smoke pass that compiles all 12 current public COBS
+  headers independently.
+- Added exact x86-64 and ARM EABI layout assertions plus an inspectable
+  Cortex-M object probe. Phase 0 characterization is now complete.

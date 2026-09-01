@@ -17,6 +17,9 @@ CXX="${CXX:-g++}"
 OUT="$HERE/out"
 mkdir -p "$OUT"
 
+echo "=== self-contained public headers ==="
+CXX="$CXX" sh "$HERE/check_headers.sh"
+
 WARN="-Wall -Wextra -Wpedantic -Wshadow -Wconversion"
 SAN=""
 if echo 'int main(){return 0;}' | "$CXX" -fsanitize=address,undefined -x c++ - \
@@ -36,6 +39,7 @@ rm -f "$OUT/.sancheck" "$OUT/.sancheck.exe"
 #   test_encoder         canonical in-place encoding over its own payload
 #   test_cobs_msg        TX block ownership and geometry, no transport
 #   test_cobs            the assembled engine over a fake transport, both policies
+#   test_layout          ABI snapshot for ownership-bearing public/current types
 build() {
 	name="$1"
 	shift
@@ -50,6 +54,7 @@ build test_cobs_rx         "$COBS/CobsDecoder.cpp" "$HERE/test_cobs_rx.cpp"
 build test_encoder         "$COBS/CobsDecoder.cpp" "$COBS/CobsEncoder.cpp" "$HERE/test_encoder.cpp"
 build test_cobs_msg        "$COBS/CobsEncoder.cpp" "$HERE/test_cobs_msg.cpp"
 build test_cobs            "$COBS/CobsDecoder.cpp" "$COBS/CobsEncoder.cpp" "$HERE/test_cobs.cpp"
+build test_layout          "$HERE/test_layout.cpp"
 
 # The release build is a DIFFERENT build, so it is tested as one. The pool's
 # double-free and foreign-pointer rejection used to be compiled out by NDEBUG,
@@ -67,6 +72,7 @@ build test_allocators_ndebug -DNDEBUG "$HERE/test_allocators.cpp"
 "$OUT/test_encoder.exe"
 "$OUT/test_cobs_msg.exe"
 "$OUT/test_cobs.exe"
+"$OUT/test_layout.exe"
 
 echo "=== the same guarantees, built with -DNDEBUG ==="
 "$OUT/test_block_pool_ndebug.exe"
