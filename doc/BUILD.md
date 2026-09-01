@@ -120,6 +120,25 @@ sh uart/tests/host/run.sh
 sh uart/tests/port/build.sh
 ```
 
+## COBS + UART hardware integration matrix
+
+The real-silicon NUCLEO-H7S3L8 harness, independent PC codec, exact negative
+tests, DWT accounting, baud sweep, raw JSONL evidence, and reproduction steps
+live in `cobs/tests/hardware/h7s/README.md`.
+
+The one-command Windows runner builds and verifies a fresh image at
+115200/1M/3M/6M/10M, executes the complete COBS suite at each rate, performs
+physical gap/recovery tests, runs the extended 10M stress, and restores a
+smoke-checked 115200 image:
+
+```powershell
+& 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' `
+  -NoProfile -ExecutionPolicy Bypass `
+  -File 'cobs/tests/hardware/h7s/run_matrix.ps1' `
+  -Port COM6 -StLinkSerial <STLINK_SERIAL> `
+  -Output 'cobs/tests/hardware/h7s/results_new.jsonl'
+```
+
 ## Running the executable
 
 Outside Qt Creator the exe needs the Qt runtime DLLs. Either keep `C:\Qt\6.10.1\mingw_64\bin` on `PATH` when launching it, or make the build self-contained once:

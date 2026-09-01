@@ -209,6 +209,37 @@ in registers instead of touching decoder fields per byte. Object layout of
 The receiver reduction comes from removing duplicate state, not from packing
 or inferring the state machine.
 
+### 4.4 Real-silicon COBS + UART integration addendum
+
+On 2026-09-01 the production COBS checkpoint above was integrated with the
+audited UART tree at `ef0a78cd0ebdf0d9b4fbd99fe0e8c1ef81c9b628` and rerun on
+a NUCLEO-H7S3L8 rev Y. The board exercised
+`Uart<128,8>` and
+`Endpoint<Pool<Format<1024,1024>,8,2>>` through USART3/GPDMA and the ST-Link
+VCP. The PC side used an independent COBS/length implementation rather than
+linking the library under test.
+
+The complete functional suite passed at 115200, 1M, 3M, 6M and 10 Mbaud:
+81 boundary/pattern vectors at each rate, exact malformed/length/oversize
+classification, TX Busy ownership retention, deterministic RX/TX pool
+exhaustion, FIFO recovery, and pipelined full-duplex echo. Separate 115200 and
+10M tests forced a physical UART overrun, observed one ordered COBS gap/resync,
+supplied the required post-gap delimiter, and delivered the following packet
+without resetting the MCU.
+
+The final 30-second 10M/window-7 run echoed 61,235 frames and 19,015,336
+payload bytes with zero unexpected UART, COBS, pool, ownership, or accounting
+failure. Its non-overlapping data-driven regions consumed 5.929% of one
+600 MHz M7 core. This includes full IRQs, UART slow service/COBS consume,
+complete packet processing through checked RX release, and checked TX owner
+release; nested sub-counters are not double-counted.
+
+The exact harness contract, commands, acceptance rules, accounting formula,
+reproduction command, result tables, and the 29-record raw JSONL are under
+`cobs/tests/hardware/h7s/`. The matrix finished by flashing and smoke-checking
+the default 115200-baud image. No production COBS or UART behavior was changed
+to obtain this result.
+
 ## 5. Measured changes deliberately rejected
 
 ### Allocation bitmap
@@ -281,5 +312,8 @@ implementation checkpoint is present on the existing remote branch:
 - [x] exact x86-64 and Cortex-M layout assertions;
 - [x] Cortex-M `-O3`/`-Os` codec warning and stack-usage builds;
 - [x] qmake public consumer and root project clean builds;
+- [x] NUCLEO-H7S3L8 end-to-end COBS/UART matrix through 10 Mbaud, including
+      exact fault/pool/backpressure tests, physical gap recovery and 30-second
+      maximum-rate stress;
 - [x] `git diff --check` and a clean tracked build boundary;
 - [x] scoped commit and push on the existing branch.

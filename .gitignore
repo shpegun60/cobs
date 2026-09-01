@@ -14,3 +14,7 @@ stm32_cube_test/
 # Host test binaries
 uart/tests/host/out/
 cobs/tests/out/
+
+# Python test-runner bytecode
+__pycache__/
+*.py[cod]
