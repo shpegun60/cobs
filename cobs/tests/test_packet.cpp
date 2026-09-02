@@ -199,6 +199,44 @@ void testRetentionConsumesCapacity()
 	check(static_cast<bool>(engine.pop_packet()), "and reception resumes");
 }
 
+void testPayloadReaders()
+{
+	Engine engine;
+	const std::vector<uint8_t> body{
+		0xA5u,
+		0x12u, 0x34u,
+		0x78u, 0x56u, 0x34u, 0x12u,
+		0xCAu, 0xFEu,
+	};
+	feed(engine, body);
+	const Packet packet = engine.pop_packet();
+
+	std::size_t offset = 0u;
+	uint8_t tag = 0u;
+	uint16_t be16 = 0u;
+	uint32_t le32 = 0u;
+	std::span<const uint8_t> tail{};
+	check(packet &&
+	      cobs::read_native(packet.data(), offset, tag) && tag == 0xA5u &&
+	      cobs::read_be(packet.data(), offset, be16) && be16 == 0x1234u &&
+	      cobs::read_le(packet.data(), offset, le32) && le32 == 0x12345678u &&
+	      cobs::read_bytes(packet.data(), offset, 2u, tail) &&
+	      tail.size() == 2u && tail[0] == 0xCAu && tail[1] == 0xFEu &&
+	      offset == packet.size(),
+	      "COBS exposes the same stateless native/BE/LE/bytes reader vocabulary");
+
+	const std::size_t old_offset = offset;
+	uint16_t untouched_scalar = 0xBEEFu;
+	const std::span<const uint8_t> old_tail = tail;
+	check(!cobs::read_be(packet.data(), offset, untouched_scalar) &&
+	      offset == old_offset && untouched_scalar == 0xBEEFu,
+	      "a failed COBS scalar read changes neither cursor nor output");
+	check(!cobs::read_bytes(packet.data(), offset, 1u, tail) &&
+	      offset == old_offset && tail.data() == old_tail.data() &&
+	      tail.size() == old_tail.size(),
+	      "a failed COBS byte read changes neither cursor nor output view");
+}
+
 /*
  * The count is uint32_t. A former 16-bit count wrapped after 65536 copies and
  * freed a block while live handles still pointed at it. Staying beyond that
@@ -247,6 +285,9 @@ int main()
 
 	group("BackPressure");
 	testRetentionConsumesCapacity();
+
+	group("PayloadReaders");
+	testPayloadReaders();
 
 	group("RefcountWidth");
 	testRefcountDoesNotWrap();

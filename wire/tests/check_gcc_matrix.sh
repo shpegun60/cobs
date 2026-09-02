@@ -42,6 +42,13 @@ COMMON="-std=gnu++20 -O3 -DNDEBUG -flto \
 	-o "$OUT/modbus_consumer.exe"
 "$OUT/modbus_consumer.exe"
 
+# Compile-time contract for the common public ownership/reader vocabulary and
+# the explicitly protocol-specific receive/metadata surface.
+# shellcheck disable=SC2086
+"$CXX" $COMMON "$HERE/test_api_parity.cpp" \
+	-o "$OUT/api_parity.exe"
+"$OUT/api_parity.exe"
+
 # These options intentionally perturb implementation-defined ABI choices.
 # Wire bytes must remain unchanged because protocol order is explicit.
 # shellcheck disable=SC2086

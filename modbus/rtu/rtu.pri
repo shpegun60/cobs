@@ -22,6 +22,7 @@ isEmpty(MODBUS_RTU_PRI_INCLUDED) {
 
     HEADERS += \
         $$MODBUS_ROOT/../wire/Scalar.h \
+        $$MODBUS_ROOT/../wire/Read.h \
         $$MODBUS_ROOT/Types.h \
         $$MODBUS_ROOT/Pdu.h \
         $$MODBUS_ROOT/detail/BlockPool.h \

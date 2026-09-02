@@ -77,6 +77,7 @@ The stable application vocabulary is:
 | `Endpoint::consume(bytes)` | feeds an arbitrary ordered byte chunk |
 | `Endpoint::notify_gap()` | reports that bytes were physically lost |
 | `Endpoint::pop_packet()` | transfers one ready packet reference to the caller |
+| `cobs::read_native/read_be/read_le/read_bytes` | parses immutable packet data with a caller-owned cursor |
 | `Endpoint::make_message(hint)` | creates an empty TX builder |
 | `Endpoint::send(message)` | attempts to transfer the message block |
 | `Endpoint::poll()` | reclaims an accepted TX block after transport release |
@@ -114,12 +115,14 @@ bool queue_command(cobs::Endpoint<>& engine,
 ```
 
 COBS and Modbus Messages share four writer names: `append_native`, `append_be`,
-`append_le`, and `append_bytes`, with scalar and span overloads. Native writes
-the target object representation; BE/LE select an explicit byte order entirely
-at compile time and order every span element separately. A stable cross-platform
-protocol uses fixed-width integer types and explicitly sized enum underlying
-types. It does not use `size_t`, `long`, plain enums, or structs with padding
-as wire fields.
+`append_le`, and `append_bytes`, with scalar and span overloads. Their receive
+APIs likewise share `read_native`, `read_be`, `read_le`, and `read_bytes`.
+`wire/Read.h` implements the readers once and each protocol namespace re-exports
+the same functions, so the symmetry adds no forwarding call or runtime state.
+Native I/O uses the target object representation; BE/LE select an explicit byte
+order entirely at compile time. A stable cross-platform protocol uses fixed-
+width integer types and explicitly sized enum underlying types. It does not use
+`size_t`, `long`, plain enums, or structs with padding as wire fields.
 
 ### 2.2 Storage extension surface
 
@@ -186,6 +189,8 @@ Storage.h <--------------- detail/BlockPool.h
 | `cobs/Encoder.cpp` | non-template canonical in-place encoder |
 | `cobs/Format.h` | protocol limits, length width, byte order, checked sizes |
 | `wire/Scalar.h` | shared constrained native/BE/LE scalar codec |
+| `wire/Read.h` | shared stateless bounds-checked scalar/byte readers |
+| `cobs/Read.h` | zero-cost public `cobs::read_*` names |
 | `cobs/Storage.h` | storage concept, ownership blocks, Heap, Pool |
 | `cobs/Stats.h` | public protocol counter snapshot |
 | `cobs/detail/Receiver.h` | RX allocation, validation, queue, and ownership |
@@ -196,10 +201,11 @@ Storage.h <--------------- detail/BlockPool.h
 | `cobs/cobs.pri` | reusable qmake source/header boundary |
 
 Protocol geometry points downward into the codec; storage names one format.
-`detail/Message.h` also uses the transport-neutral `wire/Scalar.h`, shared with
-Modbus so the two builders cannot drift in scalar constraints or byte order.
-The codec never points upward into storage, ownership, endpoint, or transport.
-UART never enters this dependency graph.
+`detail/Message.h` uses the transport-neutral `wire/Scalar.h`, while
+`cobs/Read.h` re-exports `wire/Read.h`. Modbus uses those same two primitives,
+so the builders and readers cannot drift in scalar constraints, byte order, or
+failure semantics. The codec never points upward into storage, ownership,
+endpoint, or transport. UART never enters this dependency graph.
 
 ## 4. Endpoint composition
 
@@ -290,6 +296,11 @@ the block.
 The application sees only `std::span<const uint8_t>`. Payload bytes are
 immutable after publication; private reference and queue metadata remain
 mutable internally.
+
+`Packet` deliberately stores no parser position. Each parser owns its own
+`std::size_t offset` and passes `packet.data()` to `cobs::read_*`. A failed read
+changes neither offset nor output, so a parser can reject malformed payload
+without partially committing a field or corrupting another reader's state.
 
 ## 6. TX data and ownership flow
 

@@ -161,6 +161,9 @@ if (!modbus::read_be(packet.data(), offset, start) ||
 
 `read_native`, `read_be`, `read_le` and `read_bytes` mirror the writer names.
 They are bounds checked and leave both cursor and output unchanged on failure.
+COBS exposes the identical calls as `cobs::read_*`. Both namespaces re-export
+one implementation from `wire/Read.h`, so interface parity adds neither a
+forwarding call nor duplicated endian logic.
 
 ## Storage choices
 

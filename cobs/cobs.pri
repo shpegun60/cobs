@@ -27,9 +27,11 @@ isEmpty(COBS_PRI_INCLUDED) {
 
     HEADERS += \
         $$COBS_LIBRARY_DIR/../wire/Scalar.h \
+        $$COBS_LIBRARY_DIR/../wire/Read.h \
         $$COBS_LIBRARY_DIR/Cobs.h \
         $$COBS_LIBRARY_DIR/Codec.h \
         $$COBS_LIBRARY_DIR/Format.h \
+        $$COBS_LIBRARY_DIR/Read.h \
         $$COBS_LIBRARY_DIR/Stats.h \
         $$COBS_LIBRARY_DIR/Storage.h \
         $$COBS_LIBRARY_DIR/detail/BlockPool.h \

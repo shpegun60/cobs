@@ -18,14 +18,17 @@ HEADERS="
  Cobs.h
  Codec.h
  Format.h
+ Read.h
  Stats.h
  Storage.h
 "
 
 count=0
-printf '#include "wire/Scalar.h"\n' |
-	"$CXX" -std=gnu++20 $WARN -I"$PROJ" -fsyntax-only -x c++ -
-count=$((count + 1))
+for header in wire/Scalar.h wire/Read.h; do
+	printf '#include "%s"\n' "$header" |
+		"$CXX" -std=gnu++20 $WARN -I"$PROJ" -fsyntax-only -x c++ -
+	count=$((count + 1))
+done
 for header in $HEADERS; do
 	printf '#include "%s"\n' "$header" |
 		"$CXX" -std=gnu++20 $WARN -I"$COBS" -I"$PROJ/libs/delegate" \

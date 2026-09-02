@@ -28,7 +28,7 @@ Author: [shpegun60](https://github.com/shpegun60)
 | COBS application API | [`cobs/Cobs.h`](cobs/Cobs.h) | frames, packet ownership, TX message building, retries, counters |
 | COBS storage API | [`cobs/Storage.h`](cobs/Storage.h) | `Format`, `Heap`, `Pool`, custom storage contract |
 | Low-level codec | [`cobs/Codec.h`](cobs/Codec.h) | streaming decoder and canonical in-place encoder |
-| Shared scalar codec | [`wire/Scalar.h`](wire/Scalar.h) | constrained native/BE/LE scalar representation with compile-time endian selection |
+| Shared scalar I/O | [`wire/Scalar.h`](wire/Scalar.h), [`wire/Read.h`](wire/Read.h) | constrained native/BE/LE scalar representation and stateless bounds-checked readers |
 | Modbus RTU API | [`modbus/rtu/Rtu.h`](modbus/rtu/Rtu.h) | burst-delimited RTU ADUs, CRC, metadata, packet/message ownership |
 | Modbus PDU helpers | [`modbus/Pdu.h`](modbus/Pdu.h) | stateless bounds-checked native/BE/LE function-data readers |
 | STM32 UART transport | [`uart/Uart.h`](uart/Uart.h) | DMA RX chunks, borrowed DMA TX, gap/error recovery |
@@ -40,8 +40,9 @@ spans and reports physical gaps. `cobs::Endpoint` and
 `modbus::rtu::Endpoint` independently own their framing and messages. A
 different byte transport can be bound to either endpoint, and UART can be
 used without either protocol layer. COBS and Modbus share only the stateless
-`wire/Scalar.h` primitive so their native/BE/LE serializer contracts cannot
-drift; neither protocol depends on the other's framing or ownership types.
+`wire/Scalar.h` and `wire/Read.h` primitives so their native/BE/LE scalar I/O
+contracts cannot drift; neither protocol depends on the other's framing or
+ownership types.
 
 ```text
 RX wire
@@ -265,6 +266,11 @@ structs, `bool`, pointers, or volatile MMIO objects. Portable protocols should
 still use fixed-width values and explicitly sized enum underlying types rather
 than `size_t`, `long`, or implementation-sized enums.
 
+The receive side uses the matching free-function vocabulary in both protocol
+namespaces: `read_native`, `read_be`, `read_le`, and `read_bytes`. `Packet`
+stores no mutable parser cursor; the application owns an offset, which makes
+independent parsers over one immutable packet safe and explicit.
+
 The selected serializer applies only to application payload/function data.
 Library-owned framing never uses native object order: COBS writes and reads its
 length prefix explicitly little-endian, and Modbus RTU writes and reads CRC
@@ -289,6 +295,24 @@ while (auto packet = endpoint.pop_packet()) {
     process(packet.data()); // immutable application payload only
 }
 ```
+
+Parse typed fields without adding state to `Packet`:
+
+```cpp
+std::size_t offset = 0;
+uint16_t command = 0;
+std::span<const uint8_t> body;
+
+if (!cobs::read_be(packet.data(), offset, command) ||
+    !cobs::read_bytes(packet.data(), offset,
+                      packet.size() - offset, body)) {
+    // malformed application payload
+}
+```
+
+Every failed read leaves both `offset` and its output unchanged. The same code
+shape works for Modbus by replacing `cobs::` with `modbus::`; both names expose
+the same `wire/Read.h` functions, not duplicated wrappers.
 
 If the transport knows that one or more bytes were physically lost, report it
 at the exact stream position:
@@ -365,6 +389,7 @@ it should remain zero in a correct integration.
 | `consume(bytes)` | feed ordered bytes from any transport chunking |
 | `notify_gap()` | mark a known physical discontinuity at its exact stream position |
 | `has_packet()` / `pop_packet()` | inspect or take the next immutable received packet |
+| `read_native` / `read_be` / `read_le` / `read_bytes` | parse packet data with an application-owned cursor and a strong failure guarantee |
 | `make_message(hint)` | create an empty exclusive TX message and optionally reserve payload capacity |
 | `send(message)` | start a frame or return an explicit retry/error result |
 | `tx_active()` / `poll()` | observe and reclaim the one transport-borrowed TX block |
@@ -806,7 +831,7 @@ A small runnable downstream-style COBS application is checked in at
 [`cobs/tests/qmake_consumer/main.cpp`](cobs/tests/qmake_consumer/main.cpp). It
 binds a transport, sends through both `Heap` and `Pool`, loops the wire frame
 back into RX, validates the packet, polls ownership, reads statistics, and
-unbinds.
+parses native/BE/LE fields through the public reader facade before unbinding.
 
 The corresponding Modbus consumer is
 [`modbus/rtu/tests/qmake_consumer/main.cpp`](modbus/rtu/tests/qmake_consumer/main.cpp).
@@ -823,8 +848,8 @@ cross-target code generation, benchmarks, and real hardware evidence.
 | COBS qmake consumer | `sh cobs/tests/qmake_consumer/run.sh` | real downstream include/link/use path for Heap and Pool |
 | Cortex-M COBS layout | `sh cobs/tests/check_arm_layout.sh` | ARM object layout assertions |
 | COBS benchmarks | `sh cobs/tests/bench/run.sh` | codec and complete Endpoint hot paths |
-| Shared scalar host oracle | `sh wire/tests/run.sh` | exhaustive 16-bit and randomized unaligned 32/64-bit native/BE/LE values, floating-point representations, sanitizers and O3/LTO |
-| GCC strict/LTO consumers | `MATRIX_TAG=<compiler> CXX=<g++> sh wire/tests/check_gcc_matrix.sh` | real COBS/Modbus consumers under strict alias/alignment/bounds warnings plus `-fshort-enums`/`-funsigned-char` scalar proof |
+| Shared scalar/API host oracle | `sh wire/tests/run.sh` | exhaustive scalar values, reader facade identity, COBS/Modbus public API parity, intentional protocol differences, sanitizers and O3/LTO |
+| GCC strict/LTO consumers | `MATRIX_TAG=<compiler> CXX=<g++> sh wire/tests/check_gcc_matrix.sh` | real COBS/Modbus consumers and API parity under strict alias/alignment/bounds warnings plus `-fshort-enums`/`-funsigned-char` scalar proof |
 | Cortex-M endian hot path | `sh wire/tests/check_arm_hotpath.sh` | little- and big-endian ARM builds prove compile-time selection: native order is direct, opposite order uses REV/REV16, and neither calls a helper |
 | Cortex-M codegen matrix | `sh wire/tests/check_arm_codegen_matrix.sh` | 96 scalar, 60 protocol and 30 COBS objects across M0/M0+/M3/M4/M7/M23/M33/M55, Os/O2/O3, endian and strict-alignment variants |
 | Modbus RTU host suite | `sh modbus/rtu/tests/run.sh` | headers, compile-fail boundaries, CRC oracle, all legal sizes, storage, ownership, endpoint and fuzz properties |

@@ -80,6 +80,17 @@ template<class Engine>
 	    !std::equal(packet.data().begin(), packet.data().end(), payload.begin())) {
 		return false;
 	}
+	std::size_t offset = 0u;
+	uint16_t first = 0u;
+	uint16_t second = 0u;
+	uint8_t last = 0u;
+	if (!cobs::read_be(packet.data(), offset, first) ||
+	    !cobs::read_le(packet.data(), offset, second) ||
+	    !cobs::read_native(packet.data(), offset, last) ||
+	    first != 0x1100u || second != 0x3322u || last != 0x44u ||
+	    offset != packet.size()) {
+		return false;
+	}
 
 	loopback.finish();
 	endpoint.poll();

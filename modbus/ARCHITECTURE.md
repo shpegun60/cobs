@@ -23,7 +23,7 @@ Only transport-independent application protocol facts live directly in
 
 - the maximum 253-byte PDU and 252-byte function-data limits;
 - `SendResult`, whose ownership meaning is transport-independent;
-- stateless, bounds-checked PDU readers.
+- stateless, bounds-checked PDU readers re-exported from the shared wire layer.
 
 RTU and TCP may use common implementation primitives, but their framing,
 storage geometry, packets and messages remain different types. This prevents
@@ -40,15 +40,33 @@ The API deliberately follows the established COBS ownership vocabulary:
 | endpoint | `cobs::Endpoint<Storage>` | `modbus::rtu::Endpoint<Storage>` |
 | receive owner | copyable `Packet` | copyable `Packet` |
 | transmit owner | move-only `Message` | move-only `Message` |
+| nullable/ownership API | `bool`, `reset`, `data`, `size` | same |
 | transport setup | `bind` / `unbind` | `bind` / `unbind` |
-| transmit | `make_message` / `send` | `make_message` / `send` |
+| receive queue | `has_packet` / `pop_packet` | same |
+| known byte loss | `notify_gap` | `notify_gap` |
+| receive boundary | `consume(arbitrary_stream_chunk)` | `receive_adu(one_complete_candidate)` |
+| message factory | `make_message(hint)` | `make_message(address, function, hint)` |
+| transmit | `send` returning `cobs::SendResult` | `send` returning `modbus::SendResult` with the same outcomes |
 | scalar writing | `append_native` / `append_be` / `append_le` | same |
 | raw bytes | `append_bytes` | `append_bytes` |
+| scalar reading | `cobs::read_native/read_be/read_le` | `modbus::read_native/read_be/read_le` |
+| byte reading | `cobs::read_bytes` | `modbus::read_bytes` |
 | completion | `tx_active` / `poll` | `tx_active` / `poll` |
 | observation | `stats` / `storage` | `stats` / `storage` |
+| protocol metadata/views | none in the application payload | `address` / `function` / `pdu` / `adu` |
 
 Modbus-specific metadata is explicit rather than serialized by the
 application.
+
+The differing receive boundary, message-factory metadata, and RTU Packet views
+are protocol facts, not naming drift. Making those calls artificially identical
+would hide whether an input span is an arbitrary stream chunk or one complete
+CRC-bearing ADU.
+
+The matching reader rows are one implementation, not merely similarly named
+copies. `wire/Read.h` owns the bounds checks and strong failure guarantee;
+`cobs` and `modbus` expose it with using-declarations. Both Packet types remain
+immutable and cursor-free, while each application parser owns its offset.
 
 ## 3. RTU frame and logical payload
 

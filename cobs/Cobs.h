@@ -43,6 +43,7 @@
 #define COBS_H_
 
 #include "Format.h"
+#include "Read.h"
 #include "Stats.h"
 #include "Storage.h"
 #include "detail/Message.h"

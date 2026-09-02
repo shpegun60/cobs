@@ -94,7 +94,7 @@ public:
 		m_p = nullptr;
 	}
 
-	explicit operator bool() const noexcept { return m_p != nullptr; }
+	[[nodiscard]] explicit operator bool() const noexcept { return m_p != nullptr; }
 
 	[[nodiscard]] std::span<const uint8_t> data() const noexcept
 	{

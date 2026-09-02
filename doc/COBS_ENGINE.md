@@ -942,10 +942,10 @@ The copy crosses two different offsets — `cobs::codec::raw_offset(old)` to
 `cobs::codec::raw_offset(new)` — because the headroom a block needs depends on its
 capacity. Headroom itself is never copied.
 
-### 8.3.1.1 What the serializers accept
+### 8.3.1.1 What the scalar I/O accepts
 
-COBS and Modbus share one scalar vocabulary and one canonical implementation
-in `wire/Scalar.h`:
+COBS and Modbus share one scalar vocabulary in `wire/Scalar.h` and one
+bounds-checked reader implementation in `wire/Read.h`:
 
 ```text
 append_native(value)  arithmetic (except bool), enumerations, std::byte
@@ -953,7 +953,19 @@ append_native(span)   a contiguous run of the same
 append_be(value/span)  each 1/2/4/8-byte wire scalar in big-endian order
 append_le(value/span)  each 1/2/4/8-byte wire scalar in little-endian order
 append_bytes()        arbitrary bytes
+
+read_native(data, offset, value)  one native-representation scalar
+read_be(data, offset, value)      one big-endian scalar
+read_le(data, offset, value)      one little-endian scalar
+read_bytes(data, offset, count, view)  one immutable bounded subview
 ```
+
+The public names are `cobs::read_*` and `modbus::read_*`, but both are
+using-declarations for the same `wire::read_*` functions. There is no wrapper
+call and no mutable cursor inside `Packet`: the application owns `offset`.
+Bounds are checked before any load or output assignment, so failure leaves the
+cursor and output unchanged. This also lets two parsers inspect the same
+immutable packet independently.
 
 The explicit-endian set includes integers, explicitly sized enums,
 `std::byte`, `float`, and `double`. It deliberately excludes unusual-width

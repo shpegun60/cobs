@@ -91,7 +91,7 @@ The default out-of-tree result is
 
 ## COBS verification
 
-MinGW host suite, including six independent COBS/shared-header smoke checks, seven
+MinGW host suite, including eight independent COBS/shared-header smoke checks, seven
 expected compile-fail contracts with diagnostic validation, and the
 `-DNDEBUG` storage guarantees:
 
@@ -133,7 +133,9 @@ MATRIX_TAG=gcc13 CXX=/c/Qt/Tools/mingw1310_64/bin/g++.exe \
 
 Repeat the second command with a distinct tag for every installed GCC. It
 enables strict alignment, aliasing, bounds, null and format diagnostics and
-also proves protocol bytes under `-fshort-enums -funsigned-char`.
+also proves protocol bytes under `-fshort-enums -funsigned-char`. Both commands
+compile the COBS/Modbus API parity contract, including identical reader
+function identity and the deliberately different COBS-stream/RTU-ADU boundary.
 
 ## UART regression matrix
 
