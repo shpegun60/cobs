@@ -788,9 +788,10 @@ the message stays `Encoded` and `send()` may retry the *same* wire frame.
 | `Failed` | the sender refused after encoding | owns the same retryable `Encoded` frame |
 | `Invalid` | empty message or a message from another endpoint | unchanged |
 
-Every builder method — both `append_native()` overloads, `append_bytes()`, and
-`reserve()` — returns `false` once the message is `Encoded`: the raw bytes they
-would have appended to no longer exist.
+Every builder method — scalar/span `append_native()`, `append_be()`,
+`append_le()`, `append_bytes()`, and `reserve()` — returns `false` once the
+message is `Encoded`: the raw bytes they would have appended to no longer
+exist.
 
 ### 8.2 One active transfer
 
@@ -867,8 +868,9 @@ m_wire       the encoded frame length, once coordinator encoding has run
 
 `make_message(hint)` sets `size()` to zero and asks storage for `hint` bytes of
 capacity. The hint is a hint: it spares growths, and nothing else. Bytes arrive
-through `append_native(value)`, `append_native(span)`, and `append_bytes()`,
-each of which grows the block when it has to.
+through `append_native`, `append_be`, `append_le`, and `append_bytes`; each
+scalar serializer also has a span overload, and every append grows the block
+when it has to.
 
 ```text
 make_message()     cobs::Endpoint::default_capacity_hint — a practical reserve
@@ -942,15 +944,32 @@ capacity. Headroom itself is never copied.
 
 ### 8.3.1.1 What the serializers accept
 
-The scalar and span overloads of `append_native()` share ONE internal
-constraint — `cobs::detail::NativeScalar` — so there is one rule to explain
-rather than two nearly identical ones:
+COBS and Modbus share one scalar vocabulary and one canonical implementation
+in `wire/Scalar.h`:
 
 ```text
 append_native(value)  arithmetic (except bool), enumerations, std::byte
 append_native(span)   a contiguous run of the same
+append_be(value/span)  each 1/2/4/8-byte wire scalar in big-endian order
+append_le(value/span)  each 1/2/4/8-byte wire scalar in little-endian order
 append_bytes()        arbitrary bytes
 ```
+
+The explicit-endian set includes integers, explicitly sized enums,
+`std::byte`, `float`, and `double`. It deliberately excludes unusual-width
+arithmetic and `long double`; floating-point peers must still agree on the
+binary floating representation. An ordered span converts each element
+independently — `{uint16_t{0x1122}, uint16_t{0x3344}}` in BE is
+`11 22 33 44`, never a reversal of the complete four-byte array.
+
+`std::endian::native` and the requested order are compile-time constants.
+Matching native order delegates to `append_native`; opposite order instantiates
+only a fixed 16/32/64-bit swap. On M7, the focused Cortex-M assembly guard locks
+native order to a direct load/store and opposite order to `REV16`/`REV`. The
+larger `-Os/-O2/-O3` matrix also covers M0/M0+/M3/M4/M23/M33/M55 and strict
+alignment: targets that cannot promise unaligned scalar access use fully
+unrolled `LDRB`/`STRB`, never an out-of-line copy helper. No variant contains a
+runtime endian branch.
 
 Everything else is a compile error, deliberately:
 
@@ -966,11 +985,11 @@ Everything else is a compile error, deliberately:
   neither is arithmetic nor an enumeration, and neither means anything at the
   other end of a link.
 
-`append_native(span)` adds no length prefix. A caller who needs one appends it,
+No scalar-span append adds a length prefix. A caller who needs one appends it,
 which keeps the protocol's framing visible in the protocol's own code:
 
 ```cpp
-if (!msg.append_native<uint16_t>(count) || !msg.append_native(values)) {
+if (!msg.append_be<uint16_t>(count) || !msg.append_be(values)) {
     return;   // every append result has to be acted on
 }
 ```

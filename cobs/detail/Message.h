@@ -27,14 +27,14 @@
  *      size()      payload bytes actually APPENDED so far
  *      capacity()  payload bytes the current block permits
  *
- * A message starts at size 0 and is filled with append_native() scalar/span
- * overloads and append_bytes(). Capacity grows on demand, geometrically
+ * A message starts at size 0 and is filled with append_native(), append_be(),
+ * append_le() or append_bytes(). Capacity grows on demand, geometrically
  * (~1.5x), so a caller that cannot predict the length simply appends until it
  * is done. The optional argument to make_message() is a capacity HINT, never
  * an initial size.
  *
  * There is deliberately no writable payload span in the public API. Handing
- * one out would mean handing out a pointer that the next append_native() may
+ * one out would mean handing out a pointer that the next append operation may
  * invalidate, and the whole point of the builder is that ordinary callers
  * never meet that hazard.
  *
@@ -78,12 +78,13 @@
 
 #include "../Codec.h"
 #include "../Storage.h"
+#include "../../wire/Scalar.h"
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <span>
-#include <type_traits>
 
 namespace cobs {
 
@@ -146,29 +147,14 @@ class Endpoint;
  */
 namespace cobs::detail {
 /*
- * std::underlying_type_t<T> is a HARD error for a non-enumeration, and `&&`
- * inside a variable template does not save you: both operands instantiate.
- * So the query has to sit behind a partial specialization that is only ever
- * selected for enumerations.
+ * Local concept names keep COBS diagnostics readable; the canonical rules and
+ * endian primitives live once in wire/Scalar.h and are shared with Modbus.
  */
-template<class T, bool = std::is_enum_v<T>>
-struct is_bool_backed_enum : std::false_type {};
+template<class T>
+concept NativeScalar = wire::Scalar<T>;
 
 template<class T>
-struct is_bool_backed_enum<T, true>
-	: std::bool_constant<std::is_same_v<std::underlying_type_t<T>, bool>> {};
-
-template<class T>
-inline constexpr bool is_bool_backed_enum_v = is_bool_backed_enum<T>::value;
-
-template<class T>
-concept NativeScalar =
-	!std::is_volatile_v<T> &&
-	!is_bool_backed_enum_v<std::remove_cv_t<T>> &&
-	((std::is_arithmetic_v<std::remove_cv_t<T>> &&
-	  !std::is_same_v<std::remove_cv_t<T>, bool>) ||
-	 std::is_enum_v<std::remove_cv_t<T>> ||
-	 std::is_same_v<std::remove_cv_t<T>, std::byte>);
+concept EndianScalar = wire::EndianScalar<T>;
 
 } // namespace cobs::detail
 
@@ -252,9 +238,9 @@ public:
 
 	/*
 	 * Appends one scalar, enumeration or std::byte AS STORED ON THIS TARGET.
-	 * No byte swapping happens here or anywhere else in this layer: protocol
-	 * endianness is the caller's business, and a hidden swap in a transport
-	 * library is a bug that only shows up on the second architecture.
+	 * No byte swapping happens in this overload. Protocol code that requires a
+	 * stable order uses append_be() or append_le() explicitly; append_native()
+	 * remains available when target representation is the intended contract.
 	 *
 	 * What is NOT accepted, and why, is in the detail::NativeScalar concept above.
 	 *
@@ -266,10 +252,25 @@ public:
 	template<detail::NativeScalar T>
 	[[nodiscard]] bool append_native(const T& value) noexcept
 	{
-		// A COMPILE-TIME length, deliberately: the copy then becomes a store
-		// or two rather than a call into memcpy, which is what a serializer
-		// that runs per field has to be.
-		return append_fixed<sizeof(T)>(&value);
+		if (!make_room(sizeof(T))) {
+			return false;
+		}
+		wire::detail::store_native(raw() + m_size, value);
+		m_size += sizeof(T);
+		return true;
+	}
+
+	/* Explicit wire order; the target-order decision is compile-time only. */
+	template<detail::EndianScalar T>
+	[[nodiscard]] bool append_be(const T& value) noexcept
+	{
+		return append_ordered<std::endian::big>(value);
+	}
+
+	template<detail::EndianScalar T>
+	[[nodiscard]] bool append_le(const T& value) noexcept
+	{
+		return append_ordered<std::endian::little>(value);
 	}
 
 	// Raw bytes, appended as they are.
@@ -296,6 +297,19 @@ public:
 		}
 		return append(reinterpret_cast<const uint8_t*>(values.data()),
 		              values.size() * sizeof(T));
+	}
+
+	/* Each span element receives the requested order independently. */
+	template<detail::EndianScalar T>
+	[[nodiscard]] bool append_be(const std::span<const T> values) noexcept
+	{
+		return append_ordered<std::endian::big>(values);
+	}
+
+	template<detail::EndianScalar T>
+	[[nodiscard]] bool append_le(const std::span<const T> values) noexcept
+	{
+		return append_ordered<std::endian::little>(values);
 	}
 
 	/*
@@ -450,14 +464,30 @@ private:
 	}
 
 	// The scalar path: N is a constant, so the copy compiles to stores.
-	template<std::size_t N>
-	[[nodiscard]] bool append_fixed(const void* const src) noexcept
+	template<std::endian Order, detail::EndianScalar T>
+	[[nodiscard]] bool append_ordered(const T& value) noexcept
 	{
-		if (!make_room(N)) {
+		if (!make_room(sizeof(T))) {
 			return false;
 		}
-		std::memcpy(raw() + m_size, src, N); // raw() AFTER any reallocation
-		m_size += N;
+		wire::detail::store_ordered<Order>(raw() + m_size, value);
+		m_size += sizeof(T);
+		return true;
+	}
+
+	template<std::endian Order, detail::EndianScalar T>
+	[[nodiscard]] bool append_ordered(
+			const std::span<const T> values) noexcept
+	{
+		if (values.size() > max_payload_size / sizeof(T)) {
+			return false;
+		}
+		const std::size_t count = values.size() * sizeof(T);
+		if (!make_room(count)) {
+			return false;
+		}
+		wire::detail::store_ordered<Order>(raw() + m_size, values);
+		m_size += count;
 		return true;
 	}
 

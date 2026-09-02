@@ -252,7 +252,7 @@ std::size_t exhaustive_encoder()
 			for (const std::size_t slack : {std::size_t{0}, std::size_t{1}}) {
 				const std::size_t offset = cobs::codec::raw_offset(length) + slack;
 				std::vector<std::uint8_t> storage(offset + length);
-				std::copy(payload.begin(), payload.end(), storage.begin() + offset);
+				std::copy(payload.begin(), payload.end(), storage.data() + offset);
 				const auto frame = cobs::codec::encode_in_place(storage, offset, length);
 				if (!std::equal(frame.begin(), frame.end(),
 				                expected.begin(), expected.end())) {

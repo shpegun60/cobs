@@ -104,7 +104,7 @@ bool queue_command(cobs::Endpoint<>& engine,
 {
     auto message = engine.make_message(sizeof(command) + body.size());
     if (!message ||
-        !message.append_native(command) ||
+        !message.append_be(command) ||
         !message.append_bytes(body)) {
         return false;
     }
@@ -113,10 +113,13 @@ bool queue_command(cobs::Endpoint<>& engine,
 }
 ```
 
-`append_native()` writes the native object representation of accepted scalar
-types. A stable cross-platform protocol still uses fixed-width integer types
-and explicitly sized enum underlying types. It does not use `size_t`, `long`,
-plain enums, or structs with padding as wire fields.
+COBS and Modbus Messages share four writer names: `append_native`, `append_be`,
+`append_le`, and `append_bytes`, with scalar and span overloads. Native writes
+the target object representation; BE/LE select an explicit byte order entirely
+at compile time and order every span element separately. A stable cross-platform
+protocol uses fixed-width integer types and explicitly sized enum underlying
+types. It does not use `size_t`, `long`, plain enums, or structs with padding
+as wire fields.
 
 ### 2.2 Storage extension surface
 
@@ -182,6 +185,7 @@ Storage.h <--------------- detail/BlockPool.h
 | `cobs/Decoder.cpp` | non-template streaming decoder implementation |
 | `cobs/Encoder.cpp` | non-template canonical in-place encoder |
 | `cobs/Format.h` | protocol limits, length width, byte order, checked sizes |
+| `wire/Scalar.h` | shared constrained native/BE/LE scalar codec |
 | `cobs/Storage.h` | storage concept, ownership blocks, Heap, Pool |
 | `cobs/Stats.h` | public protocol counter snapshot |
 | `cobs/detail/Receiver.h` | RX allocation, validation, queue, and ownership |
@@ -192,6 +196,8 @@ Storage.h <--------------- detail/BlockPool.h
 | `cobs/cobs.pri` | reusable qmake source/header boundary |
 
 Protocol geometry points downward into the codec; storage names one format.
+`detail/Message.h` also uses the transport-neutral `wire/Scalar.h`, shared with
+Modbus so the two builders cannot drift in scalar constraints or byte order.
 The codec never points upward into storage, ownership, endpoint, or transport.
 UART never enters this dependency graph.
 
@@ -300,7 +306,8 @@ zero. The no-argument overload requests
 Empty -> Building -> Encoded
 ```
 
-While Building, `append_native()`, `append_bytes()`, and `reserve()` may grow
+While Building, `append_native()`, `append_be()`, `append_le()`,
+`append_bytes()`, and `reserve()` may grow
 capacity by approximately 1.5x. Growth acquires a replacement first, copies
 only the application bytes, and releases the old block only after success.
 A failed growth leaves pointer, capacity, size, and contents unchanged.

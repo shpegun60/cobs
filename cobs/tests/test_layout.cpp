@@ -45,7 +45,47 @@ static_assert(sizeof(Heap) == 1,
 #define COBS_EXPECT_SIZE(Type, Expected) \
 	static_assert(sizeof(Type) == (Expected), #Type " layout changed; review ownership and padding")
 
+#if !defined(COBS_LAYOUT_CHARACTERIZE)
+#if defined(_MSC_VER)
+// MSVC snapshots are intentionally separate from the Itanium C++ ABI used by
+// GCC/Clang: tiny_delegate has a different, but stable, member-function pointer
+// representation there.
 #if INTPTR_MAX == INT64_MAX
+COBS_EXPECT_SIZE(cobs::TxBlock, 16);
+COBS_EXPECT_SIZE(Block, 24);
+COBS_EXPECT_SIZE(Packet, 8);
+COBS_EXPECT_SIZE(Message, 48);
+COBS_EXPECT_SIZE(Decoder, 48);
+COBS_EXPECT_SIZE(Receiver, 120);
+COBS_EXPECT_SIZE(Endpoint, 272);
+COBS_EXPECT_SIZE(Heap, 1);
+COBS_EXPECT_SIZE(Pool, 10496);
+COBS_EXPECT_SIZE(PoolEndpoint, 10760);
+COBS_EXPECT_SIZE(Sender, 56);
+COBS_EXPECT_SIZE(BusyQuery, 56);
+COBS_EXPECT_SIZE(RxStats, 28);
+COBS_EXPECT_SIZE(TxStats, 12);
+COBS_EXPECT_SIZE(Stats, 40);
+COBS_EXPECT_SIZE(PoolStats, 16);
+#elif INTPTR_MAX == INT32_MAX
+COBS_EXPECT_SIZE(cobs::TxBlock, 8);
+COBS_EXPECT_SIZE(Block, 16);
+COBS_EXPECT_SIZE(Packet, 4);
+COBS_EXPECT_SIZE(Message, 24);
+COBS_EXPECT_SIZE(Decoder, 24);
+COBS_EXPECT_SIZE(Receiver, 72);
+COBS_EXPECT_SIZE(Endpoint, 168);
+COBS_EXPECT_SIZE(Heap, 1);
+COBS_EXPECT_SIZE(Pool, 10424);
+COBS_EXPECT_SIZE(PoolEndpoint, 10584);
+COBS_EXPECT_SIZE(Sender, 32);
+COBS_EXPECT_SIZE(BusyQuery, 32);
+COBS_EXPECT_SIZE(RxStats, 28);
+COBS_EXPECT_SIZE(TxStats, 12);
+COBS_EXPECT_SIZE(Stats, 40);
+COBS_EXPECT_SIZE(PoolStats, 16);
+#endif
+#elif INTPTR_MAX == INT64_MAX
 COBS_EXPECT_SIZE(cobs::TxBlock, 16);
 COBS_EXPECT_SIZE(Block, 24);
 COBS_EXPECT_SIZE(Packet, 8);
@@ -79,6 +119,7 @@ COBS_EXPECT_SIZE(RxStats, 28);
 COBS_EXPECT_SIZE(TxStats, 12);
 COBS_EXPECT_SIZE(Stats, 40);
 COBS_EXPECT_SIZE(PoolStats, 16);
+#endif
 #endif
 
 #undef COBS_EXPECT_SIZE

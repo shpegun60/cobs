@@ -21,6 +21,7 @@
 #include "Cobs.h"
 #include "reference_frame.h"
 
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <new>
@@ -546,6 +547,43 @@ void testSerializers()
 	          std::to_string(expected.size()) + " payload bytes)");
 }
 
+void testOrderedSerializers()
+{
+	using Engine = cobs::Endpoint<SpyStorage>;
+	Engine endpoint;
+	CaptureTransport transport;
+	check(bindTransport(endpoint, transport), "the ordered serializer coordinator binds");
+	auto message = endpoint.make_message(0);
+
+	constexpr uint8_t byte = 0xA5u;
+	constexpr uint16_t be16 = 0x1234u;
+	constexpr uint32_t le32 = 0x12345678u;
+	constexpr uint64_t be64 = UINT64_C(0x0102030405060708);
+	constexpr std::array<uint16_t, 2> be_words{0x1020u, 0x3040u};
+	constexpr std::array<uint16_t, 2> le_words{0x5060u, 0x7080u};
+
+	check(message.append_native(byte) && message.append_be(byte) &&
+	      message.append_le(byte) && message.append_be(be16) &&
+	      message.append_le(le32) && message.append_be(be64) &&
+	      message.append_be(Op::Pong) &&
+	      message.append_be(std::span<const uint16_t>{be_words}) &&
+	      message.append_le(std::span<const uint16_t>{le_words}),
+	      "native, big-endian and little-endian scalar/span appends compose");
+
+	const std::vector<uint8_t> expected{
+		0xA5u, 0xA5u, 0xA5u,
+		0x12u, 0x34u,
+		0x78u, 0x56u, 0x34u, 0x12u,
+		0x01u, 0x02u, 0x03u, 0x04u, 0x05u, 0x06u, 0x07u, 0x08u,
+		0x03u, 0x04u,
+		0x10u, 0x20u, 0x30u, 0x40u,
+		0x60u, 0x50u, 0x80u, 0x70u};
+	check(message.size() == expected.size(),
+	      "ordered serializers count only emitted payload bytes");
+	check(sendsAs(endpoint, transport, message, expected),
+	      "ordered payload bytes survive the library-owned COBS length/framing");
+}
+
 void testSerializerFailuresLeaveTheMessageUsable()
 {
 	using Engine = cobs::Endpoint<SpyStorage>;
@@ -558,6 +596,9 @@ void testSerializerFailuresLeaveTheMessageUsable()
 	endpoint.storage().refuse_next = true;
 	check(m.append_native<uint64_t>(0) == false,
 	      "an eight-byte append that cannot grow fails");
+	endpoint.storage().refuse_next = true;
+	check(m.append_be<uint64_t>(UINT64_C(0x0102030405060708)) == false,
+	      "an ordered scalar that cannot grow fails the same way");
 	const uint8_t blob[16] = {};
 	check(m.append_bytes(std::span<const uint8_t>{blob}) == false, "so does a span");
 	const uint32_t words[8] = {};
@@ -712,6 +753,18 @@ concept CanAppendNative = requires(M& m, const T& v) { m.append_native(v); };
 template<class M, class T>
 concept CanAppendSpan = requires(M& m, std::span<const T> s) { m.append_native(s); };
 
+template<class M, class T>
+concept CanAppendBe = requires(M& m, const T& v) { m.append_be(v); };
+
+template<class M, class T>
+concept CanAppendLe = requires(M& m, const T& v) { m.append_le(v); };
+
+template<class M, class T>
+concept CanAppendBeSpan = requires(M& m, std::span<const T> s) { m.append_be(s); };
+
+template<class M, class T>
+concept CanAppendLeSpan = requires(M& m, std::span<const T> s) { m.append_le(s); };
+
 template<class M>
 concept HasPublicEncode = requires(M& m) { m.encode(); };
 
@@ -752,6 +805,16 @@ void testTypeConstraints()
 	static_assert(CanAppendNative<M, Op>);          // enum
 	static_assert(CanAppendNative<M, std::byte>);
 	check(true, "scalars, enums and std::byte are accepted");
+	static_assert(CanAppendBe<M, uint8_t> && CanAppendLe<M, uint8_t>);
+	static_assert(CanAppendBe<M, uint16_t> && CanAppendLe<M, uint16_t>);
+	static_assert(CanAppendBe<M, uint32_t> && CanAppendLe<M, uint32_t>);
+	static_assert(CanAppendBe<M, uint64_t> && CanAppendLe<M, uint64_t>);
+	static_assert(CanAppendBe<M, float> && CanAppendLe<M, double>);
+	static_assert(CanAppendBe<M, Op> && CanAppendLe<M, Op>);
+	static_assert(CanAppendBe<M, std::byte> && CanAppendLe<M, std::byte>);
+	static_assert(CanAppendNative<M, long double> &&
+	              !CanAppendBe<M, long double> && !CanAppendLe<M, long double>);
+	check(true, "ordered serializers accept explicit 1/2/4/8-byte wire scalars");
 
 	// Refused, each for its own reason.
 	static_assert(!CanAppendNative<M, PaddedStruct>,   // padding + field order + ABI
@@ -762,6 +825,8 @@ void testTypeConstraints()
 	              "a pointer value must not be sendable");
 	static_assert(!CanAppendNative<M, uint32_t PaddedStruct::*>,
 	              "a member pointer must not be sendable");
+	static_assert(!CanAppendBe<M, PaddedStruct> && !CanAppendLe<M, PaddedStruct>);
+	static_assert(!CanAppendBe<M, bool> && !CanAppendLe<M, bool>);
 	static_assert(CanAppendNative<M, std::span<const uint8_t>>,
 	              "a native-scalar span selects the span overload");
 	check(true, "structs, bool, pointers and member pointers are refused");
@@ -802,7 +867,11 @@ void testTypeConstraints()
 	static_assert(CanAppendSpan<M, int64_t>);
 	static_assert(CanAppendSpan<M, Op>);
 	static_assert(CanAppendSpan<M, std::byte>);
+	static_assert(CanAppendBeSpan<M, uint16_t> && CanAppendLeSpan<M, uint16_t>);
+	static_assert(CanAppendBeSpan<M, Op> && CanAppendLeSpan<M, Op>);
 	static_assert(!CanAppendSpan<M, PaddedStruct>);
+	static_assert(!CanAppendBeSpan<M, PaddedStruct> &&
+	              !CanAppendLeSpan<M, PaddedStruct>);
 	static_assert(!CanAppendSpan<M, bool>);
 	static_assert(!CanAppendSpan<M, const char*>);
 	check(true, "and append_native accepts and refuses exactly the same types");
@@ -1013,6 +1082,7 @@ int main()
 	group("Serializers");
 	testTypeConstraints();
 	testSerializers();
+	testOrderedSerializers();
 	testSerializerFailuresLeaveTheMessageUsable();
 	testOversizeIsRefusedNotClamped();
 

@@ -57,6 +57,8 @@ expect_failure "$CASES/packet_private_adopt.cpp" \
 	"adopt" "private"
 expect_failure "$CASES/append_struct.cpp" \
 	"append_native" "constraints not satisfied"
+expect_failure "$CASES/append_ordered_struct.cpp" \
+	"append_be" "constraints not satisfied"
 expect_failure "$CASES/legacy_get_msg.cpp" \
 	"get_msg" "no member named"
 expect_failure "$CASES/legacy_set_sender.cpp" \

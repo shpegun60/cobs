@@ -91,7 +91,7 @@ The default out-of-tree result is
 
 ## COBS verification
 
-MinGW host suite, including five independent public-header smoke checks, six
+MinGW host suite, including six independent COBS/shared-header smoke checks, seven
 expected compile-fail contracts with diagnostic validation, and the
 `-DNDEBUG` storage guarantees:
 
@@ -111,7 +111,29 @@ Cortex-M compile-only layout assertions with the recorded CubeIDE toolchain:
 
 ```bash
 sh cobs/tests/check_arm_layout.sh
+sh wire/tests/check_arm_hotpath.sh
+sh wire/tests/check_arm_codegen_matrix.sh
 ```
+
+The scalar hot-path guard compiles both little- and big-endian Cortex-M7
+objects. It rejects runtime endian branches, helper calls, needless native
+swaps, or loss of the expected `REV16`/`REV` opposite-order operations.
+The larger matrix adds M0/M0+/M3/M4/M7/M23/M33/M55, `-Os/-O2/-O3`, strict
+alignment and protocol/COBS translation units. On cores that cannot safely
+perform unaligned scalar accesses it requires inline byte loads/stores rather
+than an out-of-line `memcpy` helper.
+
+The shared host scalar oracle and strict GCC consumer/LTO proof are:
+
+```bash
+sh wire/tests/run.sh
+MATRIX_TAG=gcc13 CXX=/c/Qt/Tools/mingw1310_64/bin/g++.exe \
+  sh wire/tests/check_gcc_matrix.sh
+```
+
+Repeat the second command with a distinct tag for every installed GCC. It
+enables strict alignment, aliasing, bounds, null and format diagnostics and
+also proves protocol bytes under `-fshort-enums -funsigned-char`.
 
 ## UART regression matrix
 

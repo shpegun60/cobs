@@ -144,10 +144,20 @@ public:
 		if (ptr == nullptr) {
 			return false; // a harmless no-op, not an abuse: not counted
 		}
+#if COBS_POOL_CHECKS
+		// Validate the raw address before converting it to the more-aligned
+		// Block pointer type. A foreign caller is allowed to hand us a
+		// misaligned byte pointer; rejecting it must not rely on first forming
+		// a pointer whose alignment precondition is not satisfied.
+		if (!owns(ptr)) {
+			++m_stats.rejected; // foreign or misaligned
+			return false;
+		}
+#endif
 		Block* const b = block_of(ptr);
 #if COBS_POOL_CHECKS
-		if (!owns(b) || is_free(b)) {
-			++m_stats.rejected; // foreign, misaligned or already free
+		if (is_free(b)) {
+			++m_stats.rejected;
 			return false;
 		}
 #endif
@@ -177,16 +187,18 @@ private:
 	// than assumed: the alignment above guarantees the placement is legal.
 	static void set_next(Block* const b, Block* const next) noexcept
 	{
-		std::construct_at(reinterpret_cast<Block**>(b->bytes), next);
+		std::construct_at(
+			static_cast<Block**>(static_cast<void*>(b->bytes)), next);
 	}
 	static Block* next_of(const Block* const b) noexcept
 	{
-		return *std::launder(reinterpret_cast<Block* const*>(b->bytes));
+		return *std::launder(
+			static_cast<Block* const*>(static_cast<const void*>(b->bytes)));
 	}
 
 	static Block* block_of(std::byte* const ptr) noexcept
 	{
-		return reinterpret_cast<Block*>(ptr);
+		return static_cast<Block*>(static_cast<void*>(ptr));
 	}
 
 #if COBS_POOL_CHECKS
@@ -197,9 +209,9 @@ private:
 	// pointers into DIFFERENT objects have no portable meaning, and a foreign
 	// pointer is precisely the case this exists to catch. Here uintptr_t is
 	// not a dodge — the question really is about an address.
-	bool owns(const Block* const b) const noexcept
+	bool owns(const std::byte* const ptr) const noexcept
 	{
-		const auto address = reinterpret_cast<std::uintptr_t>(b);
+		const auto address = reinterpret_cast<std::uintptr_t>(ptr);
 		const auto begin   = reinterpret_cast<std::uintptr_t>(&m_blocks[0]);
 		const auto end     = begin + sizeof(m_blocks);
 

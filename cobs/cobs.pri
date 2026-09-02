@@ -26,6 +26,7 @@ isEmpty(COBS_PRI_INCLUDED) {
         $$COBS_DELEGATE_DIR
 
     HEADERS += \
+        $$COBS_LIBRARY_DIR/../wire/Scalar.h \
         $$COBS_LIBRARY_DIR/Cobs.h \
         $$COBS_LIBRARY_DIR/Codec.h \
         $$COBS_LIBRARY_DIR/Format.h \

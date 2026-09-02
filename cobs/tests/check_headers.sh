@@ -23,6 +23,9 @@ HEADERS="
 "
 
 count=0
+printf '#include "wire/Scalar.h"\n' |
+	"$CXX" -std=gnu++20 $WARN -I"$PROJ" -fsyntax-only -x c++ -
+count=$((count + 1))
 for header in $HEADERS; do
 	printf '#include "%s"\n' "$header" |
 		"$CXX" -std=gnu++20 $WARN -I"$COBS" -I"$PROJ/libs/delegate" \
@@ -33,4 +36,4 @@ for header in $HEADERS; do
 	count=$((count + 1))
 done
 
-echo "$count public headers compile independently through both include roots"
+echo "$count COBS/shared headers compile independently"

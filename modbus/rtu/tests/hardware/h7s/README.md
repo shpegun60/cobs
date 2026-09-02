@@ -1,0 +1,193 @@
+<!--
+Author: shpegun60
+SPDX-License-Identifier: MIT
+-->
+
+# NUCLEO-H7S3L8 Modbus RTU + UART hardware verification
+
+Status: audited on real silicon, 2026-09-02.
+
+Raw evidence:
+
+- [`results_paranoid_final_2026-09-02.jsonl`](results_paranoid_final_2026-09-02.jsonl)
+  — final `-Os` 115200/1M matrix, extended 1M stress, and restored smoke;
+- [`results_paranoid_o2_2026-09-02.jsonl`](results_paranoid_o2_2026-09-02.jsonl)
+  — independent `-O2` 1M functional/fault/pool/stress run;
+- [`results_paranoid_o3_lto_2026-09-02.jsonl`](results_paranoid_o3_lto_2026-09-02.jsonl)
+  — independent `-O3 + LTO` 1M run and extended stress;
+- [`results_scalar_api_final_2026-09-02.jsonl`](results_scalar_api_final_2026-09-02.jsonl)
+  — fresh universal-scalar API 115200/1M matrix and restored smoke test;
+- [`results_audited_2026-09-02.jsonl`](results_audited_2026-09-02.jsonl) —
+  original accepted 115200/1M baseline plus its restored smoke test;
+- [`results_high_baud_probe_2026-09-02.jsonl`](results_high_baud_probe_2026-09-02.jsonl)
+  — the separate 3M UART-IDLE boundary probe, including its captured
+  failure counters.
+
+This harness verifies the production Modbus RTU and UART layers together on
+real STM32H7S3L8 silicon:
+
+```text
+independent Python CRC/ADU oracle
+    <-> ST-Link VCP / COM port
+    <-> USART3 + GPDMA
+    <-> Uart<256, 4>
+    <-> modbus::rtu::Endpoint<modbus::rtu::Pool<8, 2>>
+```
+
+The board does not use the C++ CRC implementation to generate PC requests.
+The Python side has an independent 256-entry CRC oracle, checks the canonical
+`01 03 00 00 00 0A C5 CD` vector, rejects every single-bit mutation of that
+ADU, and round-trips every legal function-data length `0..252` before opening
+the serial port.
+
+## Physical framing scope
+
+This is the same pragmatic v1 boundary documented by the library: one
+continuous `Uart<256,N>` ReceiveToIdle burst is one candidate RTU ADU. The
+runner waits for a response between ordinary requests and inserts explicit
+silence between the pool-flood requests. UART IDLE is roughly one character,
+earlier than the Modbus t1.5 invalid-frame threshold, so this adapter requires
+an uninterrupted peer burst and does not claim strict t1.5/t3.5
+interoperability.
+
+The exact 256-byte case ends through DMA transfer-complete; short cases end
+through UART IDLE. CRC decides whether each candidate is published.
+
+## Board protocol
+
+Every non-control valid ADU is rebuilt and echoed with identical address,
+function and function data. The library calculates the response CRC and sends
+one contiguous DMA span.
+
+Harness control also uses normal RTU packets:
+
+```text
+address = F7
+function = 41
+data = "MRTU" | command:u8 | token:u32-le | optional argument:u32-le
+```
+
+Control responses preserve address/function, set bit 7 of the command byte,
+and repeat the token. `HELLO`, `STATS`, `RESET_METRICS`, `HOLD_PACKETS`, and
+`BACKPRESSURE_SELFTEST` therefore exercise the same CRC, Packet, Message,
+Pool, `send()`, UART borrow and `poll()` paths as ordinary traffic.
+
+## Suites
+
+| Suite | Real path and required outcome |
+|---|---|
+| `smoke` | custom function with an embedded zero echoes exactly; all counters and owners settle |
+| `vectors` | data sizes 0, 1, 2, 31, 32, 63, 64, 127, 128, 251 and 252 across zero/alternating/random patterns; includes exact 255- and 256-byte ADUs |
+| `faults` | corruption in address, function, data and CRC is dropped; a valid custom ADU after every bad candidate recovers immediately |
+| `selftest` | ACK holds TX block one, a second Message gets `Busy` without losing ownership, and a third allocation exhausts TX block two cleanly |
+| `pool` | dequeue is held while 16 separately IDLE-delimited ADUs arrive; exactly the first eight survive FIFO order and the other eight report RX backpressure |
+| `stress` | repeated full-duplex standard/custom requests and exact echoes over every important size, with DWT/IRQ accounting and zero unexpected failures |
+
+`all` runs vectors, faults, selftest, pool and stress. Statistics are captured
+while the STATS request owns exactly one RX block and before its response owns
+a TX block, so the runner requires `rx_in_use=1` and `tx_in_use=0` at that
+observation point.
+
+## Build and one run
+
+The local Cube scaffold is the same checked H7S project used by the UART and
+COBS silicon tests. Build products stay under its gitignored
+`out/modbus-hardware/` directory.
+
+```powershell
+$env:MODBUS_HW_BAUD = '115200'
+$env:MODBUS_HW_OPT = '-Os'       # accepted: -Os, -O2, -O3
+$env:MODBUS_HW_LTO = '0'         # accepted: 0 or 1
+& 'C:\Program Files\Git\bin\bash.exe' `
+  'modbus/rtu/tests/hardware/h7s/build.sh'
+
+& 'C:\ST\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe' `
+  -c port=SWD sn=<STLINK_SERIAL> mode=UR reset=HWrst freq=4000 `
+  -w 'stm32_cube_test/h7s_cobs_test/out/modbus-hardware/modbus_hardware_bench.elf' `
+  -v -rst
+
+python -B modbus/rtu/tests/hardware/h7s/modbus_hardware.py COM6 `
+  --baud 115200 --suite all --seconds 5
+```
+
+## Audited matrix
+
+The default matrix rebuilds, flashes, verifies and tests 115200 and 1M baud,
+runs an extended stress at 1M, and finally restores and smoke-checks a verified
+115200 image. Higher rates remain accepted through `-BaudRates`, but they are
+transport-boundary probes rather than part of the default acceptance matrix.
+At 3M one PC `write()` was observed as two UART-IDLE candidates, but this
+harness did not timestamp the pause and cannot attribute its source or judge
+it against t1.5.
+
+```powershell
+& 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' `
+  -NoProfile -ExecutionPolicy Bypass `
+  -File 'modbus/rtu/tests/hardware/h7s/run_matrix.ps1' `
+  -Port COM6 `
+  -StLinkSerial <STLINK_SERIAL> `
+  -StressSeconds 5 `
+  -ExtendedSeconds 15 `
+  -Output 'modbus/rtu/tests/hardware/h7s/results_new.jsonl'
+```
+
+The runner refuses to append into an existing result file.
+
+## Audited result
+
+Both accepted rates passed vectors, four corruption/recovery cases, TX
+backpressure, deterministic RX exhaustion, and stress. The runner then
+rebuilt, flashed, verified, and smoke-tested the 115200 image left on the
+board.
+
+| Baud / duration | Exact stress ADUs | Function-data bytes | Data MiB/s | Measured CPU |
+|---:|---:|---:|---:|---:|
+| 115200 / 5 s | 316 | 26,948 | 0.0051 | 0.151% |
+| 1M / 5 s | 2,463 | 212,772 | 0.0406 | 1.205% |
+| 1M / 15 s | 7,319 | 632,449 | 0.0402 | 1.207% |
+
+Every stress record has zero CRC rejection, RTU allocation failure, stream
+gap, refused/failed send, UART overrun/error/restart, and pool rejection or
+exhaustion. The intentional suites separately produced exactly:
+
+- four CRC errors for corruption in address, function, data and CRC, followed
+  by four immediate valid recoveries;
+- one `SendResult::Busy` while preserving the caller's Message and one TX pool
+  exhaustion while two owners were live;
+- eight retained FIFO RX packets and eight clean allocation failures from a
+  16-frame physical-burst flood into `Pool<8,2>`.
+
+The final 115200 image is `22,592 B text`, `12 B data`, and `6,832 B BSS`.
+The 1M image differs by four text bytes. The observed target was NUCLEO-H7S3L8
+Rev Y, device ID `0x485`, ST-Link V3J17M11, 3.26 V, and a 600 MHz core.
+
+### Optimization cross-check
+
+The hardware build accepts only the explicit `-Os`, `-O2`, or `-O3` values.
+LTO can be enabled separately. Generated `syscalls.c` and `sysmem.c` remain
+ordinary function-section objects so `--gc-sections` can discard unused heap
+hooks; every accepted image is rejected if `_sbrk`, `malloc`, `free`,
+`operator new`, or `operator delete` survives the final link.
+
+At 1M, the separate `-O2` image passed 1,473 stress ADUs / 127,182 data bytes
+in 3 seconds at 1.145% measured CPU. The `-O3 + LTO` image passed 2,468 ADUs /
+213,058 bytes in 5 seconds and 4,917 ADUs / 425,097 bytes in 10 seconds at
+1.082% and 1.087% measured CPU respectively. Those are observed harness
+measurements, not a generic speed guarantee; `-O3 + LTO` used 26,112 B text
+versus 22,596 B for the final 1M `-Os` image.
+
+### Why 3M is recorded separately
+
+The same 31-vector suite completed once at 3M, then a repeated run failed at
+the 132-byte ADU. The board reported `26` candidate bursts for 24 valid ADUs:
+the failed single PC write became two independently CRC-invalid bursts
+(`crc_errors=2`) with zero UART errors, overruns, RTU gaps, allocation failures,
+or pool failures.
+
+That is direct evidence that the current IDLE adapter produced two boundaries
+inside one host write. It is not evidence that identifies the component which
+created the pause, nor does it show whether the pause was below or above the
+Modbus t1.5 threshold. Streaming COBS tolerates such fragmentation; this
+constrained burst adapter does not. Therefore 3M is not claimed as a reliable
+full-size result, while the complete 1M matrix is. Strict interoperability
+requires a timestamped t1.5/t3.5 framer before `receive_adu()`.

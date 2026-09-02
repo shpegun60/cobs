@@ -258,14 +258,17 @@ public:
 		if (memory == nullptr) {
 			return nullptr;
 		}
-		return std::construct_at(reinterpret_cast<RxBlock*>(memory));
+		return std::construct_at(
+			static_cast<RxBlock*>(static_cast<void*>(memory)));
 	}
 
 	void release_rx(RxBlock* const block) noexcept
 	{
-		(void)m_rx.release(reinterpret_cast<std::byte*>(block),
+		(void)m_rx.release(
+			static_cast<std::byte*>(static_cast<void*>(block)),
 			[](std::byte* const memory) noexcept {
-				std::destroy_at(reinterpret_cast<RxBlock*>(memory));
+				std::destroy_at(
+					static_cast<RxBlock*>(static_cast<void*>(memory)));
 			});
 	}
 

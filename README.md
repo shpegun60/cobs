@@ -3,7 +3,7 @@ Author: shpegun60
 SPDX-License-Identifier: MIT
 -->
 
-# COBS framing + STM32 DMA UART for C++20
+# COBS, Modbus RTU + STM32 DMA UART for C++20
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C.svg)](https://en.cppreference.com/w/cpp/20)
 [![STM32](https://img.shields.io/badge/STM32-DMA%20UART-03234B.svg)](https://www.st.com/stm32)
@@ -12,8 +12,10 @@ SPDX-License-Identifier: MIT
 Production-oriented C++20 libraries for framed serial communication:
 
 - a streaming COBS codec and ownership-safe packet endpoint;
+- a Modbus RTU endpoint with CRC-16, explicit protocol metadata, and the same
+  ownership model;
 - an always-DMA STM32 UART byte transport with zero-copy RX chunks;
-- fixed-pool or heap-backed COBS storage;
+- fixed-pool or heap-backed COBS and Modbus storage;
 - explicit transport-gap propagation, backpressure, recovery, and statistics;
 - host, compile-fail, Cortex-M, benchmark, and real-silicon verification.
 
@@ -26,13 +28,20 @@ Author: [shpegun60](https://github.com/shpegun60)
 | COBS application API | [`cobs/Cobs.h`](cobs/Cobs.h) | frames, packet ownership, TX message building, retries, counters |
 | COBS storage API | [`cobs/Storage.h`](cobs/Storage.h) | `Format`, `Heap`, `Pool`, custom storage contract |
 | Low-level codec | [`cobs/Codec.h`](cobs/Codec.h) | streaming decoder and canonical in-place encoder |
+| Shared scalar codec | [`wire/Scalar.h`](wire/Scalar.h) | constrained native/BE/LE scalar representation with compile-time endian selection |
+| Modbus RTU API | [`modbus/rtu/Rtu.h`](modbus/rtu/Rtu.h) | burst-delimited RTU ADUs, CRC, metadata, packet/message ownership |
+| Modbus PDU helpers | [`modbus/Pdu.h`](modbus/Pdu.h) | stateless bounds-checked native/BE/LE function-data readers |
 | STM32 UART transport | [`uart/Uart.h`](uart/Uart.h) | DMA RX chunks, borrowed DMA TX, gap/error recovery |
 | Integration proof | [`cobs/tests/hardware/h7s`](cobs/tests/hardware/h7s) | real UART + COBS stack on NUCLEO-H7S3L8 |
+| Modbus integration proof | [`modbus/rtu/tests/hardware/h7s`](modbus/rtu/tests/hardware/h7s) | real RTU CRC/ownership/pools + UART DMA on NUCLEO-H7S3L8 |
 
 The layers are intentionally independent. `Uart` transports ordered byte
-spans and reports physical gaps. `cobs::Endpoint` owns framing and messages. A
-different byte transport can be bound to COBS, and UART can be used without
-COBS.
+spans and reports physical gaps. `cobs::Endpoint` and
+`modbus::rtu::Endpoint` independently own their framing and messages. A
+different byte transport can be bound to either endpoint, and UART can be
+used without either protocol layer. COBS and Modbus share only the stateless
+`wire/Scalar.h` primitive so their native/BE/LE serializer contracts cannot
+drift; neither protocol depends on the other's framing or ownership types.
 
 ```text
 RX wire
@@ -61,6 +70,10 @@ application payload
 - `cobs::Message` is a move-only exclusive TX owner.
 - `cobs::Pool` performs deterministic O(1) fixed-block allocation without a
   heap.
+- `modbus::rtu::Packet` exposes zero-copy `data()`, `pdu()`, and `adu()` views;
+  `Message` adds address, function, and CRC around up to 252 data bytes.
+- `modbus::rtu::Pool<Rx, Tx>` provides fixed 256-byte RTU slabs with independent
+  RX/TX ownership quotas and no heap use.
 - UART RX DMA writes directly into cache-aligned SPSC chunks; there is no
   intermediate memcpy.
 - UART TX has one borrowed in-flight span and no hidden queue.
@@ -74,7 +87,8 @@ application payload
 ## Requirements
 
 - C++20 compiler (`std::span`, concepts, constexpr protocol geometry).
-- For COBS: [`tiny::delegate`](https://github.com/shpegun60/delegate).
+- For COBS and Modbus RTU:
+  [`tiny::delegate`](https://github.com/shpegun60/delegate).
 - For UART: [`tiny::delegate`](https://github.com/shpegun60/delegate),
   [`spsc`](https://github.com/shpegun60/spsc), STM32 CMSIS, and the target's
   STM32 HAL UART/DMA headers.
@@ -228,10 +242,34 @@ case cobs::SendResult::Invalid:
 `[[nodiscard]]`; sending after ignoring a failed append would transmit a safe
 but incomplete application message.
 
-`append_native()` is intentionally limited to supported scalar-like values and
-writes their native object representation. A portable wire protocol should
-still define byte order explicitly and must not serialize padded structs,
-`size_t`, `long`, or implementation-sized enums.
+Both COBS and Modbus Messages expose the same scalar-writing vocabulary:
+
+```cpp
+message.append_native(value); // this target's representation and byte order
+message.append_be(value);     // explicit big-endian wire order
+message.append_le(value);     // explicit little-endian wire order
+message.append_bytes(bytes);  // already serialized bytes
+```
+
+Scalar and span overloads are available. Ordered spans encode every element
+independently; they never reverse an entire array as one blob. The target byte
+order and scalar width are compile-time constants. When requested order equals
+`std::endian::native`, the ordered operation delegates to `append_native()`;
+otherwise only a fixed 16/32/64-bit swap is instantiated. Targets that permit
+unaligned scalar access fold this to direct loads/stores. ARMv6-M and strict-
+alignment builds use fully unrolled byte loads/stores instead of an out-of-line
+copy helper. There is no runtime endian branch.
+
+These operations are intentionally constrained. They do not serialize padded
+structs, `bool`, pointers, or volatile MMIO objects. Portable protocols should
+still use fixed-width values and explicitly sized enum underlying types rather
+than `size_t`, `long`, or implementation-sized enums.
+
+The selected serializer applies only to application payload/function data.
+Library-owned framing never uses native object order: COBS writes and reads its
+length prefix explicitly little-endian, and Modbus RTU writes and reads CRC
+explicitly low byte then high byte. COBS code bytes and Modbus address/function
+are single-byte fields. User code cannot reorder any of them.
 
 Call `poll()` regularly. It returns the active TX block to storage after the
 transport's busy query becomes false:
@@ -331,6 +369,73 @@ it should remain zero in a correct integration.
 | `send(message)` | start a frame or return an explicit retry/error result |
 | `tx_active()` / `poll()` | observe and reclaim the one transport-borrowed TX block |
 | `stats()` / `storage()` | read protocol counters and storage-specific diagnostics |
+
+## Modbus RTU quick start
+
+Modbus RTU deliberately uses the same ownership verbs as COBS, but it has its
+own namespace and wire framing:
+
+```cpp
+#include "modbus/rtu/Rtu.h"
+
+using Memory = modbus::rtu::Pool<8, 2>;
+using Modbus = modbus::rtu::Endpoint<Memory>;
+
+Modbus link;
+```
+
+`Pool<8, 2>` means eight simultaneously owned RX packets and two TX
+messages/transport borrows. The heap-backed convenience form is simply:
+
+```cpp
+modbus::rtu::Endpoint<> link;
+```
+
+Create an RTU request by passing address and function once; the library adds
+the CRC and never subtracts framing bytes from the advertised data capacity:
+
+```cpp
+auto request = link.make_message(1u, 0x03u);
+if (!request ||
+    !request.append_be(uint16_t{0x0010u}) ||
+    !request.append_be(uint16_t{2u})) {
+    return;
+}
+
+const modbus::SendResult result = link.send(request);
+```
+
+Receive packets expose immutable metadata and three zero-copy views:
+
+```cpp
+while (auto packet = link.pop_packet()) {
+    use(packet.address(), packet.function(), packet.data());
+    inspect_pdu(packet.pdu()); // function + data
+    inspect_adu(packet.adu()); // address + PDU + CRC
+}
+```
+
+For the supplied STM32 adapter, use `Uart<256, N>` and forward one complete
+ReceiveToIdle burst to `receive_adu()`. Unlike streaming COBS `consume()`, an
+RTU receive call is exactly one candidate ADU; it is not arbitrary chunking.
+
+```cpp
+using Serial = Uart<256, 4>;
+
+uart.setRxHandler(Serial::RxHandler{
+    [](std::span<const uint8_t> candidate) noexcept {
+        link.receive_adu(candidate);
+    }});
+uart.setRxGapHandler(Serial::GapHandler{
+    []() noexcept { link.notify_gap(); }});
+```
+
+The maximum PDU is 253 bytes: one function byte plus up to 252 function-data
+bytes. Address and the two CRC bytes make the maximum RTU ADU exactly 256
+bytes. This v1 adapter uses a continuous UART burst as its physical boundary;
+it does not claim strict software t1.5/t3.5 timing. Read the full
+[Modbus usage guide](modbus/README.md) and canonical
+[Modbus architecture](modbus/ARCHITECTURE.md) before integration.
 
 ## STM32 UART quick start
 
@@ -644,6 +749,14 @@ It enables C++20, publishes headers, adds the delegate include path, and
 compiles `Decoder.cpp` and `Encoder.cpp` exactly once. External directory
 layouts can set `COBS_DELEGATE_DIR` before including it.
 
+Modbus RTU is header-only and provides its own fragment:
+
+```qmake
+include(path/to/modbus/rtu/rtu.pri)
+```
+
+External directory layouts can set `MODBUS_DELEGATE_DIR` before including it.
+
 ### CMake or another build system
 
 There is no generated library binary to match. Add the two non-template codec
@@ -656,6 +769,17 @@ target_sources(app PRIVATE
 
 target_include_directories(app PRIVATE
     path/to/cobs
+    path/to/libs/delegate)
+
+target_compile_features(app PRIVATE cxx_std_20)
+```
+
+For Modbus RTU, add the repository and delegate include roots; there are no
+protocol `.cpp` files:
+
+```cmake
+target_include_directories(app PRIVATE
+    path/to/repository
     path/to/libs/delegate)
 
 target_compile_features(app PRIVATE cxx_std_20)
@@ -684,6 +808,9 @@ binds a transport, sends through both `Heap` and `Pool`, loops the wire frame
 back into RX, validates the packet, polls ownership, reads statistics, and
 unbinds.
 
+The corresponding Modbus consumer is
+[`modbus/rtu/tests/qmake_consumer/main.cpp`](modbus/rtu/tests/qmake_consumer/main.cpp).
+
 ## Verification
 
 The repository distinguishes host behavior, compile-time contracts,
@@ -696,19 +823,34 @@ cross-target code generation, benchmarks, and real hardware evidence.
 | COBS qmake consumer | `sh cobs/tests/qmake_consumer/run.sh` | real downstream include/link/use path for Heap and Pool |
 | Cortex-M COBS layout | `sh cobs/tests/check_arm_layout.sh` | ARM object layout assertions |
 | COBS benchmarks | `sh cobs/tests/bench/run.sh` | codec and complete Endpoint hot paths |
+| Shared scalar host oracle | `sh wire/tests/run.sh` | exhaustive 16-bit and randomized unaligned 32/64-bit native/BE/LE values, floating-point representations, sanitizers and O3/LTO |
+| GCC strict/LTO consumers | `MATRIX_TAG=<compiler> CXX=<g++> sh wire/tests/check_gcc_matrix.sh` | real COBS/Modbus consumers under strict alias/alignment/bounds warnings plus `-fshort-enums`/`-funsigned-char` scalar proof |
+| Cortex-M endian hot path | `sh wire/tests/check_arm_hotpath.sh` | little- and big-endian ARM builds prove compile-time selection: native order is direct, opposite order uses REV/REV16, and neither calls a helper |
+| Cortex-M codegen matrix | `sh wire/tests/check_arm_codegen_matrix.sh` | 96 scalar, 60 protocol and 30 COBS objects across M0/M0+/M3/M4/M7/M23/M33/M55, Os/O2/O3, endian and strict-alignment variants |
+| Modbus RTU host suite | `sh modbus/rtu/tests/run.sh` | headers, compile-fail boundaries, CRC oracle, all legal sizes, storage, ownership, endpoint and fuzz properties |
+| Modbus qmake consumer | `sh modbus/rtu/tests/qmake_consumer/run.sh` | downstream header-only use with Heap and Pool |
+| Modbus + UART fake HAL | `sh modbus/rtu/tests/run_uart_integration.sh` | short IDLE ADU, exact 256-byte TC ADU, gaps, recovery, and DMA TX borrow |
+| Cortex-M Modbus layout | `sh modbus/rtu/tests/check_arm_layout.sh` | ARM object layout and static RAM assertions |
+| Modbus + UART H7S matrix | [`modbus/rtu/tests/hardware/h7s/README.md`](modbus/rtu/tests/hardware/h7s/README.md) | independent PC CRC oracle, exact 256-byte ADUs, corruptions, pools, recovery and stress at 115200/1M |
 | UART host matrix | `sh uart/tests/host/run.sh` | runtime interleavings, errors, recovery, callbacks, baud changes, torture, invalid configs |
 | UART port matrix | `sh uart/tests/port/build.sh` | F1/G4/H7RS compile paths, analyzer, probes, hot symbol/stack budgets |
 | UART H7S bench | [`uart/tests/bench/README.md`](uart/tests/bench/README.md) | real DMA/IRQ throughput and CPU accounting |
 | COBS + UART H7S matrix | [`cobs/tests/hardware/h7s/README.md`](cobs/tests/hardware/h7s/README.md) | independent PC codec, vectors, faults, pools, gaps, stress through 10 Mbaud |
 
-Raw current COBS + UART evidence:
+Raw current hardware evidence:
 
 - [baseline audited H7S matrix](cobs/tests/hardware/h7s/results_audited_2026-09-01.jsonl);
 - [concise Format/Pool API H7S matrix](cobs/tests/hardware/h7s/results_format_api_2026-09-01.jsonl);
 - [UART default 128x8 10 Mbaud run](uart/tests/bench/results_default128x8_10M_audited_2026-09-01.csv);
-- [UART chunk-size comparison data](uart/tests/bench/README.md#fresh-audited-run-2026-09-01).
+- [UART chunk-size comparison data](uart/tests/bench/README.md#fresh-audited-run-2026-09-01);
+- [Modbus accepted 115200/1M matrix](modbus/rtu/tests/hardware/h7s/results_audited_2026-09-02.jsonl);
+- [Modbus universal-scalar 115200/1M matrix](modbus/rtu/tests/hardware/h7s/results_scalar_api_final_2026-09-02.jsonl);
+- [Modbus final paranoid `-Os` 115200/1M matrix](modbus/rtu/tests/hardware/h7s/results_paranoid_final_2026-09-02.jsonl);
+- [Modbus `-O2` silicon run](modbus/rtu/tests/hardware/h7s/results_paranoid_o2_2026-09-02.jsonl);
+- [Modbus `-O3` + LTO silicon run](modbus/rtu/tests/hardware/h7s/results_paranoid_o3_lto_2026-09-02.jsonl);
+- [Modbus 3M UART-IDLE boundary probe](modbus/rtu/tests/hardware/h7s/results_high_baud_probe_2026-09-02.jsonl).
 
-The full post-refactor H7S matrix passed at 115200, 1M, 3M, 6M, and 10M,
+The full post-refactor COBS H7S matrix passed at 115200, 1M, 3M, 6M, and 10M,
 including physical gap/recovery tests. Its extended 10 Mbaud/window-7 run
 delivered 61,611 exact frames and 19,133,016 application bytes in 30 seconds,
 with zero unexpected UART or COBS loss. See the evidence README for the exact
@@ -733,6 +875,10 @@ Read active documents in this order:
    recovery, cache/DMA rules, and code-generation evidence.
 8. [Refactor plan and decision history](doc/COBS_REFACTOR_PLAN.md) — locked
    architectural decisions and completed phases.
+9. [Modbus RTU usage](modbus/README.md) — public API, UART binding, storage,
+   diagnostics, tests, and the burst-framing limitation.
+10. [Modbus architecture](modbus/ARCHITECTURE.md) — RTU ownership invariants
+    and the separate future `modbus::tcp` boundary.
 
 Files under [`doc/old`](doc/old) are preserved historical designs and legacy
 code. They are not the current API and should not be copied into new

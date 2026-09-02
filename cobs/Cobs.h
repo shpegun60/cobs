@@ -216,7 +216,7 @@ public:
 	 *
 	 *     auto msg = cobs.make_message();
 	 *     if (!msg ||
-	 *         !msg.append_native<uint16_t>(id) ||
+	 *         !msg.append_be<uint16_t>(id) ||
 	 *         !msg.append_bytes(body)) {
 	 *         return;               // exhausted, or the payload will not fit
 	 *     }

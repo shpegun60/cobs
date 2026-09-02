@@ -18,6 +18,7 @@
 #include "Storage.h"
 #include "reference_frame.h"
 
+#include <array>
 #include <cstdio>
 #include <memory>
 #include <new>
@@ -326,6 +327,14 @@ void testLengthCodec()
 	              "the largest supported limit uses two bytes");
 	static_assert(std::is_same_v<Narrow::LengthType, uint8_t>);
 	static_assert(std::is_same_v<Wide::LengthType, uint16_t>);
+	constexpr auto compile_time_length = [] {
+		std::array<uint8_t, 2> bytes{};
+		Wide::store_length(bytes.data(), 0x1234u);
+		return bytes;
+	}();
+	static_assert(compile_time_length[0] == 0x34u &&
+	              compile_time_length[1] == 0x12u);
+	static_assert(Wide::load_length(compile_time_length.data()) == 0x1234u);
 	check(true, "the header width follows max(rx_max_size, tx_max_size)");
 
 	// The asymmetric pair keeps its directional limits; only the wire header

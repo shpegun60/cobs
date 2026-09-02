@@ -65,7 +65,9 @@ template<class Engine>
 
 	constexpr std::array<uint8_t, 5> payload{0x11, 0x00, 0x22, 0x33, 0x44};
 	auto message = endpoint.make_message(payload.size());
-	if (!message || !message.append_bytes(std::span<const uint8_t>{payload})) {
+	if (!message || !message.append_be(uint16_t{0x1100u}) ||
+	    !message.append_le(uint16_t{0x3322u}) ||
+	    !message.append_native(uint8_t{0x44u})) {
 		return false;
 	}
 	if (endpoint.send(message) != cobs::SendResult::Sent || message) {

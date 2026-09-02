@@ -1,0 +1,215 @@
+/*
+ * Author: shpegun60
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
+ * Modbus RTU endpoint.
+ *
+ * Ownership and transport semantics deliberately mirror cobs::Endpoint.
+ * The RX boundary is different: receive_adu() accepts exactly one physical
+ * UART burst candidate, not arbitrary stream chunks. The candidate is
+ * validated before one copy into Packet-owned storage.
+ */
+
+#ifndef MODBUS_RTU_H_
+#define MODBUS_RTU_H_
+
+#include "../Pdu.h"
+#include "Stats.h"
+#include "Storage.h"
+#include "detail/Message.h"
+#include "detail/Packet.h"
+#include "detail/Receiver.h"
+
+#include "tiny_delegate.hpp"
+
+#include <cstddef>
+#include <cstdint>
+#include <span>
+#include <utility>
+
+namespace modbus::rtu {
+
+using SendResult = modbus::SendResult;
+
+template<class StorageT = Heap>
+class Endpoint final {
+	static_assert(modbus::rtu::Storage<StorageT>,
+		"Endpoint storage must satisfy modbus::rtu::Storage");
+	static_assert(StorageT::max_adu_size == modbus::rtu::max_adu_size &&
+	              StorageT::max_data_size == modbus::max_data_size,
+		"Modbus RTU storage must provide the complete fixed RTU geometry");
+
+public:
+	using StorageType = StorageT;
+	using Message = modbus::rtu::Message<StorageT>;
+	using Packet = modbus::rtu::Packet<StorageT>;
+
+	static constexpr std::size_t max_receive_size = modbus::max_data_size;
+	static constexpr std::size_t max_send_size = modbus::max_data_size;
+	static constexpr std::size_t max_frame_size = modbus::rtu::max_adu_size;
+	static constexpr std::size_t default_capacity_hint = 32u;
+
+	using Sender = tiny::delegate<bool(std::span<const uint8_t>)>;
+	using BusyQuery = tiny::delegate<bool()>;
+
+	Endpoint() noexcept = default;
+
+	template<class... Args>
+	explicit Endpoint(std::in_place_t, Args&&... args) noexcept
+		: m_storage(std::forward<Args>(args)...) {}
+
+	Endpoint(const Endpoint&) = delete;
+	Endpoint& operator=(const Endpoint&) = delete;
+	Endpoint(Endpoint&&) = delete;
+	Endpoint& operator=(Endpoint&&) = delete;
+
+	~Endpoint()
+	{
+		if (m_active_tx.memory != nullptr) {
+			m_storage.release_tx(m_active_tx);
+			m_active_tx = {};
+		}
+	}
+
+	[[nodiscard]] bool bind(Sender sender, BusyQuery busy) noexcept
+	{
+		if (m_active_tx.memory != nullptr) {
+			return false;
+		}
+		return m_transport.bind(
+			static_cast<Sender&&>(sender), static_cast<BusyQuery&&>(busy));
+	}
+
+	[[nodiscard]] bool unbind() noexcept
+	{
+		if (m_active_tx.memory != nullptr) {
+			return false;
+		}
+		m_transport.unbind();
+		return true;
+	}
+
+	void receive_adu(const std::span<const uint8_t> candidate) noexcept
+	{
+		m_receiver.receive_adu(candidate);
+	}
+
+	void notify_gap() noexcept { m_receiver.notify_gap(); }
+
+	[[nodiscard]] Packet pop_packet() noexcept { return m_receiver.pop_packet(); }
+	[[nodiscard]] bool has_packet() const noexcept { return m_receiver.has_packet(); }
+
+	[[nodiscard]] Message make_message(
+			const uint8_t address,
+			const uint8_t function) noexcept
+	{
+		return make_message(address, function, default_capacity_hint);
+	}
+
+	[[nodiscard]] Message make_message(
+			const uint8_t address,
+			const uint8_t function,
+			const std::size_t capacity_hint) noexcept
+	{
+		if (capacity_hint > max_send_size) {
+			return {};
+		}
+		return Message{m_storage, address, function, capacity_hint};
+	}
+
+	[[nodiscard]] SendResult send(Message& message) noexcept
+	{
+		if (!message || !message.belongs_to(m_storage)) {
+			return SendResult::Invalid;
+		}
+		if (!m_transport.bound()) {
+			return SendResult::Unbound;
+		}
+		if (m_active_tx.memory != nullptr || m_transport.busy()) {
+			++m_tx_stats.send_refused_busy;
+			return SendResult::Busy;
+		}
+
+		const std::span<const uint8_t> adu = message.finalize();
+		if (adu.empty()) {
+			return SendResult::Invalid;
+		}
+		if (!m_transport.start(adu)) {
+			++m_tx_stats.send_failed;
+			return SendResult::Failed;
+		}
+
+		m_active_tx = message.surrender_block();
+		++m_tx_stats.frames_sent;
+		return SendResult::Sent;
+	}
+
+	[[nodiscard]] bool tx_active() const noexcept
+	{
+		return m_active_tx.memory != nullptr;
+	}
+
+	void poll() noexcept
+	{
+		if (m_active_tx.memory != nullptr && !m_transport.busy()) {
+			m_storage.release_tx(m_active_tx);
+			m_active_tx = {};
+		}
+	}
+
+	[[nodiscard]] modbus::rtu::Stats stats() const noexcept
+	{
+		return {m_receiver.stats(), m_tx_stats};
+	}
+
+	[[nodiscard]] const StorageT& storage() const noexcept { return m_storage; }
+
+private:
+	class Transport final {
+	public:
+		[[nodiscard]] bool bind(Sender sender, BusyQuery busy) noexcept
+		{
+			if (!sender || !busy) {
+				return false;
+			}
+			m_sender = static_cast<Sender&&>(sender);
+			m_busy = static_cast<BusyQuery&&>(busy);
+			return true;
+		}
+
+		void unbind() noexcept
+		{
+			m_sender = nullptr;
+			m_busy = nullptr;
+		}
+
+		[[nodiscard]] bool bound() const noexcept
+		{
+			return static_cast<bool>(m_sender) && static_cast<bool>(m_busy);
+		}
+
+		[[nodiscard]] bool busy() const noexcept { return m_busy(); }
+
+		[[nodiscard]] bool start(
+				const std::span<const uint8_t> adu) const noexcept
+		{
+			return m_sender(adu);
+		}
+
+	private:
+		Sender m_sender{};
+		BusyQuery m_busy{};
+	};
+
+	[[no_unique_address]] StorageT m_storage{};
+	detail::Receiver<StorageT> m_receiver{m_storage};
+	Transport m_transport{};
+	TxBlock m_active_tx{};
+	modbus::rtu::Stats::Tx m_tx_stats{};
+};
+
+} // namespace modbus::rtu
+
+#endif /* MODBUS_RTU_H_ */

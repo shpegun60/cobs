@@ -100,6 +100,8 @@ refactor.
 - Existing scalar writes remain native-representation writes. Renaming them
   to `append_native` makes that fact explicit; it does not change byte order,
   enum width, or floating-point representation.
+- The later universal-scalar slice adds explicit `append_be` and `append_le`
+  without changing `append_native` or the library-owned length field.
 - CRC, authentication, version negotiation, and new framing fields are out of
   scope.
 
@@ -259,6 +261,7 @@ Target method vocabulary:
 | `allocator` | `storage` | exposes the selected memory strategy |
 | `write_bytes` | `append_bytes` | appends an explicit byte range |
 | `write` for scalars | `append_native` | states native representation honestly |
+| no direct counterpart | `append_be` / `append_le` | explicit compile-time wire byte order |
 | `pop_packet` | `pop_packet` | already precise; keep it |
 | `has_packet` | `has_packet` | already precise; keep it |
 
@@ -320,7 +323,7 @@ link.notify_gap();
 
 auto message = link.make_message();
 message.append_bytes(payload);
-message.append_native(command);
+message.append_be(command);
 
 switch (link.send(message)) {
 case cobs::SendResult::Sent:
@@ -348,7 +351,7 @@ Application-facing `Message` should expose building and inspection operations:
 
 - truth/value check;
 - payload `size()` and `capacity()`;
-- `append_bytes`, `append_native`, and array/span forms;
+- `append_bytes`, `append_native`, `append_be`, `append_le`, and scalar/span forms;
 - `clear` if its exact current semantics are retained.
 
 Encoding state transitions, storage identity checks, and block surrender are
@@ -946,7 +949,7 @@ The following are not part of this refactor:
 - internal TX queueing;
 - multiple simultaneous TX transfers;
 - CRC or protocol-version fields;
-- changing endian or scalar representation;
+- changing the existing length endian or `append_native` representation;
 - atomic/thread-safe packet references;
 - rewriting proven decoder/encoder algorithms for style;
 - redesigning UART ISR/DMA/recovery behaviour;
@@ -1143,3 +1146,23 @@ The following are not part of this refactor:
   acceptance criteria are satisfied. No compatibility alias, forwarding
   header, split transport setter, duplicate ownership descriptor, or
   undocumented migration surface remains.
+
+### 2026-09-02 universal scalar follow-up
+
+- Added one shared C++20 scalar codec in `wire/Scalar.h`. COBS and Modbus
+  Messages now expose `append_native`, `append_be`, `append_le`, and
+  `append_bytes`, including element-wise scalar-span overloads. The endian
+  decision uses `std::endian::native` plus `if constexpr`; fixed 16/32/64-bit
+  swaps are constexpr and force-inlined. A Cortex-M7 `-Os` assembly guard builds
+  little- and big-endian objects and locks native order to direct loads/stores,
+  opposite order to `REV16`/`REV`, and both to call-free shapes.
+- Existing framing semantics did not change. COBS still stores and loads its
+  one/two-byte length explicitly little-endian. Modbus RTU now centralizes CRC
+  serialization in constexpr `crc::store/load`, always low byte then high byte.
+  User-selected payload serializers cannot affect either library-owned field.
+- The final portability audit expanded this to 96 scalar, 60 protocol and 30
+  COBS ARM objects. It added exhaustive unaligned host scalar tests, GCC
+  11/13/15 strict O3/LTO consumers, MSVC x64/x86 ABI snapshots, and a
+  byte-storage cast audit that validates raw pool addresses before forming an
+  aligned block pointer. ARMv6-M and strict-alignment builds now keep scalar
+  access in inline `LDRB`/`STRB` sequences instead of calling `memcpy`.
