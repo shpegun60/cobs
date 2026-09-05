@@ -28,7 +28,8 @@ TX_BLOCKS = 2
 CONTROL_ADDRESS = 0xF7
 CONTROL_FUNCTION = 0x41
 MAGIC = b"MRTU"
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
+CRC_POLICIES = {"bitwise": 0, "table": 1}
 
 CMD_HELLO = 1
 CMD_STATS = 2
@@ -158,9 +159,10 @@ def reference_self_check() -> None:
 
 
 class HardwareLink:
-    def __init__(self, port: serial.Serial):
+    def __init__(self, port: serial.Serial, expected_crc_policy: int):
         self.port = port
         self.token = 0
+        self.expected_crc_policy = expected_crc_policy
 
     def write_candidate(self, wire: bytes, gap_after: float = 0.0) -> None:
         written = self.port.write(wire)
@@ -232,7 +234,7 @@ class HardwareLink:
         return response.data[9:]
 
     def hello(self) -> dict[str, int]:
-        payload = self.control(CMD_HELLO, 40)
+        payload = self.control(CMD_HELLO, 44)
         names = (
             "version",
             "baud",
@@ -244,8 +246,9 @@ class HardwareLink:
             "uart_chunk_count",
             "rx_blocks",
             "tx_blocks",
+            "crc_policy",
         )
-        hello = dict(zip(names, struct.unpack("<10I", payload), strict=True))
+        hello = dict(zip(names, struct.unpack("<11I", payload), strict=True))
         expected = {
             "version": PROTOCOL_VERSION,
             "baud": self.port.baudrate,
@@ -257,6 +260,7 @@ class HardwareLink:
             "uart_chunk_count": UART_CHUNK_COUNT,
             "rx_blocks": RX_BLOCKS,
             "tx_blocks": TX_BLOCKS,
+            "crc_policy": self.expected_crc_policy,
         }
         if hello != expected:
             raise AssertionError(f"unexpected board geometry: {hello}")
@@ -670,12 +674,14 @@ def print_result(result: dict) -> None:
         print(f"PASS {suite}")
 
 
-def append_result(path: str | None, baud: int, result: dict) -> None:
+def append_result(path: str | None, baud: int,
+                  crc_policy: str, result: dict) -> None:
     if not path:
         return
     record = {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "baud": baud,
+        "crc_policy": crc_policy,
         "status": result.get("status", "passed"),
         **result,
     }
@@ -688,6 +694,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("port")
     parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument(
+        "--crc-policy", choices=tuple(CRC_POLICIES), default="bitwise"
+    )
     parser.add_argument(
         "--suite",
         choices=("smoke", "vectors", "faults", "selftest", "pool",
@@ -708,7 +717,7 @@ def main() -> None:
         time.sleep(0.3)
         port.reset_input_buffer()
         port.reset_output_buffer()
-        link = HardwareLink(port)
+        link = HardwareLink(port, CRC_POLICIES[args.crc_policy])
         hello = link.hello()
         print("HELLO", json.dumps(hello, sort_keys=True))
 
@@ -735,11 +744,11 @@ def main() -> None:
                     failure["stats"] = link.stats()
                 except Exception as stats_error:
                     failure["stats_error"] = str(stats_error)
-                append_result(args.output, args.baud, failure)
+                append_result(args.output, args.baud, args.crc_policy, failure)
                 print("FAIL", json.dumps(failure, sort_keys=True))
                 raise
             print_result(result)
-            append_result(args.output, args.baud, result)
+            append_result(args.output, args.baud, args.crc_policy, result)
 
 
 if __name__ == "__main__":

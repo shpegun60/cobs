@@ -20,6 +20,9 @@ param(
     [ValidateRange(0, 3600)]
     [int]$ExtendedSeconds = 15,
 
+    [ValidateSet('bitwise', 'table')]
+    [string[]]$CrcPolicies = @('bitwise'),
+
     [string]$Output,
 
     [string]$CubeProgrammer =
@@ -68,7 +71,12 @@ if ($matrix.Count -eq 0) {
     throw 'BaudRates must not be empty'
 }
 $maximumBaud = $matrix[-1]
+$policies = @($CrcPolicies | Select-Object -Unique)
+if ($policies.Count -eq 0) {
+    throw 'CrcPolicies must not be empty'
+}
 $previousBaud = $env:MODBUS_HW_BAUD
+$previousCrcPolicy = $env:MODBUS_HW_CRC_POLICY
 
 function Assert-NativeSuccess([string]$Operation) {
     if ($LASTEXITCODE -ne 0) {
@@ -76,9 +84,10 @@ function Assert-NativeSuccess([string]$Operation) {
     }
 }
 
-function Build-And-Flash([int]$Baud) {
-    Write-Host "`n=== BUILD + FLASH $Baud baud ==="
+function Build-And-Flash([int]$Baud, [string]$CrcPolicy) {
+    Write-Host "`n=== BUILD + FLASH $Baud baud / $CrcPolicy CRC ==="
     $env:MODBUS_HW_BAUD = [string]$Baud
+    $env:MODBUS_HW_CRC_POLICY = $CrcPolicy
     & $GitBash $buildScript
     Assert-NativeSuccess "ARM build at $Baud baud"
 
@@ -88,10 +97,16 @@ function Build-And-Flash([int]$Baud) {
     Assert-NativeSuccess "flash/verify at $Baud baud"
 }
 
-function Run-Suite([int]$Baud, [string]$Suite, [int]$Seconds) {
+function Run-Suite(
+    [int]$Baud,
+    [string]$CrcPolicy,
+    [string]$Suite,
+    [int]$Seconds
+) {
     $arguments = @(
         '-B', $runner, $Port,
         '--baud', [string]$Baud,
+        '--crc-policy', $CrcPolicy,
         '--suite', $Suite,
         '--output', $Output
     )
@@ -104,24 +119,27 @@ function Run-Suite([int]$Baud, [string]$Suite, [int]$Seconds) {
 
 Push-Location $repo
 try {
-    foreach ($baud in $matrix) {
-        Build-And-Flash $baud
-        Run-Suite $baud 'all' $StressSeconds
-    }
+    foreach ($policy in $policies) {
+        foreach ($baud in $matrix) {
+            Build-And-Flash $baud $policy
+            Run-Suite $baud $policy 'all' $StressSeconds
+        }
 
-    if ($ExtendedSeconds -gt 0) {
-        Write-Host "`n=== EXTENDED $maximumBaud baud ==="
-        Run-Suite $maximumBaud 'stress' $ExtendedSeconds
+        if ($ExtendedSeconds -gt 0) {
+            Write-Host "`n=== EXTENDED $maximumBaud baud / $policy CRC ==="
+            Run-Suite $maximumBaud $policy 'stress' $ExtendedSeconds
+        }
     }
 
     if (-not $LeaveAtLastBaud) {
-        Build-And-Flash 115200
-        Run-Suite 115200 'smoke' 1
+        Build-And-Flash 115200 'bitwise'
+        Run-Suite 115200 'bitwise' 'smoke' 1
     }
 
     Write-Host "`n=== MODBUS RTU MATRIX PASS ==="
     Write-Host "Results: $Output"
 } finally {
     $env:MODBUS_HW_BAUD = $previousBaud
+    $env:MODBUS_HW_CRC_POLICY = $previousCrcPolicy
     Pop-Location
 }

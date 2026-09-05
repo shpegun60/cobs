@@ -73,4 +73,12 @@ extern "C" WIRE_NOINLINE uint16_t modbus_crc_calculate(
 		std::span<const uint8_t>{source, size});
 }
 
+extern "C" WIRE_NOINLINE uint16_t modbus_crc_calculate_table(
+		const uint8_t* const source,
+		const std::size_t size) noexcept
+{
+	return modbus::rtu::crc::calculate<modbus::rtu::crc::Table>(
+		std::span<const uint8_t>{source, size});
+}
+
 #undef WIRE_NOINLINE

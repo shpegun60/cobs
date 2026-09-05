@@ -5,10 +5,13 @@ SPDX-License-Identifier: MIT
 
 # NUCLEO-H7S3L8 Modbus RTU + UART hardware verification
 
-Status: audited on real silicon, 2026-09-02.
+Status: audited on real silicon, including CRC-policy A/B, 2026-09-05.
 
 Raw evidence:
 
+- [`results_crc_policy_2026-09-05.jsonl`](results_crc_policy_2026-09-05.jsonl)
+  — same-target `crc::Bitwise` versus `crc::Table` functional, fault, pool,
+  5-second and 15-second stress comparison;
 - [`results_paranoid_final_2026-09-02.jsonl`](results_paranoid_final_2026-09-02.jsonl)
   — final `-Os` 115200/1M matrix, extended 1M stress, and restored smoke;
 - [`results_paranoid_o2_2026-09-02.jsonl`](results_paranoid_o2_2026-09-02.jsonl)
@@ -31,7 +34,7 @@ independent Python CRC/ADU oracle
     <-> ST-Link VCP / COM port
     <-> USART3 + GPDMA
     <-> Uart<256, 4>
-    <-> modbus::rtu::Endpoint<modbus::rtu::Pool<8, 2>>
+    <-> modbus::rtu::Endpoint<Pool<8, 2>, crc::Bitwise|crc::Table>
 ```
 
 The board does not use the C++ CRC implementation to generate PC requests.
@@ -98,6 +101,7 @@ COBS silicon tests. Build products stay under its gitignored
 $env:MODBUS_HW_BAUD = '115200'
 $env:MODBUS_HW_OPT = '-Os'       # accepted: -Os, -O2, -O3
 $env:MODBUS_HW_LTO = '0'         # accepted: 0 or 1
+$env:MODBUS_HW_CRC_POLICY = 'bitwise' # accepted: bitwise or table
 & 'C:\Program Files\Git\bin\bash.exe' `
   'modbus/rtu/tests/hardware/h7s/build.sh'
 
@@ -107,7 +111,7 @@ $env:MODBUS_HW_LTO = '0'         # accepted: 0 or 1
   -v -rst
 
 python -B modbus/rtu/tests/hardware/h7s/modbus_hardware.py COM6 `
-  --baud 115200 --suite all --seconds 5
+  --baud 115200 --crc-policy bitwise --suite all --seconds 5
 ```
 
 ## Audited matrix
@@ -132,6 +136,25 @@ it against t1.5.
 ```
 
 The runner refuses to append into an existing result file.
+
+To run both built-ins in one verified A/B matrix from PowerShell:
+
+```powershell
+& .\modbus\rtu\tests\hardware\h7s\run_matrix.ps1 `
+  -Port COM6 `
+  -StLinkSerial <STLINK_SERIAL> `
+  -BaudRates @(1000000) `
+  -CrcPolicies @('bitwise', 'table') `
+  -StressSeconds 5 `
+  -ExtendedSeconds 15 `
+  -Output 'modbus\rtu\tests\hardware\h7s\results_crc_policy_new.jsonl'
+```
+
+The firmware reports its compiled policy ID in `HELLO`; the Python runner
+checks it against `--crc-policy` before running any suite and writes the policy
+name into every JSONL record. This prevents two accidental flashes of the same
+image from being accepted as an A/B comparison. Unless `-LeaveAtLastBaud` is
+given, the matrix restores and smoke-tests `Bitwise` at 115200.
 
 ## Audited result
 
@@ -160,6 +183,41 @@ exhaustion. The intentional suites separately produced exactly:
 The final 115200 image is `22,592 B text`, `12 B data`, and `6,832 B BSS`.
 The 1M image differs by four text bytes. The observed target was NUCLEO-H7S3L8
 Rev Y, device ID `0x485`, ST-Link V3J17M11, 3.26 V, and a 600 MHz core.
+
+### CRC policy A/B, 2026-09-05
+
+The fresh `-Os`, no-LTO comparison used the same board, 1M line rate, UART
+configuration, `Pool<8,2>`, Python oracle and traffic for both template
+instantiations. Both images passed all 31 vectors, four independent corrupted
+ADUs with immediate recovery, the TX backpressure self-test, the deterministic
+16-into-8 RX pool test, 5-second stress, and 15-second stress. Every unexpected
+RTU, UART, ownership and pool failure counter remained zero.
+
+| Policy / duration | Frames | Data bytes | Data MiB/s | Integrated CPU | RTU RX avg/max cycles | Packet/TX avg/max cycles |
+|---|---:|---:|---:|---:|---:|---:|
+| `crc::Bitwise` / 5 s | 2,452 | 211,821 | 0.0404 | 1.190% | 6,066 / 17,224 | 6,910 / 18,027 |
+| `crc::Table` / 5 s | 2,485 | 214,674 | 0.0409 | 0.402% | 1,128 / 2,853 | 1,976 / 3,948 |
+| `crc::Bitwise` / 15 s | 7,313 | 631,912 | 0.0402 | 1.197% | 6,070 / 17,224 | 6,911 / 18,029 |
+| `crc::Table` / 15 s | 7,444 | 643,196 | 0.0409 | 0.406% | 1,128 / 2,854 | 1,976 / 3,980 |
+
+On this workload Table reduced measured integrated CPU by 66.1% and average
+`receive_adu()` cost by 81.4%. Throughput changed only 1.8% because the serial
+link and host request/response cadence bound the test. These are observed
+end-to-end results, not a general cycle guarantee for other MCUs or traffic.
+
+At 1M, the linked `Bitwise` image is `22,620 B text`; the `Table` image is
+`23,120 B text`. Both have `12 B data` and `6,832 B BSS`. The lookup itself is
+exactly 512 read-only bytes, while removing the bitwise loop saves 12 bytes,
+so the net image cost is 500 text bytes and zero RAM. The matrix finally
+restored, verified and smoke-tested the 115200 `Bitwise` image.
+
+After the final constructor-constraint hardening, both 1M images were rebuilt
+from the final tree and converted with `arm-none-eabi-objcopy -O binary`. Their
+load images were byte-identical to the tested A/B artifacts: Bitwise SHA-256
+`44359B33F28624B6A1CA1028187AA8EE63D713481EB4DAE562917576396AE9CC`, Table
+SHA-256 `360078B330A477B4F164D62BA532281E2D4E1DB242B7942870828FDFA93EE892`.
+ELF container hashes are not used for this claim because rebuild metadata does
+not belong to the MCU load image.
 
 ### Optimization cross-check
 

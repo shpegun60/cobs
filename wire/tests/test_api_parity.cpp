@@ -20,6 +20,8 @@ namespace {
 
 using CobsEndpoint = cobs::Endpoint<cobs::Pool<2u, 2u>>;
 using RtuEndpoint = modbus::rtu::Endpoint<modbus::rtu::Pool<2u, 2u>>;
+using RtuTableEndpoint = modbus::rtu::Endpoint<
+	modbus::rtu::Pool<2u, 2u>, modbus::rtu::crc::Table>;
 
 template<class Packet>
 concept SharedPacket =
@@ -113,6 +115,11 @@ static_assert(SharedMessage<typename CobsEndpoint::Message>);
 static_assert(SharedMessage<typename RtuEndpoint::Message>);
 static_assert(SharedEndpoint<CobsEndpoint>);
 static_assert(SharedEndpoint<RtuEndpoint>);
+static_assert(SharedEndpoint<RtuTableEndpoint>);
+static_assert(std::same_as<RtuEndpoint::Message, RtuTableEndpoint::Message>);
+static_assert(std::same_as<RtuEndpoint::Packet, RtuTableEndpoint::Packet>);
+static_assert(std::same_as<RtuEndpoint::CrcType, modbus::rtu::crc::Bitwise>);
+static_assert(std::same_as<RtuTableEndpoint::CrcType, modbus::rtu::crc::Table>);
 
 static_assert(!HasRtuMetadata<typename CobsEndpoint::Packet>);
 static_assert(HasRtuMetadata<typename RtuEndpoint::Packet>);

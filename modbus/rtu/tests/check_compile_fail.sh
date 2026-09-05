@@ -42,5 +42,7 @@ expect_failure "$CASES/storage_wrong_geometry.cpp" \
 expect_failure "$CASES/message_private_finalize.cpp" "finalize" "private"
 expect_failure "$CASES/packet_private_adopt.cpp" "adopt" "private"
 expect_failure "$CASES/append_struct.cpp" "append_be" "constraints not satisfied"
+expect_failure "$CASES/crc_missing_calculate.cpp" \
+	"Endpoint CRC must satisfy modbus::rtu::crc::Calculator"
 
 echo "$count Modbus compile-fail contracts rejected with expected diagnostics"

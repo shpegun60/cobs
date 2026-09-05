@@ -134,8 +134,124 @@ are [`check_arm_hotpath.sh`](../wire/tests/check_arm_hotpath.sh) and
 
 These methods affect function data only. The user cannot write or reorder the
 library-owned RTU envelope: address and function are one byte each, while the
-CRC is always generated and serialized low byte first. `Message::size()` and
-`capacity()` count only function-data bytes.
+configured 16-bit check value is generated and serialized low byte first.
+`Message::size()` and `capacity()` count only function-data bytes.
+
+## CRC calculation policy
+
+`Endpoint` has one compile-time calculation policy:
+
+```cpp
+template<
+    class StorageT = modbus::rtu::Heap,
+    class CrcT = modbus::rtu::crc::Bitwise
+>
+class Endpoint;
+```
+
+The default remains the smallest portable choice:
+
+```cpp
+modbus::rtu::Endpoint<> link;
+// Heap + table-free crc::Bitwise
+```
+
+The library ships exactly two calculators:
+
+```cpp
+using Memory = modbus::rtu::Pool<8, 2>;
+
+using SmallFlash = modbus::rtu::Endpoint<
+    Memory, modbus::rtu::crc::Bitwise>;
+
+using FastCrc = modbus::rtu::Endpoint<
+    Memory, modbus::rtu::crc::Table>;
+```
+
+Both built-ins implement CRC-16/MODBUS (`init=0xFFFF`, reflected polynomial
+`0xA001`) and produce identical values. `Table` uses one constexpr 256-entry
+`uint16_t` lookup table. Empty policy objects occupy no Endpoint RAM because
+they are stored with `[[no_unique_address]]`; layout tests prove that both
+built-ins have the exact same Endpoint size on x64 and Cortex-M.
+
+A custom policy only has to satisfy this structural interface:
+
+```cpp
+template<class T>
+concept Calculator = requires(
+    T& calculator,
+    std::span<const uint8_t> bytes)
+{
+    { calculator.calculate(bytes) }
+        noexcept -> std::same_as<uint16_t>;
+};
+```
+
+There is deliberately no semantic validation. The library does not recompute
+CRC-16/MODBUS beside the policy, inspect its polynomial, or compare it with a
+built-in. A custom policy may therefore implement a private 16-bit checksum,
+including a wrapping sum:
+
+```cpp
+struct Sum16 {
+    uint16_t calculate(
+        std::span<const uint8_t> bytes) noexcept
+    {
+        uint16_t value = 0;
+        for (const uint8_t byte : bytes) {
+            value = static_cast<uint16_t>(value + byte);
+        }
+        return value;
+    }
+};
+
+using PrivateLink = modbus::rtu::Endpoint<Memory, Sum16>;
+PrivateLink private_link;
+```
+
+That endpoint works normally when both peers use the same private checksum,
+but its frames are not standard Modbus RTU. The names `crc_errors` and
+`crc::verify` continue to mean “the received two-byte value does not match the
+selected calculator” when a nonstandard policy is installed.
+
+State is also allowed, so a policy can retain a peripheral handle:
+
+```cpp
+struct HardwareCrc {
+    CRC_HandleTypeDef* handle;
+
+    uint16_t calculate(
+        std::span<const uint8_t> bytes) noexcept
+    {
+        return calculate_with_hardware(*handle, bytes);
+    }
+};
+
+using HardwareLink = modbus::rtu::Endpoint<Memory, HardwareCrc>;
+HardwareLink hardware_link{HardwareCrc{&hcrc}};
+```
+
+The same policy object is invoked for TX finalization and RX validation. There
+is no virtual call, delegate, function pointer, or runtime algorithm branch in
+`Endpoint`; a user policy itself may still choose an implementation by length:
+
+```cpp
+struct AdaptiveCrc {
+    uint16_t calculate(
+        std::span<const uint8_t> bytes) noexcept
+    {
+        if (bytes.size() < 32) {
+            return modbus::rtu::crc::Bitwise{}.calculate(bytes);
+        }
+        return modbus::rtu::crc::Table{}.calculate(bytes);
+    }
+};
+```
+
+A stateful policy adds only its own state plus any unavoidable object-alignment
+padding. RTU always excludes the received final two bytes from calculation,
+compares the returned `uint16_t`, and stores/loads those bytes low first,
+regardless of host endianness or selected algorithm.
 
 Call both service methods from the same main-loop context:
 
@@ -259,6 +375,7 @@ PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH" \
     sh modbus/rtu/tests/run_uart_integration.sh
 
 sh modbus/rtu/tests/check_arm_layout.sh
+sh modbus/rtu/tests/check_arm_crc_codegen.sh
 sh wire/tests/check_arm_hotpath.sh
 sh wire/tests/check_arm_codegen_matrix.sh
 ```
@@ -268,10 +385,11 @@ oracle and the exact commands/results, is documented in
 [rtu/tests/hardware/h7s/README.md](rtu/tests/hardware/h7s/README.md).
 
 The suites cover public-header isolation, compile-fail API boundaries, known
-and randomized CRC oracles, every legal data length, 100,000 random ADU
-candidates, Heap/Pool conformance, Packet lifetime, TX retry identity, exact
-256-byte frames, qmake consumption, and fake-HAL UART IDLE/TC/gap/DMA-borrow
-integration.
+and randomized CRC oracles, `Bitwise`/`Table` equality, a stateful fake-hardware
+calculator, a deliberately nonstandard wrapping-sum TX/RX round trip, every
+legal data length, 100,000 random ADU candidates, Heap/Pool conformance,
+Packet lifetime, TX retry identity, exact 256-byte frames, qmake consumption,
+and fake-HAL UART IDLE/TC/gap/DMA-borrow integration.
 
 The final paranoid real-silicon matrix passed all suites at 115200 and 1M
 baud. Its extended `-Os` 1M run echoed 7,319 exact ADUs / 632,449
@@ -283,6 +401,15 @@ That instrumentation did not measure the pause duration and therefore cannot
 attribute the split solely to ST-Link VCP or distinguish peer discontinuity
 from an over-eager IDLE boundary. The raw observation is retained without a
 stronger claim.
+
+The 2026-09-05 real-silicon A/B run tested both built-ins at 1M baud. Both
+passed vectors, corruption/recovery, backpressure, pool exhaustion, 5-second
+stress and 15-second stress with zero unexpected RTU/UART/storage failures.
+Over 15 seconds, `Bitwise` used 1.197% measured integrated CPU and averaged
+6,070 cycles in `receive_adu`; `Table` used 0.406% and averaged 1,128 cycles.
+The linked Table image cost 500 additional text bytes (`23,120` vs `22,620`)
+and changed neither data nor BSS. Raw evidence is in
+[results_crc_policy_2026-09-05.jsonl](rtu/tests/hardware/h7s/results_crc_policy_2026-09-05.jsonl).
 
 ## Lifetime and concurrency
 

@@ -144,11 +144,19 @@ for cpu in cortex-m0 cortex-m4 cortex-m7 cortex-m33 cortex-m55; do
 				"$ARM_CXX" $COMMON "$optimization" "-mcpu=$cpu" \
 					"-m${byte_order}-endian" $unaligned_flag -I"$PROJ" \
 					"$PROTOCOL_SOURCE" -o "$object"
-				"$ARM_OBJDUMP" -d "$object" > "$assembly"
+				"$ARM_OBJDUMP" -dr "$object" > "$assembly"
 				ASSEMBLY="$assembly"
 				inspect_straight_line "$PROTOCOL_STRAIGHT_FUNCTIONS"
 				forbid_instruction modbus_crc_calculate \
 					'[[:space:]]blx?(\.n|\.w)?[[:space:]]' 'a helper call'
+				forbid_instruction modbus_crc_calculate \
+					'_ZN6modbus3rtu3crc6detail5tableE' 'a lookup-table reference'
+				forbid_instruction modbus_crc_calculate_table \
+					'[[:space:]]blx?(\.n|\.w)?[[:space:]]' 'a helper call'
+				require_instruction modbus_crc_calculate_table \
+					'[[:space:]]ldrh(\.w)?[[:space:]]' 'a 16-bit table load'
+				require_instruction modbus_crc_calculate_table \
+					'_ZN6modbus3rtu3crc6detail5tableE' 'the CRC lookup table'
 				protocol_count=$((protocol_count + 1))
 			done
 		done
@@ -186,5 +194,7 @@ for cpu in cortex-m0 cortex-m4 cortex-m7 cortex-m33 cortex-m55; do
 		done
 	done
 done
+
+sh "$PROJ/modbus/rtu/tests/check_arm_crc_codegen.sh"
 
 echo "ARM codegen matrix passed: $scalar_count scalar, $protocol_count protocol, $cobs_count COBS objects"

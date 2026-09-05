@@ -14,6 +14,7 @@ struct Stats final {
 	struct Rx final {
 		uint32_t candidates = 0;
 		uint32_t frames_received = 0;
+		// Wire value mismatches the Endpoint's selected calculator.
 		uint32_t crc_errors = 0;
 		uint32_t too_short = 0;
 		uint32_t oversize = 0;

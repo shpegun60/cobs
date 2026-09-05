@@ -14,7 +14,7 @@ follows, independently of the original working prompt.
 There is intentionally no transport-ambiguous `modbus::Endpoint`.
 
 ```cpp
-modbus::rtu::Endpoint<Storage>
+modbus::rtu::Endpoint<Storage, Crc>
 modbus::tcp::Endpoint<Storage> // future, not an empty placeholder
 ```
 
@@ -37,7 +37,7 @@ The API deliberately follows the established COBS ownership vocabulary:
 |---|---|---|
 | dynamic storage | `cobs::Heap<>` | `modbus::rtu::Heap` |
 | fixed storage | `cobs::Pool<Rx, Tx>` | `modbus::rtu::Pool<Rx, Tx>` |
-| endpoint | `cobs::Endpoint<Storage>` | `modbus::rtu::Endpoint<Storage>` |
+| endpoint | `cobs::Endpoint<Storage>` | `modbus::rtu::Endpoint<Storage, Crc>` |
 | receive owner | copyable `Packet` | copyable `Packet` |
 | transmit owner | move-only `Message` | move-only `Message` |
 | nullable/ownership API | `bool`, `reset`, `data`, `size` | same |
@@ -158,6 +158,47 @@ with shifts. COBS likewise owns its length prefix and stores/loads it with
 explicit little-endian bytes. User-selected serializers are therefore unable
 to alter either framing contract.
 
+### CRC calculation policy
+
+RTU separates the calculation mechanism from the fixed two-byte wire slot:
+
+```cpp
+template<class StorageT = Heap, class CrcT = crc::Bitwise>
+class Endpoint;
+```
+
+Each Endpoint owns exactly one `[[no_unique_address]] CrcT m_crc`. The same
+object is passed by reference to `Receiver::receive_adu()` and
+`Message::finalize()`. Selection is therefore a template instantiation, not a
+virtual call, delegate, function pointer, tag branch, or global singleton.
+`Message<StorageT>` and `Packet<StorageT>` do not depend on `CrcT`.
+
+The only structural requirement is:
+
+```cpp
+crc.calculate(std::span<const uint8_t>) noexcept -> uint16_t
+```
+
+The two built-ins are `crc::Bitwise` and `crc::Table`. Both calculate
+CRC-16/MODBUS; the default `Bitwise` has no table, while `Table` uses one
+constexpr 256-entry `uint16_t` table. Both policy types are empty and add zero
+Endpoint RAM on the tested x64 and Cortex-M layouts.
+
+Custom policies are intentionally not semantically inspected. Endpoint does
+not verify the initial value or polynomial and does not recalculate a built-in
+CRC beside the policy. A custom `calculate()` may use hardware, assembler, an
+adaptive length threshold, or even a non-Modbus wrapping sum. The latter is a
+valid private protocol configuration as long as its peer agrees; it is not
+standard Modbus RTU. A stateful policy may contain a peripheral handle and
+increases Endpoint only by its state plus unavoidable alignment padding.
+
+Regardless of the calculation, RX first checks the physical ADU size, excludes
+the final two bytes from the policy input, loads those two bytes low-first and
+compares the returned `uint16_t`. TX calls the same object over
+address/function/data and stores its result low-first. No semantic-validation
+fallback or extra calculation exists in either hot path. With a custom policy,
+the legacy `crc_errors` counter records a selected-calculator mismatch.
+
 ## 6. Storage extension contract
 
 `modbus::rtu::Storage<T>` verifies the public type and exception surface. A
@@ -210,7 +251,7 @@ short ADU      -> UART IDLE -> one candidate
 The receiver performs only:
 
 1. size `4..256` validation;
-2. Modbus CRC-16 validation;
+2. validation with the Endpoint's selected 16-bit calculator;
 3. RX storage acquisition;
 4. one complete-ADU copy;
 5. immutable Packet publication.
@@ -309,17 +350,30 @@ reference count. The transmit path builds directly in its final contiguous
 block, appends CRC in place, and lends that same span to DMA; no encoded-frame
 copy or virtual dispatch exists.
 
-The fresh NUCLEO-H7S3L8 Pool-only image linked no `new`, `delete`, `malloc`,
-`free`, or `_sbrk` symbol. At 600 MHz its complete sequential 1Mbaud path
-(UART IRQ/DMA, tableless CRC validation, RX copy, Packet/Message ownership,
-response CRC, DMA start and release) used 1.216% measured CPU over 7,376 exact
-round trips in 15 seconds. The final 115200 image occupied 22,584 bytes text,
-12 bytes data, and 6,832 bytes BSS.
+The NUCLEO-H7S3L8 Pool-only images link no `new`, `delete`, `malloc`, `free`,
+or `_sbrk` symbol. The original 2026-09-02 tableless baseline measured roughly
+1.2% integrated CPU at 1M baud. The explicit 2026-09-05 A/B matrix then built,
+flashed and identified both template policies over the same UART, pool,
+traffic and `-Os` configuration:
 
-The tableless CRC is therefore a measured v1 space/speed choice, not an
-unmeasured assumption. A lookup-table variant should be introduced only with
-target evidence and an explicit flash-cost/API decision; it must not silently
-change the one canonical implementation across translation units.
+| CRC policy / 15 s | Exact ADUs | Function-data bytes | Integrated CPU | `receive_adu` avg/max |
+|---|---:|---:|---:|---:|
+| `crc::Bitwise` | 7,313 | 631,912 | 1.197% | 6,070 / 17,224 cycles |
+| `crc::Table` | 7,444 | 643,196 | 0.406% | 1,128 / 2,854 cycles |
+
+Both passed vectors, four corruption/recovery cases, TX backpressure,
+deterministic RX exhaustion, 5-second stress and 15-second stress with zero
+unexpected RTU, UART, ownership or pool failures. On this target Table reduced
+measured integrated CPU by 66.1% and average `receive_adu` cycles by 81.4%.
+Those are end-to-end observations, not a cross-target timing guarantee.
+
+The 1M linked `Bitwise` image is 22,620 bytes text; `Table` is 23,120 bytes.
+Thus the 512-byte lookup replaces 12 bytes of bitwise code for a net 500-byte
+text cost. Both images remain 12 bytes data and 6,832 bytes BSS. Object-code
+guards across `-Os/-O2/-O3` prove that `Endpoint<>` emits no table symbol,
+`crc::Table` emits exactly one 512-byte read-only table, and both loops are
+inlined without helper calls. The default remains `Bitwise`, so the Table
+speedup costs flash only when the application selects it in the Endpoint type.
 
 ## 14. Normative references
 

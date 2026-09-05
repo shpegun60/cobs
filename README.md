@@ -416,6 +416,22 @@ messages/transport borrows. The heap-backed convenience form is simply:
 modbus::rtu::Endpoint<> link;
 ```
 
+The second Endpoint template argument selects the 16-bit CRC/checksum
+calculator at compile time. The portable table-free implementation remains
+the default; the faster built-in uses one 512-byte flash table:
+
+```cpp
+using FastModbus = modbus::rtu::Endpoint<
+    Memory, modbus::rtu::crc::Table>;
+```
+
+Both built-ins produce CRC-16/MODBUS. A custom stateful policy may expose
+`uint16_t calculate(std::span<const uint8_t>) noexcept` and may intentionally
+implement another checksum (even a wrapping sum). The library performs no
+semantic validation: it invokes the same object for RX and TX and always owns
+the final low-byte-first two-byte wire field. See the full
+[CRC policy guide](modbus/README.md#crc-calculation-policy).
+
 Create an RTU request by passing address and function once; the library adds
 the CRC and never subtracts framing bytes from the advertised data capacity:
 
@@ -851,12 +867,13 @@ cross-target code generation, benchmarks, and real hardware evidence.
 | Shared scalar/API host oracle | `sh wire/tests/run.sh` | exhaustive scalar values, reader facade identity, COBS/Modbus public API parity, intentional protocol differences, sanitizers and O3/LTO |
 | GCC strict/LTO consumers | `MATRIX_TAG=<compiler> CXX=<g++> sh wire/tests/check_gcc_matrix.sh` | real COBS/Modbus consumers and API parity under strict alias/alignment/bounds warnings plus `-fshort-enums`/`-funsigned-char` scalar proof |
 | Cortex-M endian hot path | `sh wire/tests/check_arm_hotpath.sh` | little- and big-endian ARM builds prove compile-time selection: native order is direct, opposite order uses REV/REV16, and neither calls a helper |
-| Cortex-M codegen matrix | `sh wire/tests/check_arm_codegen_matrix.sh` | 96 scalar, 60 protocol and 30 COBS objects across M0/M0+/M3/M4/M7/M23/M33/M55, Os/O2/O3, endian and strict-alignment variants |
-| Modbus RTU host suite | `sh modbus/rtu/tests/run.sh` | headers, compile-fail boundaries, CRC oracle, all legal sizes, storage, ownership, endpoint and fuzz properties |
-| Modbus qmake consumer | `sh modbus/rtu/tests/qmake_consumer/run.sh` | downstream header-only use with Heap and Pool |
+| Cortex-M codegen matrix | `sh wire/tests/check_arm_codegen_matrix.sh` | 96 scalar, 60 protocol and 30 COBS objects across M0/M0+/M3/M4/M7/M23/M33/M55, plus Bitwise/Table references, Os/O2/O3, endian and strict-alignment variants |
+| Modbus CRC layout/codegen | `sh modbus/rtu/tests/check_arm_crc_codegen.sh` | default Endpoint emits no table; Table emits one 512-byte read-only lookup; empty policies add no RAM |
+| Modbus RTU host suite | `sh modbus/rtu/tests/run.sh` | headers, compile-fail boundaries, independent CRC oracle, Bitwise/Table/custom-sum policies, all legal sizes, storage, ownership, endpoint and fuzz properties |
+| Modbus qmake consumer | `sh modbus/rtu/tests/qmake_consumer/run.sh` | downstream header-only use with Heap, Pool and Table policy |
 | Modbus + UART fake HAL | `sh modbus/rtu/tests/run_uart_integration.sh` | short IDLE ADU, exact 256-byte TC ADU, gaps, recovery, and DMA TX borrow |
 | Cortex-M Modbus layout | `sh modbus/rtu/tests/check_arm_layout.sh` | ARM object layout and static RAM assertions |
-| Modbus + UART H7S matrix | [`modbus/rtu/tests/hardware/h7s/README.md`](modbus/rtu/tests/hardware/h7s/README.md) | independent PC CRC oracle, exact 256-byte ADUs, corruptions, pools, recovery and stress at 115200/1M |
+| Modbus + UART H7S matrix | [`modbus/rtu/tests/hardware/h7s/README.md`](modbus/rtu/tests/hardware/h7s/README.md) | independent PC CRC oracle, Bitwise/Table A/B, exact 256-byte ADUs, corruptions, pools, recovery and stress at 115200/1M |
 | UART host matrix | `sh uart/tests/host/run.sh` | runtime interleavings, errors, recovery, callbacks, baud changes, torture, invalid configs |
 | UART port matrix | `sh uart/tests/port/build.sh` | F1/G4/H7RS compile paths, analyzer, probes, hot symbol/stack budgets |
 | UART H7S bench | [`uart/tests/bench/README.md`](uart/tests/bench/README.md) | real DMA/IRQ throughput and CPU accounting |
@@ -873,6 +890,7 @@ Raw current hardware evidence:
 - [Modbus final paranoid `-Os` 115200/1M matrix](modbus/rtu/tests/hardware/h7s/results_paranoid_final_2026-09-02.jsonl);
 - [Modbus `-O2` silicon run](modbus/rtu/tests/hardware/h7s/results_paranoid_o2_2026-09-02.jsonl);
 - [Modbus `-O3` + LTO silicon run](modbus/rtu/tests/hardware/h7s/results_paranoid_o3_lto_2026-09-02.jsonl);
+- [Modbus Bitwise/Table CRC A/B](modbus/rtu/tests/hardware/h7s/results_crc_policy_2026-09-05.jsonl);
 - [Modbus 3M UART-IDLE boundary probe](modbus/rtu/tests/hardware/h7s/results_high_baud_probe_2026-09-02.jsonl).
 
 The full post-refactor COBS H7S matrix passed at 115200, 1M, 3M, 6M, and 10M,

@@ -16,6 +16,7 @@
 #define MODBUS_RTU_H_
 
 #include "../Pdu.h"
+#include "Crc.h"
 #include "Stats.h"
 #include "Storage.h"
 #include "detail/Message.h"
@@ -24,25 +25,30 @@
 
 #include "tiny_delegate.hpp"
 
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <type_traits>
 #include <utility>
 
 namespace modbus::rtu {
 
 using SendResult = modbus::SendResult;
 
-template<class StorageT = Heap>
+template<class StorageT = Heap, class CrcT = modbus::rtu::crc::Bitwise>
 class Endpoint final {
 	static_assert(modbus::rtu::Storage<StorageT>,
 		"Endpoint storage must satisfy modbus::rtu::Storage");
+	static_assert(modbus::rtu::crc::Calculator<CrcT>,
+		"Endpoint CRC must satisfy modbus::rtu::crc::Calculator");
 	static_assert(StorageT::max_adu_size == modbus::rtu::max_adu_size &&
 	              StorageT::max_data_size == modbus::max_data_size,
 		"Modbus RTU storage must provide the complete fixed RTU geometry");
 
 public:
 	using StorageType = StorageT;
+	using CrcType = CrcT;
 	using Message = modbus::rtu::Message<StorageT>;
 	using Packet = modbus::rtu::Packet<StorageT>;
 
@@ -54,11 +60,38 @@ public:
 	using Sender = tiny::delegate<bool(std::span<const uint8_t>)>;
 	using BusyQuery = tiny::delegate<bool()>;
 
-	Endpoint() noexcept = default;
+	Endpoint() noexcept(
+			std::is_nothrow_default_constructible_v<StorageT> &&
+			std::is_nothrow_default_constructible_v<CrcT>)
+		requires std::default_initializable<StorageT> &&
+		         std::default_initializable<CrcT>
+		= default;
+
+	explicit Endpoint(CrcT crc) noexcept(
+			std::is_nothrow_default_constructible_v<StorageT> &&
+			std::is_nothrow_move_constructible_v<CrcT>)
+		requires std::default_initializable<StorageT> &&
+		         std::constructible_from<CrcT, CrcT&&>
+		: m_crc(std::move(crc)) {}
 
 	template<class... Args>
-	explicit Endpoint(std::in_place_t, Args&&... args) noexcept
+	explicit Endpoint(std::in_place_t, Args&&... args) noexcept(
+			std::is_nothrow_constructible_v<StorageT, Args&&...> &&
+			std::is_nothrow_default_constructible_v<CrcT>)
+		requires std::constructible_from<StorageT, Args&&...> &&
+		         std::default_initializable<CrcT>
 		: m_storage(std::forward<Args>(args)...) {}
+
+	template<class... Args>
+	Endpoint(CrcT crc,
+	         std::in_place_t,
+	         Args&&... args) noexcept(
+			std::is_nothrow_constructible_v<StorageT, Args&&...> &&
+			std::is_nothrow_move_constructible_v<CrcT>)
+		requires std::constructible_from<StorageT, Args&&...> &&
+		         std::constructible_from<CrcT, CrcT&&>
+		: m_storage(std::forward<Args>(args)...),
+		  m_crc(std::move(crc)) {}
 
 	Endpoint(const Endpoint&) = delete;
 	Endpoint& operator=(const Endpoint&) = delete;
@@ -93,7 +126,7 @@ public:
 
 	void receive_adu(const std::span<const uint8_t> candidate) noexcept
 	{
-		m_receiver.receive_adu(candidate);
+		m_receiver.receive_adu(m_crc, candidate);
 	}
 
 	void notify_gap() noexcept { m_receiver.notify_gap(); }
@@ -132,7 +165,7 @@ public:
 			return SendResult::Busy;
 		}
 
-		const std::span<const uint8_t> adu = message.finalize();
+		const std::span<const uint8_t> adu = message.finalize(m_crc);
 		if (adu.empty()) {
 			return SendResult::Invalid;
 		}
@@ -208,6 +241,8 @@ private:
 	Transport m_transport{};
 	TxBlock m_active_tx{};
 	modbus::rtu::Stats::Tx m_tx_stats{};
+	// Keep policy last: a pointer-sized state fits existing Cortex-M tail padding.
+	[[no_unique_address]] CrcT m_crc{};
 };
 
 } // namespace modbus::rtu

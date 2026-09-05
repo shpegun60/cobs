@@ -92,6 +92,10 @@ int main()
 	if (!exercise<modbus::rtu::Endpoint<modbus::rtu::Pool<2, 2>>>()) {
 		return 2;
 	}
+	if (!exercise<modbus::rtu::Endpoint<
+			modbus::rtu::Pool<2, 2>, modbus::rtu::crc::Table>>()) {
+		return 3;
+	}
 	std::puts("qmake Modbus RTU consumer passed");
 	return 0;
 }

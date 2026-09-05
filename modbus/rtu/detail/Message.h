@@ -20,7 +20,7 @@
 
 namespace modbus::rtu {
 
-template<class StorageT>
+template<class StorageT, class CrcT>
 class Endpoint;
 
 template<class StorageT>
@@ -30,7 +30,8 @@ class Message final {
 	static_assert(StorageT::max_adu_size == modbus::rtu::max_adu_size &&
 	              StorageT::max_data_size == modbus::max_data_size,
 		"Modbus RTU storage must provide the complete fixed RTU geometry");
-	friend class Endpoint<StorageT>;
+	template<class, class>
+	friend class Endpoint;
 
 public:
 	static constexpr std::size_t max_payload_size = modbus::max_data_size;
@@ -183,7 +184,9 @@ private:
 		return m_storage == &storage;
 	}
 
-	[[nodiscard]] std::span<const uint8_t> finalize() noexcept
+	template<modbus::rtu::crc::Calculator CrcT>
+	[[nodiscard]] std::span<const uint8_t> finalize(
+			CrcT& calculator) noexcept
 	{
 		if (m_block.memory == nullptr) {
 			return {};
@@ -194,7 +197,7 @@ private:
 		}
 		const std::size_t without_crc = adu_prefix_size + m_size;
 		const uint16_t checksum = modbus::rtu::crc::calculate(
-			std::span<const uint8_t>{bytes, without_crc});
+			std::span<const uint8_t>{bytes, without_crc}, calculator);
 		modbus::rtu::crc::store(bytes + without_crc, checksum);
 		m_wire = without_crc + modbus::rtu::crc::wire_size;
 		m_state = State::Finalized;

@@ -14,6 +14,24 @@ namespace {
 using HeapEndpoint = modbus::rtu::Endpoint<>;
 using Pool = modbus::rtu::Pool<8, 2>;
 using PoolEndpoint = modbus::rtu::Endpoint<Pool>;
+using TableHeapEndpoint = modbus::rtu::Endpoint<
+	modbus::rtu::Heap, modbus::rtu::crc::Table>;
+using TablePoolEndpoint = modbus::rtu::Endpoint<
+	Pool, modbus::rtu::crc::Table>;
+
+struct StatefulCrc final {
+	void* handle = nullptr;
+
+	[[nodiscard]] uint16_t calculate(
+			const std::span<const uint8_t> bytes) noexcept
+	{
+		return modbus::rtu::crc::calculate(bytes);
+	}
+};
+
+using StatefulHeapEndpoint = modbus::rtu::Endpoint<
+	modbus::rtu::Heap, StatefulCrc>;
+using StatefulPoolEndpoint = modbus::rtu::Endpoint<Pool, StatefulCrc>;
 using Packet = HeapEndpoint::Packet;
 using Message = HeapEndpoint::Message;
 using Sender = HeapEndpoint::Sender;
@@ -23,6 +41,18 @@ static_assert(sizeof(Packet) == sizeof(void*));
 static_assert(std::is_copy_constructible_v<Packet>);
 static_assert(!std::is_copy_constructible_v<Message>);
 static_assert(!std::is_move_constructible_v<HeapEndpoint>);
+static_assert(std::is_empty_v<modbus::rtu::crc::Bitwise>);
+static_assert(std::is_empty_v<modbus::rtu::crc::Table>);
+static_assert(sizeof(TableHeapEndpoint) == sizeof(HeapEndpoint));
+static_assert(sizeof(TablePoolEndpoint) == sizeof(PoolEndpoint));
+static_assert(sizeof(StatefulHeapEndpoint) >= sizeof(HeapEndpoint));
+static_assert(sizeof(StatefulHeapEndpoint) <=
+	(sizeof(HeapEndpoint) + sizeof(StatefulCrc) +
+	 alignof(StatefulHeapEndpoint) - 1u));
+static_assert(sizeof(StatefulPoolEndpoint) >= sizeof(PoolEndpoint));
+static_assert(sizeof(StatefulPoolEndpoint) <=
+	(sizeof(PoolEndpoint) + sizeof(StatefulCrc) +
+	 alignof(StatefulPoolEndpoint) - 1u));
 static_assert(sizeof(modbus::rtu::Stats) == 40u);
 #if !defined(MODBUS_LAYOUT_CHARACTERIZE)
 #define MODBUS_EXPECT_SIZE(Type, Expected) \
@@ -64,8 +94,12 @@ MODBUS_EXPECT_SIZE(modbus::rtu::RxBlock<modbus::rtu::Heap>, 16);
 MODBUS_EXPECT_SIZE(Packet, 4);
 MODBUS_EXPECT_SIZE(Message, 24);
 MODBUS_EXPECT_SIZE(HeapEndpoint, 128);
+MODBUS_EXPECT_SIZE(TableHeapEndpoint, 128);
+MODBUS_EXPECT_SIZE(StatefulHeapEndpoint, 128);
 MODBUS_EXPECT_SIZE(Pool, 2728);
 MODBUS_EXPECT_SIZE(PoolEndpoint, 2856);
+MODBUS_EXPECT_SIZE(TablePoolEndpoint, 2856);
+MODBUS_EXPECT_SIZE(StatefulPoolEndpoint, 2856);
 MODBUS_EXPECT_SIZE(Sender, 32);
 MODBUS_EXPECT_SIZE(BusyQuery, 32);
 #endif
@@ -83,8 +117,12 @@ char modbus_layout_rx_block[sizeof(modbus::rtu::RxBlock<modbus::rtu::Heap>)];
 char modbus_layout_packet[sizeof(Packet)];
 char modbus_layout_message[sizeof(Message)];
 char modbus_layout_endpoint[sizeof(HeapEndpoint)];
+char modbus_layout_table_endpoint[sizeof(TableHeapEndpoint)];
+char modbus_layout_stateful_endpoint[sizeof(StatefulHeapEndpoint)];
 char modbus_layout_pool[sizeof(Pool)];
 char modbus_layout_pool_endpoint[sizeof(PoolEndpoint)];
+char modbus_layout_table_pool_endpoint[sizeof(TablePoolEndpoint)];
+char modbus_layout_stateful_pool_endpoint[sizeof(StatefulPoolEndpoint)];
 char modbus_layout_stats[sizeof(modbus::rtu::Stats)];
 char modbus_layout_sender[sizeof(HeapEndpoint::Sender)];
 char modbus_layout_busy_query[sizeof(HeapEndpoint::BusyQuery)];
@@ -99,6 +137,10 @@ int main()
 	std::printf("Message=%zu Endpoint=%zu Pool=%zu PoolEndpoint=%zu\n",
 		sizeof(Message), sizeof(HeapEndpoint), sizeof(Pool),
 		sizeof(PoolEndpoint));
+	std::printf("TableEndpoint=%zu TablePoolEndpoint=%zu StatefulEndpoint=%zu "
+	            "StatefulPoolEndpoint=%zu\n",
+		sizeof(TableHeapEndpoint), sizeof(TablePoolEndpoint),
+		sizeof(StatefulHeapEndpoint), sizeof(StatefulPoolEndpoint));
 	std::printf("Stats=%zu sender=%zu busy=%zu\n",
 		sizeof(modbus::rtu::Stats), sizeof(Sender), sizeof(BusyQuery));
 	return 0;

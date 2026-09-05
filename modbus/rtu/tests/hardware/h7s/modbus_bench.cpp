@@ -12,7 +12,7 @@
  *
  *   independent PC RTU codec <-> ST-Link VCP <-> USART3/GPDMA
  *                            <-> Uart<256,4>
- *                            <-> Endpoint<Pool<8,2>>
+ *                            <-> Endpoint<Pool<8,2>, selected CRC policy>
  *
  * Ordinary CRC-valid ADUs are echoed with the same address, function and
  * function data. A reserved address/function/data envelope carries harness
@@ -36,8 +36,13 @@
 #ifndef MODBUS_HW_BAUD
 #define MODBUS_HW_BAUD 115200u
 #endif
+#ifndef MODBUS_HW_CRC_TABLE
+#define MODBUS_HW_CRC_TABLE 0
+#endif
 
 static_assert(MODBUS_HW_BAUD > 0u, "Modbus hardware baud must be non-zero");
+static_assert(MODBUS_HW_CRC_TABLE == 0 || MODBUS_HW_CRC_TABLE == 1,
+	"MODBUS_HW_CRC_TABLE must be zero or one");
 
 BenchCounter g_bench_usart_irq;
 BenchCounter g_bench_rx_dma_irq;
@@ -51,7 +56,14 @@ constexpr std::size_t kUartChunkSize = 256u;
 constexpr std::size_t kUartChunkCount = 4u;
 
 using Memory = modbus::rtu::Pool<kRxBlocks, kTxBlocks>;
-using Link = modbus::rtu::Endpoint<Memory>;
+#if MODBUS_HW_CRC_TABLE
+using Crc = modbus::rtu::crc::Table;
+constexpr uint32_t kCrcPolicy = 1u;
+#else
+using Crc = modbus::rtu::crc::Bitwise;
+constexpr uint32_t kCrcPolicy = 0u;
+#endif
+using Link = modbus::rtu::Endpoint<Memory, Crc>;
 using Serial = Uart<kUartChunkSize, kUartChunkCount>;
 
 static_assert(Link::max_receive_size == 252u);
@@ -61,7 +73,7 @@ static_assert(Link::max_frame_size == 256u);
 constexpr uint8_t kControlAddress = 0xF7u;
 constexpr uint8_t kControlFunction = 0x41u;
 constexpr std::array<uint8_t, 4> kMagic{0x4Du, 0x52u, 0x54u, 0x55u};
-constexpr uint32_t kProtocolVersion = 1u;
+constexpr uint32_t kProtocolVersion = 2u;
 constexpr uint32_t kMaxActionMs = 5000u;
 constexpr std::size_t kControlPrefixSize = 9u;
 constexpr std::size_t kStatsScalarCount = 31u;
@@ -270,6 +282,7 @@ void reset_metrics() noexcept
 		writer.put_u32(static_cast<uint32_t>(kUartChunkCount)) &&
 		writer.put_u32(static_cast<uint32_t>(kRxBlocks)) &&
 		writer.put_u32(static_cast<uint32_t>(kTxBlocks)) &&
+		writer.put_u32(kCrcPolicy) &&
 		send_writer(writer);
 }
 

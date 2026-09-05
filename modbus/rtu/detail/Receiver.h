@@ -37,7 +37,10 @@ public:
 
 	~Receiver() { clear_ready(); }
 
-	void receive_adu(const std::span<const uint8_t> candidate) noexcept
+	template<modbus::rtu::crc::Calculator CrcT>
+	void receive_adu(
+			CrcT& calculator,
+			const std::span<const uint8_t> candidate) noexcept
 	{
 		++m_stats.candidates;
 		if (candidate.size() < min_adu_size) {
@@ -48,7 +51,7 @@ public:
 			++m_stats.oversize;
 			return;
 		}
-		if (!modbus::rtu::crc::verify(candidate)) {
+		if (!modbus::rtu::crc::verify(candidate, calculator)) {
 			++m_stats.crc_errors;
 			return;
 		}
