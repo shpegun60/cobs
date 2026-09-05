@@ -153,6 +153,7 @@ $env:MODBUS_HW_OPT = '-Os'       # accepted: -Os, -O2, -O3
 $env:MODBUS_HW_LTO = '0'         # accepted: 0 or 1
 $env:MODBUS_HW_CRC_POLICY = 'bitwise' # aliases bitwise/table or the nine named policies
 $env:MODBUS_HW_FRAMER = '0'      # 1 builds the framing-policy endpoint (peer needs --framer)
+$env:MODBUS_HW_CXXFLAGS_EXTRA = '' # extra C++ flags for controlled experiments, e.g. -falign-loops=8
 & 'C:\Program Files\Git\bin\bash.exe' `
   'modbus/rtu/tests/hardware/h7s/build.sh'
 

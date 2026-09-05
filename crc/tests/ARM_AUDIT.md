@@ -87,6 +87,23 @@ The initial runner incorrectly chose ARM state for STAR-MC1 from its name.
 That configuration was rejected by GCC before compiling library code. The
 runner now selects Thumb for it, and the entire final matrix was rerun.
 
+## Addendum: unrolled Bitwise engine, 2026-09-05
+
+The Bitwise engine's eight bit steps per byte are now straight-line code with
+the byte update forced inline (`crc/Crc.h`, `CRC_DETAIL_ALWAYS_INLINE`),
+after the H7S3 measurements in `doc/PROTOCOL_COMPARISON.md` showed the
+looped form's cost depending on where the linker placed its loop head under
+`-Os`. The complete matrix was rerun for it:
+[6360/6360 objects](results_unrolled_arm_2026-09-05.json), the same 106 CPUs,
+optimization levels, endiannesses and strict-alignment codecs, with the same
+invariants: no helper call, no lookup bytes for any Bitwise or NoCrc object,
+exactly one private read-only table per selected Table object, NoCrc folding
+to constant true. What changed is size, not shape: the median static
+instruction count of the CRC16 Bitwise probe at `-Os` went from 22 to 50 (the
+value `-O3` already produced, because `-O3` had unrolled the loop itself),
+CRC8 20 to 42, CRC32 18 to 40, CRC64 21 to 52 (up to 106 on the two-register
+Cortex-M0 path); `-O3` counts are unchanged. Table engines are untouched.
+
 ## Reproduce and compare with silicon
 
     python -B crc/tests/check_arm_matrix.py

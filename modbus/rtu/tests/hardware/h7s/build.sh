@@ -83,7 +83,7 @@ CXXFLAGS="$MCU -std=gnu++20 -DUSE_HAL_DRIVER -DSTM32H7S3xx -c \
   $CORE_INC $HAL_INC $LIB_INC $OPT $LTO -ffunction-sections -fdata-sections \
   -fno-exceptions -fno-rtti -fno-use-cxa-atexit \
   -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror \
-  --specs=nano.specs"
+  --specs=nano.specs ${MODBUS_HW_CXXFLAGS_EXTRA:-}"
 
 OBJS=""
 case "${MODBUS_HW_FRAMER:-0}" in
@@ -93,7 +93,7 @@ case "${MODBUS_HW_FRAMER:-0}" in
     exit 1
     ;;
 esac
-echo "CONFIG optimization=$OPT lto=${MODBUS_HW_LTO:-0} baud=${MODBUS_HW_BAUD:-115200} crc=$CRC_POLICY framer=${MODBUS_HW_FRAMER:-0}"
+echo "CONFIG optimization=$OPT lto=${MODBUS_HW_LTO:-0} baud=${MODBUS_HW_BAUD:-115200} crc=$CRC_POLICY framer=${MODBUS_HW_FRAMER:-0} extra=${MODBUS_HW_CXXFLAGS_EXTRA:-}"
 for f in "$PROJECT"/Drivers/STM32H7RSxx_HAL_Driver/Src/*.c \
          "$PROJECT"/Boot/Core/Src/*.c; do
   o="$OUT/$(basename "$f" .c).o"

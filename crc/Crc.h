@@ -164,11 +164,72 @@ template<class MethodT>
 concept Method = std::same_as<MethodT, crc::Bitwise> ||
 	std::same_as<MethodT, crc::Table>;
 
+/*
+ * The bit steps below must end up as straight-line code inside the caller.
+ * Under -Os GCC otherwise outlines the step and emits eight calls to it,
+ * which is slower than the loop it replaces; always_inline is the documented
+ * way to insist, and MSVC's spelling of the same request is __forceinline.
+ */
+#if defined(__GNUC__) || defined(__clang__)
+#define CRC_DETAIL_ALWAYS_INLINE [[gnu::always_inline]] inline
+#elif defined(_MSC_VER)
+#define CRC_DETAIL_ALWAYS_INLINE __forceinline
+#else
+#define CRC_DETAIL_ALWAYS_INLINE inline
+#endif
+
+// One bit of the bit-serial CRC: shift out the next bit, fold the polynomial
+// in when it was set. Reflected engines shift right, the others left.
 template<
 	Value ValueT,
 	ValueT Polynomial,
 	bool Reflected>
-[[nodiscard]] constexpr ValueT update_bitwise(
+[[nodiscard]] CRC_DETAIL_ALWAYS_INLINE constexpr ValueT shift_bit(
+		const ValueT value) noexcept
+{
+	if constexpr (Reflected) {
+		const bool set = (value & ValueT{1u}) != ValueT{0u};
+		const ValueT shifted = static_cast<ValueT>(value >> 1u);
+		return set ? static_cast<ValueT>(shifted ^ Polynomial) : shifted;
+	} else {
+		constexpr unsigned width = std::numeric_limits<ValueT>::digits;
+		constexpr ValueT high_bit = static_cast<ValueT>(
+			ValueT{1u} << (width - 1u));
+		const bool set = (value & high_bit) != ValueT{0u};
+		const ValueT shifted = static_cast<ValueT>(value << 1u);
+		return set ? static_cast<ValueT>(shifted ^ Polynomial) : shifted;
+	}
+}
+
+// Eight bit steps as straight-line code (see update_bitwise).
+template<
+	Value ValueT,
+	ValueT Polynomial,
+	bool Reflected,
+	std::size_t... Bit>
+[[nodiscard]] CRC_DETAIL_ALWAYS_INLINE constexpr ValueT shift_bits(
+		ValueT value,
+		std::index_sequence<Bit...>) noexcept
+{
+	(((void)Bit, value = shift_bit<ValueT, Polynomial, Reflected>(value)), ...);
+	return value;
+}
+
+/*
+ * One byte of the bit-serial CRC. The eight bit steps are unrolled at compile
+ * time rather than looped, and the whole update is forced inline into the
+ * engine's byte loop: under -Os the compiler keeps a bit loop, disables loop
+ * alignment and outlines helpers, and on Cortex-M7 the cost of that bit loop
+ * then depends on where the linker happens to place it (measured on the
+ * H7S: the same instructions cost 5% more per byte at a 2-byte-aligned loop
+ * head than at a 16-byte-aligned one). Straight-line steps have no loop head
+ * to misalign and drop the counter and branch from every bit.
+ */
+template<
+	Value ValueT,
+	ValueT Polynomial,
+	bool Reflected>
+[[nodiscard]] CRC_DETAIL_ALWAYS_INLINE constexpr ValueT update_bitwise(
 		ValueT value,
 		const uint8_t byte) noexcept
 {
@@ -178,28 +239,13 @@ template<
 	if constexpr (Reflected) {
 		value = static_cast<ValueT>(
 			value ^ static_cast<ValueT>(byte));
-		for (unsigned bit = 0u; bit < 8u; ++bit) {
-			const bool set = (value & ValueT{1u}) != ValueT{0u};
-			value = static_cast<ValueT>(value >> 1u);
-			if (set) {
-				value = static_cast<ValueT>(value ^ Polynomial);
-			}
-		}
 	} else {
 		constexpr unsigned shift = width - 8u;
-		constexpr ValueT high_bit = static_cast<ValueT>(
-			ValueT{1u} << (width - 1u));
 		value = static_cast<ValueT>(
 			value ^ static_cast<ValueT>(static_cast<ValueT>(byte) << shift));
-		for (unsigned bit = 0u; bit < 8u; ++bit) {
-			const bool set = (value & high_bit) != ValueT{0u};
-			value = static_cast<ValueT>(value << 1u);
-			if (set) {
-				value = static_cast<ValueT>(value ^ Polynomial);
-			}
-		}
 	}
-	return value;
+	return shift_bits<ValueT, Polynomial, Reflected>(
+		value, std::make_index_sequence<8u>{});
 }
 
 template<

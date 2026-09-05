@@ -45,7 +45,15 @@ the policy are unconditionally `noexcept` and therefore accept only policies
 whose default constructor cannot throw; any other policy is constructed by the
 caller and passed by reference.
 
-Every `Bitwise` policy is table-free. A `Table` policy owns one private static
+Every `Bitwise` policy is table-free. Its eight bit steps per byte are
+unrolled at compile time and the byte update is forced inline into the
+calculate loop (`CRC_DETAIL_ALWAYS_INLINE`; `__forceinline` on MSVC): under
+`-Os` a bit loop is kept unaligned and its cost on Cortex-M7 then depends on
+where the linker places it (the same instructions measured 5% slower per
+byte at a 2-byte-aligned loop head than at a 16-byte-aligned one, H7S3 at
+600 MHz). Straight-line steps remove that dependence and the per-bit counter
+and branch; on the H7S3 the CRC16 Bitwise echo path cost 13-18% less CPU
+after the change (`doc/PROTOCOL_COMPARISON.md`). A `Table` policy owns one private static
 256-entry lookup specialized for its exact width and parameters. Including the
 header, declaring a table-policy alias, or using only a bitwise policy emits no
 lookup object. A lookup is emitted in read-only program memory only when that

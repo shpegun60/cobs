@@ -151,6 +151,146 @@ pool traffic and the COBS receive callback shape inside the UART driver;
 it is measured here, not modelled. Frame delivery was exact in all 18
 windows; host scheduling lateness stayed below 6.5 ms.
 
+### Three links on one UART geometry: COBS, RTU and RTU with the framing policy
+
+After the framing policy was added to the RTU endpoint
+(`modbus::rtu::Endpoint<Memory, Format, Framer>`, `modbus/ARCHITECTURE.md`
+§8), the same session method was run for three links on the same
+`Uart<256,4>`, the same `Pool<8,2>`, the same cadence and the same random
+corpus: COBS, RTU with `framing::None` (one burst candidate per
+`receive_adu()`) and RTU with the framing policy (`consume()` on every UART
+chunk; the harness protocol carries a two-byte length prefix on every
+function, which the library fills). The body is 250 bytes, the largest all
+three carry inside a 256-byte RTU ADU, and 128 bytes, where no frame reaches
+the 256-byte DMA chunk. Each is a narrowed record with its selection and every
+flashed image:
+[random250](../wire/tests/hardware/h7s/results_comparison_framed_2026-09-05.json),
+[random128](../wire/tests/hardware/h7s/results_comparison_framed128_2026-09-05.json).
+
+### Actual UART echo by UART chunk geometry, equal scheduled rate
+
+| Link | Policy | Baud | Case | Frames/s | CPU % | cycles/echo | wire % |
+|---|---|---:|---|---:|---:|---:|---:|
+| COBS Uart<256,4> | none | 1000000 | random250 | 147 | 0.201 | 8555.9 | 35.7 |
+| COBS Uart<256,4> | bitwise | 1000000 | random250 | 147 | 0.956 | 40609.1 | 36.0 |
+| COBS Uart<256,4> | table | 1000000 | random250 | 147 | 0.309 | 13108.9 | 36.0 |
+| RTU Uart<256,4> | none | 1000000 | random250 | 147 | 0.109 | 4613.0 | 35.6 |
+| RTU Uart<256,4> | bitwise | 1000000 | random250 | 147 | 0.871 | 36998.6 | 35.9 |
+| RTU Uart<256,4> | table | 1000000 | random250 | 147 | 0.207 | 8780.9 | 35.9 |
+| RTU framed Uart<256,4> | none | 1000000 | random250 | 147 | 0.104 | 4431.3 | 35.9 |
+| RTU framed Uart<256,4> | bitwise | 1000000 | random250 | 147 | 0.916 | 38914.6 | 36.2 |
+| RTU framed Uart<256,4> | table | 1000000 | random250 | 147 | 0.234 | 9933.7 | 36.1 |
+
+| Link | Policy | Baud | Case | Frames/s | CPU % | cycles/echo | wire % |
+|---|---|---:|---|---:|---:|---:|---:|
+| COBS Uart<256,4> | none | 1000000 | random128 | 281 | 0.274 | 6091.5 | 35.4 |
+| COBS Uart<256,4> | bitwise | 1000000 | random128 | 281 | 1.013 | 22523.0 | 35.9 |
+| COBS Uart<256,4> | table | 1000000 | random128 | 281 | 0.380 | 8441.7 | 35.9 |
+| RTU Uart<256,4> | none | 1000000 | random128 | 281 | 0.170 | 3780.1 | 35.1 |
+| RTU Uart<256,4> | bitwise | 1000000 | random128 | 281 | 0.924 | 20535.7 | 35.6 |
+| RTU Uart<256,4> | table | 1000000 | random128 | 281 | 0.269 | 5979.4 | 35.6 |
+| RTU framed Uart<256,4> | none | 1000000 | random128 | 281 | 0.172 | 3816.8 | 35.6 |
+| RTU framed Uart<256,4> | bitwise | 1000000 | random128 | 281 | 0.973 | 21621.7 | 36.2 |
+| RTU framed Uart<256,4> | table | 1000000 | random128 | 281 | 0.295 | 6555.0 | 36.2 |
+
+Ratios of the raw totals:
+
+| Body | Policy | COBS / RTU | COBS / RTU framed | RTU framed / RTU |
+|---|---|---:|---:|---:|
+| 250 | none | 1.85x | 1.93x | 0.96x |
+| 250 | bitwise | 1.10x | 1.04x | 1.05x |
+| 250 | table | 1.49x | 1.32x | 1.13x |
+| 128 | none | 1.61x | 1.60x | 1.01x |
+| 128 | bitwise | 1.10x | 1.04x | 1.05x |
+| 128 | table | 1.41x | 1.29x | 1.10x |
+
+Under NoCrc, where no CRC exists, the framed link costs the same as the
+default link (-182 and +37 cycles per echo): the framing state machine itself
+is not measurable at this resolution. Under Bitwise and Table the framed link
+was 5% and 10-13% more expensive, and the extra was not framing work: it sat
+in the two phases that run the CRC (RX callback and echo path), it was the
+same 1.052x for Bitwise at 128 and at 250 body bytes, and it was absent
+without a CRC. The `Crc16Bitwise::calculate` routine in the framed image was
+instruction for instruction the routine in the default image at a different
+address (0x08003966 against 0x08003970): its eight-step bit loop started at a
+2-byte-aligned address instead of a 16-byte-aligned one, so each iteration
+spanned four 8-byte fetch lines instead of three. `-Os` disables loop
+alignment, so where that loop lands is decided by the linker, image by image.
+
+That finding was acted on rather than footnoted. The bit-serial engine in
+`crc/Crc.h` now unrolls its eight bit steps at compile time and forces the
+byte update inline (`CRC_DETAIL_ALWAYS_INLINE`): there is no bit-loop head to
+misalign, and the counter and branch disappear from every bit. Rebuilt and
+re-measured in one session for the Bitwise policy
+([record](../wire/tests/hardware/h7s/results_comparison_framed_unrolled_2026-09-05.json)):
+
+| Link | Policy | Baud | Case | Frames/s | CPU % | cycles/echo | wire % |
+|---|---|---:|---|---:|---:|---:|---:|
+| COBS Uart<256,4> | bitwise | 1000000 | random250 | 147 | 0.828 | 35183.2 | 36.0 |
+| RTU Uart<256,4> | bitwise | 1000000 | random250 | 147 | 0.740 | 31446.3 | 35.9 |
+| RTU framed Uart<256,4> | bitwise | 1000000 | random250 | 147 | 0.750 | 31839.2 | 36.2 |
+
+Against the looped engine above, at the same cadence: COBS 40609 to 35183
+cycles per echo (0.866x), RTU 36999 to 31446 (0.850x), RTU framed 38915 to
+31839 (0.818x). The framed-minus-default difference fell from 1916 to 393
+cycles per echo, of which about 170 is the DMA path below; what remains of
+the framing policy's own cost is of the order of 200 cycles per echo, about
+0.5%. The Bitwise rows in every other table of this document were measured
+with the looped engine and are left as recorded; the ratio between the
+protocols is essentially unchanged (COBS/RTU Bitwise 1.10x before, 1.12x
+after; COBS/RTU framed 1.04x before, 1.10x after), the absolute CPU of every
+Bitwise link is 13-18% lower. The host-side unit oracles, the Cortex-M codegen
+guard (no helper call, no lookup) and the MSVC/WSL matrices pass on the
+unrolled engine; the 106-CPU ARM matrix was rerun for it
+([record](../crc/tests/results_unrolled_arm_2026-09-05.json)).
+
+The 250-byte Bitwise and Table framed rows also carry a small DMA effect:
+with the two-byte prefix the ADU is exactly 256 bytes, so reception ends by
+DMA transfer-complete instead of UART IDLE (`rx_dma_irq` 1.00 per echo,
+`usart_irq` down to the TX-complete half); the two interrupt paths together
+cost about 170 cycles per echo more than the single IDLE path. The 128-byte
+rows have no such effect.
+
+### Actual UART echo at 3M, 6M and 10M: COBS against RTU with the framing policy
+
+The default RTU endpoint has no valid row above 1M on this bridge (next
+section); the framed endpoint has. The same three policies and the 250-byte
+body at the harness's 300 frames/s cap, both links on `Uart<256,4>`, looped
+Bitwise engine
+([record](../wire/tests/hardware/h7s/results_comparison_framed_highbaud_2026-09-05.json)):
+
+| Link | Policy | Baud | Case | Frames/s | CPU % | cycles/echo | wire % |
+|---|---|---:|---|---:|---:|---:|---:|
+| COBS Uart<256,4> | none | 3000000 | random250 | 300 | 0.413 | 8597.3 | 24.3 |
+| COBS Uart<256,4> | none | 6000000 | random250 | 300 | 0.638 | 13289.0 | 12.2 |
+| COBS Uart<256,4> | none | 10000000 | random250 | 300 | 0.547 | 11384.9 | 7.3 |
+| COBS Uart<256,4> | bitwise | 3000000 | random250 | 300 | 1.951 | 40608.5 | 24.5 |
+| COBS Uart<256,4> | bitwise | 6000000 | random250 | 300 | 2.179 | 45344.2 | 12.3 |
+| COBS Uart<256,4> | bitwise | 10000000 | random250 | 300 | 2.086 | 43405.0 | 7.4 |
+| COBS Uart<256,4> | table | 3000000 | random250 | 300 | 0.630 | 13111.9 | 24.5 |
+| COBS Uart<256,4> | table | 6000000 | random250 | 300 | 0.855 | 17798.7 | 12.3 |
+| COBS Uart<256,4> | table | 10000000 | random250 | 300 | 0.764 | 15897.6 | 7.3 |
+| RTU framed Uart<256,4> | none | 3000000 | random250 | 300 | 0.214 | 4455.5 | 24.4 |
+| RTU framed Uart<256,4> | none | 6000000 | random250 | 300 | 0.432 | 8998.8 | 12.2 |
+| RTU framed Uart<256,4> | none | 10000000 | random250 | 300 | 0.346 | 7208.1 | 7.3 |
+| RTU framed Uart<256,4> | bitwise | 3000000 | random250 | 300 | 1.871 | 38947.1 | 24.6 |
+| RTU framed Uart<256,4> | bitwise | 6000000 | random250 | 300 | 2.074 | 43162.9 | 12.3 |
+| RTU framed Uart<256,4> | bitwise | 10000000 | random250 | 300 | 1.986 | 41319.0 | 7.4 |
+| RTU framed Uart<256,4> | table | 3000000 | random250 | 300 | 0.478 | 9942.8 | 24.6 |
+| RTU framed Uart<256,4> | table | 6000000 | random250 | 300 | 0.680 | 14143.2 | 12.3 |
+| RTU framed Uart<256,4> | table | 10000000 | random250 | 300 | 0.591 | 12290.9 | 7.4 |
+
+Every one of the 36 windows delivered every frame exactly, with zero CRC
+errors on either link. Above 3M the bridge hands both links a frame in
+several chunks — 4.5 RX callbacks per echo at 6M, 3.1 at 10M — and both
+assemble them; the cost per echo rises with the chunk count (five and a half
+UART interrupts per echo at 6M instead of two), not with the baud as such,
+which is why 6M costs more than 10M. The framed RTU link is cheaper than COBS
+in every row: 1.04x for Bitwise, 1.29-1.32x for Table, 1.5-1.9x for NoCrc,
+the same ratios as at 1M. This is a fixed 300 frames/s, 7-25% of the line;
+it is not a saturated-line measurement and says nothing about the maximum
+frame rate either link sustains.
+
 ### Physical high-baud framing: RTU has no valid complete-load timing row
 
 The default CRC16 Bitwise policy was probed with three independent requests
@@ -179,14 +319,13 @@ Consequently there is **no accepted equal-load UART CPU comparison at
 3M/6M/10M for this RTU adapter and VCP setup**. Do not put the CPU spent
 rejecting partial candidates in the same column as successful COBS traffic.
 
-This is the RTU endpoint with `framing::None`, the configuration compared
-throughout this document. The optional framing policy added afterwards
+This is the RTU endpoint with `framing::None`. The optional framing policy
 (`modbus::rtu::Endpoint<Memory, Format, Framer>`, `modbus/ARCHITECTURE.md`
 §8) was measured on the same bridge: it echoed 12/12 single, split and
 glued frames at 3M, 6M and 10M with zero CRC errors and passed the full
-vector suite at every baud. Its CPU cost has not been measured, so it does
-not change any CPU row here; the record is
-[`results_framing_2026-09-05.jsonl`](../modbus/rtu/tests/hardware/h7s/README.md#framing-policy-at-high-baud-2026-09-05).
+vector suite at every baud
+([`results_framing_2026-09-05.jsonl`](../modbus/rtu/tests/hardware/h7s/README.md#framing-policy-at-high-baud-2026-09-05)),
+and its CPU at 3M, 6M and 10M is in the table two sections above.
 The libraries and UART driver are left unchanged; no length-based or timed
 framer was quietly added to make a benchmark pass.
 
@@ -368,6 +507,19 @@ python -B wire/tests/hardware/h7s/run_comparison.py `
 
 python -B wire/tests/hardware/h7s/verify_comparison.py `
   wire/tests/hardware/h7s/results_comparison_NEW.json
+
+# The three-way and high-baud narrowed runs (framing policy needs the
+# rtu-framed link; random250 is the largest body all three links carry):
+python -B wire/tests/hardware/h7s/run_comparison.py `
+  --port COM6 --serial 002A001F3033510135393935 `
+  --output wire/tests/hardware/h7s/results_comparison_framed_NEW.json `
+  --uart-only --protocols cobs,rtu,rtu-framed --policies none,bitwise,table `
+  --bauds 1000000 --cases random250 --cobs-uart 256x4
+python -B wire/tests/hardware/h7s/run_comparison.py `
+  --port COM6 --serial 002A001F3033510135393935 `
+  --output wire/tests/hardware/h7s/results_comparison_framed_highbaud_NEW.json `
+  --uart-only --protocols cobs,rtu-framed --policies none,bitwise,table `
+  --bauds 3000000,6000000,10000000 --cases random250 --cobs-uart 256x4
 
 # Recheck the recorded session and all published numeric table rows:
 python -B wire/tests/hardware/h7s/verify_comparison.py `
