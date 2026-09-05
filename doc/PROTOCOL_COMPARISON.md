@@ -100,6 +100,57 @@ The cycles/echo columns help distinguish packet cost from offered load.
 | nonzero252 | 145 | 1.012 | 0.862 | 43602.3 | 37116.6 |
 | mixed | 145 | 0.469 | 0.400 | 20208.3 | 17247.6 |
 
+### Like-for-like UART geometry: COBS on the RTU harness's Uart<256,4>
+
+The two harnesses differ in one integration setting: COBS runs on
+`Uart<128,8>`, RTU on `Uart<256,4>`. A 257-byte COBS frame therefore fills
+two DMA chunks and raises two RX DMA transfer-complete interrupts where the
+RTU harness raises one. To separate that driver effect from the protocol
+cost, the COBS harness was rebuilt with `Uart<256,4>` (`COBS_HW_UART_CHUNK_SIZE`
+/ `COBS_HW_UART_CHUNK_COUNT`) and measured in the **same session** as the
+default geometry and as RTU, at the same 1M cadence and payload corpus. This
+is a narrowed run: UART traffic only, `random252`, both repetitions. The
+[record](../wire/tests/hardware/h7s/results_comparison_uart_2026-09-05.json)
+carries its selection, so the verifier expects exactly these rows.
+
+### Actual UART echo by UART chunk geometry, equal scheduled rate
+
+| Link | Policy | Baud | Case | Frames/s | CPU % | cycles/echo | wire % |
+|---|---|---:|---|---:|---:|---:|---:|
+| COBS Uart<128,8> | none | 1000000 | random252 | 145 | 0.236 | 10148.5 | 35.5 |
+| COBS Uart<128,8> | bitwise | 1000000 | random252 | 145 | 1.012 | 43601.6 | 35.8 |
+| COBS Uart<128,8> | table | 1000000 | random252 | 145 | 0.369 | 15873.6 | 35.8 |
+| COBS Uart<256,4> | none | 1000000 | random252 | 145 | 0.200 | 8616.9 | 35.5 |
+| COBS Uart<256,4> | bitwise | 1000000 | random252 | 145 | 0.977 | 42082.2 | 35.8 |
+| COBS Uart<256,4> | table | 1000000 | random252 | 145 | 0.333 | 14365.3 | 35.8 |
+| RTU Uart<256,4> | none | 1000000 | random252 | 145 | 0.096 | 4123.1 | 35.4 |
+| RTU Uart<256,4> | bitwise | 1000000 | random252 | 145 | 0.862 | 37116.1 | 35.7 |
+| RTU Uart<256,4> | table | 1000000 | random252 | 145 | 0.213 | 9151.9 | 35.7 |
+
+The `Uart<128,8>` and RTU rows reproduce the earlier session within
+0.001% CPU and a few cycles per echo. With the UART geometry equalized, the
+COBS-minus-RTU difference per echo decomposes as follows (cycles per echo,
+computed from the raw totals of the two records, not from the rounded rows
+above, so the last digit can differ from a subtraction of table values):
+
+| Policy | COBS 128x8 - COBS 256x4 (UART geometry) | COBS 256x4 - RTU (same UART) | of which endpoint-only (library) | remaining integration |
+|---|---:|---:|---:|---:|
+| none | 1531.5 | 4493.8 | 4229.0 | 264.8 |
+| bitwise | 1519.3 | 4966.2 | 4268.8 | 697.4 |
+| table | 1508.3 | 5213.4 | 4237.0 | 976.4 |
+
+Three points follow. The chunk geometry costs COBS a constant **~1.5 thousand
+cycles per echo**, independent of the CRC policy, exactly the one extra RX DMA
+transfer-complete interrupt and its callback per frame (`rx_dma_irq` calls per
+echo drop from 2.00 to 1.00 for Bitwise and Table). On identical UART
+geometry the COBS Bitwise/RTU Bitwise ratio at 1M is **1.13x** (0.977% versus
+0.862%), not 1.17x; NoCrc is 2.09x and Table 1.57x. The remaining ~0.3 to
+1.0 thousand cycles per echo above the endpoint-only delta is integration
+work the isolated benchmark does not contain: the application echo path,
+pool traffic and the COBS receive callback shape inside the UART driver;
+it is measured here, not modelled. Frame delivery was exact in all 18
+windows; host scheduling lateness stayed below 6.5 ms.
+
 ### Physical high-baud framing: RTU has no valid complete-load timing row
 
 The default CRC16 Bitwise policy was probed with three independent requests
@@ -255,8 +306,9 @@ The unchanged harnesses are intentional realistic integrations:
 Both UART DMA configurations provide 1024 bytes total, but their chunk size
 and resulting event pattern differ. Thus the UART table is an **integration
 comparison**, not an isolation of protocol code alone. The first experiment
-exists specifically to separate those effects. No framer was added to UART,
-and no old firmware/hardware evidence was changed.
+exists specifically to separate those effects, and the like-for-like
+`Uart<256,4>` section above measures the geometry share directly. No framer
+was added to UART, and no old firmware/hardware evidence was changed.
 
 Both protocols see exactly the same precomputed payloads, packet count and
 schedule. The rate is selected from the longest wire request/reply pair
@@ -316,6 +368,25 @@ python -B wire/tests/hardware/h7s/verify_comparison.py `
 
 `--core-only` is an optional shorter run of endpoint-only measurements.
 The verifier accepts the same flag for that explicitly reduced result set.
+A narrowed UART run records its selection in the result and the verifier
+expects exactly that; the like-for-like geometry section was produced by:
+
+```powershell
+python -B wire/tests/hardware/h7s/run_comparison.py `
+  --port COM6 --serial 002A001F3033510135393935 `
+  --output wire/tests/hardware/h7s/results_comparison_uart_2026-09-05.json `
+  --uart-only --protocols cobs,rtu --policies none,bitwise,table `
+  --bauds 1000000 --cases random252 --cobs-uart 128x8,256x4
+```
+
+Source hashes in every record are checked against a committed version of
+each file at or after the record's base commit (the base itself, or the first
+later commit that contains the measured bytes); a version older than the base
+is never accepted, because a run that started from the base cannot have
+measured it. A record made before its harness was committed is verified
+against the working tree and says so with a `CAVEAT` line; the shared rule
+lives in `wire/tests/provenance.py` and also governs the COBS performance and
+migration verifiers.
 Optional `--nm <arm-none-eabi-nm.exe>` checks all retained ELF identities,
 read-only lookup size/placement, flash verification logs and restored backup.
 Optional `--check-doc doc/PROTOCOL_COMPARISON.md` checks that every generated

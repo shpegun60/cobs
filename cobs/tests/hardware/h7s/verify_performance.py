@@ -14,8 +14,12 @@ import json
 import math
 from pathlib import Path
 import subprocess
+import sys
 
 import cobs_performance as perf
+
+sys.path.insert(0, str(perf.REPO / "wire/tests"))
+from provenance import Provenance  # noqa: E402
 
 
 def close(actual, expected):
@@ -34,9 +38,8 @@ def verify(records, repeats, check_sources=True):
                 for maximum in (253, 1024) for c in perf.cases(maximum)
                 for baud in perf.BAUDS for policy in perf.POLICIES for repeat in range(repeats)}
     observed = set()
-    identities = set()
+    provenance = Provenance(perf.REPO)
     groups = defaultdict(list)
-    missing_cube = set()
     for r in records:
         key = (r["max_payload"], r["case"], r["baud"], r["crc"], r["repeat"])
         assert key not in observed, f"duplicate observation {key}"
@@ -48,15 +51,11 @@ def verify(records, repeats, check_sources=True):
         assert h["max_send"] == h["max_receive"] == r["max_payload"]
         assert h["crc_size"] == (0 if r["crc"] == "none" else 2)
         assert h["length_size"] == (1 if r["max_payload"] == 253 else 2)
-        for path, digest in r["source_sha256"].items():
-            if not check_sources or (path, digest) in identities:
-                continue
-            absolute = perf.REPO / path
-            if path.startswith("stm32_cube_test/") and not absolute.exists():
-                missing_cube.add(path)
-                continue
-            assert hashlib.sha256(absolute.read_bytes()).hexdigest() == digest, f"changed source {path}"
-            identities.add((path, digest))
+        if check_sources:
+            # Hashes must be committed versions at or after the record's base
+            # commit, never today's working tree: the record is evidence about
+            # the sources it measured, and the harness has evolved since.
+            provenance.check(r["source_base_commit"], r["source_sha256"])
         bodies, encoded, digest = prepared(r["crc"], r["max_payload"], r["case"])
         assert digest == r["corpus_sha256"] and len(bodies) == r["corpus_frames"]
         counts = [r["frames"] // len(bodies) + int(i < r["frames"] % len(bodies))
@@ -102,7 +101,7 @@ def verify(records, repeats, check_sources=True):
         for case in perf.cases(maximum):
             assert len({r["corpus_sha256"] for r in records
                         if r["max_payload"] == maximum and r["case"] == case.name}) == 1
-    return groups, len(identities), missing_cube
+    return groups, provenance
 
 
 def aggregate(rows):
@@ -174,13 +173,12 @@ def main():
     parser.add_argument("--check-doc", type=Path, help="check that this document contains every generated result row")
     args = parser.parse_args()
     records = [json.loads(line) for line in args.results.read_text(encoding="utf-8").splitlines()]
-    groups, identities, missing_cube = verify(records, args.repeats)
+    groups, provenance = verify(records, args.repeats)
     receipt = json.loads(Path(str(args.results) + ".session.json").read_text(encoding="utf-8-sig"))
     assert receipt["completed"] and receipt["restored_and_verified"] and receipt["backup_bytes"] == 65536
     assert receipt["results_sha256"] == hashlib.sha256(args.results.read_bytes()).hexdigest()
-    print(f"PASS {len(records)} observations; {identities} available source identities; full matrix, corpus, accounting and arithmetic")
-    if missing_cube:
-        print(f"CAVEAT: {len(missing_cube)} ignored Cube source files unavailable locally")
+    print(f"PASS {len(records)} observations; {len(provenance.checked)} source identities; full matrix, corpus, accounting and arithmetic")
+    provenance.report()
     if args.nm:
         check_images(records, Path(receipt["session"]), args.nm)
     print(f"PASS firmware restored; {sum(r['frames'] for r in records)} echoes / {sum(r['payload_bytes'] for r in records)} payload bytes")

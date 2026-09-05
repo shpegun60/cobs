@@ -209,6 +209,8 @@ void rejection()
 	}
 	check(endpoint.stats().rx.crc_errors == 32u && endpoint.stats().rx.resyncs == resyncs_before_crc,
 	      "all payload/trailer single-bit errors counted, no spurious resync");
+	check(endpoint.stats().rx.frames_lost == 34u && endpoint.stats().rx.frames_delivered == 32u,
+	      "every rejected frame (2 length mismatches + 32 CRC errors) is counted lost, every good one delivered");
 	check(counter.requested == sizeof(cobs::RxBlock<E::Storage>) + payload.size() + 2u,
 	      "RX requests exact header + body, not alignment-rounded maximum");
 	using Legacy = cobs::Endpoint<wire::Heap, cobs::Format<crc::NoCrc, 255>>;

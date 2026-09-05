@@ -10,7 +10,7 @@
  * IRQ handlers, and calls bench_init()/bench_loop(). This file owns the real
  * production stack under test:
  *
- *   PC reference codec <-> USART3/VCP <-> Uart<128,8>
+ *   PC reference codec <-> USART3/VCP <-> Uart<128,8> (COBS_HW_UART_CHUNK_SIZE/COUNT override)
  *                      <-> Endpoint<wire::Pool<8,2>, Format<1024>>
  *
  * Ordinary application bodies are echoed exactly. Bodies beginning with the
@@ -62,8 +62,21 @@ using Integrity = crc::Crc16Table;
 constexpr std::size_t kMaxPayload = COBS_HW_MAX_PAYLOAD;
 constexpr std::size_t kRxBlocks = 8u;
 constexpr std::size_t kTxBlocks = 2u;
-constexpr std::size_t kUartChunkSize = 128u;
-constexpr std::size_t kUartChunkCount = 8u;
+// The UART DMA chunk geometry is a harness knob, not a library one: the paired
+// comparison measures COBS on the RTU harness's Uart<256,4> as well as on the
+// default Uart<128,8>, so the UART event pattern can be separated from the
+// protocol cost. HELLO reports whichever pair was built in.
+#ifndef COBS_HW_UART_CHUNK_SIZE
+#define COBS_HW_UART_CHUNK_SIZE 128u
+#endif
+#ifndef COBS_HW_UART_CHUNK_COUNT
+#define COBS_HW_UART_CHUNK_COUNT 8u
+#endif
+constexpr std::size_t kUartChunkSize = COBS_HW_UART_CHUNK_SIZE;
+constexpr std::size_t kUartChunkCount = COBS_HW_UART_CHUNK_COUNT;
+static_assert(kUartChunkSize >= 64u && kUartChunkCount >= 1u &&
+              kUartChunkSize * kUartChunkCount <= 4096u,
+              "COBS hardware UART chunk geometry is outside the harness's tested range");
 
 using Wire = cobs::Format<Integrity, kMaxPayload>;
 using Memory = wire::Pool<kRxBlocks, kTxBlocks>;

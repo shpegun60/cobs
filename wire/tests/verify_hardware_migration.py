@@ -8,6 +8,7 @@ import importlib.util
 import json
 import math
 from pathlib import Path
+import subprocess
 import sys
 
 REPO = Path(__file__).resolve().parents[2]
@@ -21,10 +22,16 @@ def module(name, path):
     return result
 
 
-def identity(sources):
-    for relative, expected in sources.items():
-        actual = hashlib.sha256((REPO / relative).read_bytes()).hexdigest()
-        assert actual == expected, f"source changed since hardware run: {relative}"
+sys.path.insert(0, str(REPO / "wire/tests"))
+from provenance import Provenance  # noqa: E402
+
+PROVENANCE = Provenance(REPO)
+
+
+def identity(sources, commit):
+    """A record's hashes must be committed versions of the sources it measured,
+    at or after its base commit (provenance.py states the exact rule)."""
+    PROVENANCE.check(commit, sources)
 
 
 def rows(path):
@@ -53,7 +60,7 @@ def verify():
                 assert suites[suite] >= 1, (filename, baud, suite)
         for r in records:
             assert r["crc"] == policy and r["max_payload"] == maximum
-            identity(r["source_sha256"])
+            identity(r["source_sha256"], r["source_base_commit"])
             stats = r["stats"]
             if r["suite"] in ("vectors", "stress", "smoke"):
                 cobs.healthy_failures(stats)
@@ -80,7 +87,7 @@ def verify():
             assert Counter(r["suite"] for r in group) == expected_suites
             image = group[0]["image"]
             assert all(r["image"] == image for r in group)
-            identity(image["source_sha256"])
+            identity(image["source_sha256"], image["source_base_commit"])
             policy = rtu.CRC_POLICIES[name]
             assert image["policy_id"] == policy.identifier
             assert image["lookup_bytes"] == (256 * policy.wire_size if name.endswith("table") else 0)
@@ -110,8 +117,9 @@ def verify():
 
     arm = json.loads((REPO / "crc/tests/results_shared_policies_arm_2026-09-05.json").read_text())
     assert arm["passed"] == 6360 and arm["failed"] == 0 and len(arm["cpus"]) == 106
-    identity(arm["source_sha256"])
-    print("PASS 85 COBS + 127 RTU live records and 6360 ARM objects; current source hashes and derived CPU metrics match")
+    identity(arm["source_sha256"], arm["source_base_commit"])
+    PROVENANCE.report()
+    print("PASS 85 COBS + 127 RTU live records and 6360 ARM objects; every source hash is a committed version and derived CPU metrics match")
 
 
 if __name__ == "__main__":

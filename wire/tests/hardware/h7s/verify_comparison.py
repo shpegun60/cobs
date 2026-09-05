@@ -11,12 +11,25 @@ import math
 from pathlib import Path
 import statistics
 import subprocess
+import sys
 
 import run_comparison as bench
+
+sys.path.insert(0, str(bench.REPO / "wire/tests"))
+from provenance import Provenance  # noqa: E402
 
 
 def close(a, b):
     assert math.isfinite(a) and math.isclose(a, b, rel_tol=1e-11, abs_tol=1e-11), (a, b)
+
+
+def verify_sources(data, repo=None):
+    """Every recorded source hash must be a committed version of the file at or
+    after the record's base commit; wire/tests/provenance.py states the rule."""
+    provenance = Provenance(repo or bench.REPO)
+    provenance.check(data["source_base_commit"], data["source_sha256"])
+    provenance.report()
+    return sorted(provenance.cube_missing)
 
 
 def core_summary(group):
@@ -27,16 +40,64 @@ def core_summary(group):
     return dict(**components, total=statistics.median(totals), minimum=min(totals), maximum=max(totals))
 
 
+def selection_of(data):
+    """What the record set out to measure. Old full records carry no selection."""
+    s = data.get("selection") or {}
+    selection = dict(core_only=s.get("core_only", False), uart_only=s.get("uart_only", False),
+                     protocols=tuple(s.get("protocols", ("cobs", "rtu"))),
+                     policies=tuple(s.get("policies", bench.POLICIES)),
+                     bauds=tuple(s.get("bauds", bench.DEFAULT_BAUDS)),
+                     cases=tuple(s.get("cases", [c[0] for c in bench.CASES])),
+                     cobs_uart=tuple(tuple(c) for c in s.get("cobs_uart", [list(bench.DEFAULT_COBS_UART)])))
+    validate_selection(selection)
+    return selection
+
+
+def validate_selection(selection):
+    """A record with nothing to measure proves nothing: every axis names at least
+    one known value, nothing is repeated, and the two narrowing modes exclude
+    each other. Without this an empty selection is 'complete' with zero rows."""
+    assert not (selection["core_only"] and selection["uart_only"]), "core_only and uart_only exclude each other"
+    for axis, known in (("protocols", ("cobs", "rtu")), ("policies", bench.POLICIES),
+                        ("cases", tuple(c[0] for c in bench.CASES))):
+        values = selection[axis]
+        assert values and set(values) <= set(known) and len(set(values)) == len(values), f"invalid {axis} selection {values}"
+    bauds = selection["bauds"]
+    assert bauds and all(isinstance(b, int) and b > 0 for b in bauds) and len(set(bauds)) == len(bauds), f"invalid bauds {bauds}"
+    assert selection["cobs_uart"], "no COBS UART geometry selected"
+    assert bench.parse_cobs_uart(",".join(f"{s}x{c}" for s, c in selection["cobs_uart"])) == selection["cobs_uart"]
+
+
+def check_hello(run):
+    """The board's own statement of what was built in must agree with the run's
+    policy label. RTU reports the CRC policy identifier, so a Bitwise/Table swap
+    is caught here; COBS reports only the trailer width, so for COBS only a
+    NoCrc swap is caught here and Bitwise/Table rests on the image (--nm)."""
+    hello = run["hello"]
+    if run["protocol"] == "rtu":
+        expected = bench.rtu.CRC_POLICIES["nocrc" if run["policy"] == "none" else f"crc16-{run['policy']}"].identifier
+        assert hello["crc_policy"] == expected, f"RTU {run['policy']} run reports CRC policy {hello['crc_policy']}, expected {expected}"
+    else:
+        assert hello["crc_size"] == (0 if run["policy"] == "none" else 2), f"COBS {run['policy']} run reports crc_size {hello['crc_size']}"
+
+
+def run_uart(run):
+    """The COBS Uart<size, count> a UART run was built with; None for the RTU harness."""
+    if run["protocol"] != "cobs":
+        return None
+    return tuple(run["uart_chunk"]) if run.get("uart_chunk") else bench.DEFAULT_COBS_UART
+
+
 def verify(data, core_only=False):
     assert data["schema"] == 1 and data["status"] == "passed" and data["restored_and_verified"]
-    missing = []
-    for path, digest in data["source_sha256"].items():
-        absolute = bench.REPO / path
-        if path.startswith("stm32_cube_test/") and not absolute.exists():
-            missing.append(path); continue
-        assert hashlib.sha256(absolute.read_bytes()).hexdigest() == digest, f"changed source {path}"
-    assert {c["policy"] for c in data["core"]} == set(bench.POLICIES) and len(data["core"]) == 3
+    missing = verify_sources(data)
+    selection = selection_of(data)
+    core_only = core_only or selection["core_only"]
     core = {}
+    if selection["uart_only"]:
+        assert data["core"] == [] and data["probes"] == []
+    else:
+        assert {c["policy"] for c in data["core"]} == set(selection["policies"]) and len(data["core"]) == len(selection["policies"])
     for run in data["core"]:
         assert run["header"]["core_clock"] == 600000000
         for group in run["groups"]:
@@ -51,15 +112,23 @@ def verify(data, core_only=False):
                 assert s["index"] == index and s["iterations"] == (1 if group["size"] == 1024 else 4)
                 assert 0 < s["rx_cycles"] + s["tx_cycles"] + s["release_cycles"] <= s["irq_off_cycles"] < 600000
             core[key] = group
-    expected = {(proto, policy, size, pattern, chunk) for policy in bench.POLICIES
-                for size in bench.SIZES for pattern in bench.PATTERNS
-                for proto, chunk in (("cobs", 0), ("cobs", 128), ("rtu", 0))}
+    expected = set() if selection["uart_only"] else {
+        (proto, policy, size, pattern, chunk) for policy in selection["policies"]
+        for size in bench.SIZES for pattern in bench.PATTERNS
+        for proto, chunk in (("cobs", 0), ("cobs", 128), ("rtu", 0))}
     assert set(core) == expected
     uart = {}
     for run in data["uart"]:
+        geometry = run_uart(run)
+        built = (run["hello"]["uart_chunk_size"], run["hello"]["uart_chunk_count"])
+        check_hello(run)
+        if geometry is not None:
+            # HELLO is the board's own statement of what was built in.
+            assert built == geometry
         for row in run["rows"]:
-            key = (row["protocol"], row["policy"], row["baud"], row["case"], row["repeat"])
+            key = (row["protocol"], row["policy"], row["baud"], row["case"], row["repeat"], geometry)
             assert key not in uart
+            row["_uart"] = built  # in-memory only, for the geometry table's labels
             case = next(c for c in bench.CASES if c[0] == row["case"])
             bodies = bench.corpus(case)
             frames = tuple(bench.wire(row["protocol"], row["policy"], body) for body in bodies)
@@ -90,12 +159,14 @@ def verify(data, core_only=False):
             close(row["actual_wire_percent"], row["wire_bytes_per_direction"] * 1000000 / (row["baud"] * s["window_ms"]))
             uart[key] = row
     if not core_only:
-        expected_uart = {(proto, policy, baud, case[0], repeat) for proto in ("cobs", "rtu")
-                         for policy in bench.POLICIES for baud in (115200, 1000000)
-                         for case in bench.CASES for repeat in (0, 1)}
+        expected_uart = {(proto, policy, baud, case, repeat, geometry)
+                         for proto in selection["protocols"] for policy in selection["policies"]
+                         for baud in selection["bauds"] for case in selection["cases"] for repeat in (0, 1)
+                         for geometry in (selection["cobs_uart"] if proto == "cobs" else (None,))}
         assert set(uart) == expected_uart
-        assert {(p["protocol"], p["baud"]) for p in data["probes"]} == {
-            (proto, baud) for proto in ("cobs", "rtu") for baud in (3000000, 6000000, 10000000)}
+        expected_probes = set() if selection["uart_only"] else {
+            (proto, baud) for proto in selection["protocols"] for baud in bench.PROBE_BAUDS}
+        assert {(p["protocol"], p["baud"]) for p in data["probes"]} == expected_probes
         for probe in data["probes"]:
             exact = len(probe["trials"]) == 12 and all(t["exact"] for t in probe["trials"])
             assert probe["all_exact"] == exact
@@ -111,9 +182,11 @@ def verify_images(data, nm):
     session = Path(data["session"])
     images = []
     for run in data["core"]:
-        images.append((f"core-{run['policy']}-115200", run["policy"], run["elf_sha256"]))
+        images.append((bench.image_tag("core", run["policy"], 115200), run["policy"], run["elf_sha256"]))
     for run in (*data["uart"], *data["probes"]):
-        images.append((f"{run['protocol']}-{run['policy']}-{run['baud']}", run["policy"], run["elf_sha256"]))
+        images.append((bench.image_tag(run["protocol"], run["policy"], run["baud"],
+                                       run.get("uart_chunk") and tuple(run["uart_chunk"])),
+                       run["policy"], run["elf_sha256"]))
     for name, policy, digest in images:
         elf = session / (name + ".elf")
         assert hashlib.sha256(elf.read_bytes()).hexdigest() == digest
@@ -130,26 +203,61 @@ def verify_images(data, nm):
     print(f"PASS {len(images)} exact flashed ELF images / private lookup ROM / restored backup proof")
 
 
-def tables(core, uart, probes):
-    print("\n### Library-only RX + TX + release, random 252-byte payload\n")
-    print("| CRC | COBS whole cycles | COBS chunk128 cycles | RTU whole cycles | COBS whole / RTU |")
-    print("|---|---:|---:|---:|---:|")
-    for policy in bench.POLICIES:
-        totals = [core_summary(core[(proto, policy, 252, "random", chunk)])["total"]
-                  for proto, chunk in (("cobs", 0), ("cobs", 128), ("rtu", 0))]
-        print(f"| {policy} | {totals[0]:.1f} | {totals[1]:.1f} | {totals[2]:.1f} | {totals[0] / totals[2]:.2f}x |")
-    print("\n### Equal packet-rate CPU model from measured library-only cycles, random 252 bytes\n")
-    print("| Nominal baud | COBS NoCrc % | RTU NoCrc % | COBS Bitwise % | RTU Bitwise % | COBS Table % | RTU Table % |")
-    print("|---:|---:|---:|---:|---:|---:|---:|")
-    # Equal useful throughput: the same reference 257-byte frame cadence is
-    # applied to BOTH protocols, not two different saturated wire byte rates.
-    reference_wire = len(bench.wire("cobs", "bitwise", bench.payload(252, 0)))
-    for baud in (115200, 1000000, 3000000, 6000000, 10000000):
-        fps = baud / (10 * reference_wire)
-        values = [core_summary(core[(proto, policy, 252, "random", 0)])["total"] * fps / 6000000
-                  for policy in bench.POLICIES for proto in ("cobs", "rtu")]
-        print(f"| {baud} | " + " | ".join(f"{v:.3f}" for v in values) + " |")
-    if uart:
+def uart_label(protocol, built):
+    return f"{'COBS' if protocol == 'cobs' else 'RTU'} Uart<{built[0]},{built[1]}>"
+
+
+def chunk_table(uart, selection):
+    """One row per (protocol, UART geometry, policy, baud, case), both repetitions
+    combined by raw totals — the like-for-like view a narrowed run exists for."""
+    print("\n### Actual UART echo by UART chunk geometry, equal scheduled rate\n")
+    print("| Link | Policy | Baud | Case | Frames/s | CPU % | cycles/echo | wire % |")
+    print("|---|---|---:|---|---:|---:|---:|---:|")
+    for proto in selection["protocols"]:
+        for geometry in (selection["cobs_uart"] if proto == "cobs" else (None,)):
+            for policy in selection["policies"]:
+                for baud in selection["bauds"]:
+                    for case in selection["cases"]:
+                        rows = [uart[(proto, policy, baud, case, r, geometry)] for r in (0, 1)]
+                        cycles = sum(r["instrumented_cycles"] for r in rows)
+                        window = sum(r["stats"]["window_ms"] for r in rows)
+                        frames = sum(r["frames"] for r in rows)
+                        wire_bytes = sum(r["wire_bytes_per_direction"] for r in rows)
+                        print(f"| {uart_label(proto, rows[0]['_uart'])} | {policy} | {baud} | {case} | {rows[0]['target_fps']} | "
+                              f"{cycles / (6000 * window):.3f} | {cycles / frames:.1f} | "
+                              f"{wire_bytes * 1000000 / (baud * window):.1f} |")
+
+
+def tables(core, uart, probes, selection=None):
+    selection = selection or selection_of({})
+    if core:
+        print("\n### Library-only RX + TX + release, random 252-byte payload\n")
+        print("| CRC | COBS whole cycles | COBS chunk128 cycles | RTU whole cycles | COBS whole / RTU |")
+        print("|---|---:|---:|---:|---:|")
+        for policy in selection["policies"]:
+            totals = [core_summary(core[(proto, policy, 252, "random", chunk)])["total"]
+                      for proto, chunk in (("cobs", 0), ("cobs", 128), ("rtu", 0))]
+            print(f"| {policy} | {totals[0]:.1f} | {totals[1]:.1f} | {totals[2]:.1f} | {totals[0] / totals[2]:.2f}x |")
+        print("\n### Equal packet-rate CPU model from measured library-only cycles, random 252 bytes\n")
+        names = {"none": "NoCrc", "bitwise": "Bitwise", "table": "Table"}
+        print("| Nominal baud | " + " | ".join(f"{proto} {names[policy]} %" for policy in selection["policies"]
+                                              for proto in ("COBS", "RTU")) + " |")
+        print("|---:|" + "---:|" * (2 * len(selection["policies"])))
+        # Equal useful throughput: the same reference 257-byte frame cadence is
+        # applied to BOTH protocols, not two different saturated wire byte rates.
+        reference_wire = len(bench.wire("cobs", "bitwise", bench.payload(252, 0)))
+        for baud in (115200, 1000000, 3000000, 6000000, 10000000):
+            fps = baud / (10 * reference_wire)
+            values = [core_summary(core[(proto, policy, 252, "random", 0)])["total"] * fps / 6000000
+                      for policy in selection["policies"] for proto in ("cobs", "rtu")]
+            print(f"| {baud} | " + " | ".join(f"{v:.3f}" for v in values) + " |")
+    if uart and any(key[5] is not None and key[5] != bench.DEFAULT_COBS_UART for key in uart) or (uart and selection["uart_only"]):
+        chunk_table(uart, selection)
+    full_uart = (selection["protocols"] == ("cobs", "rtu") and selection["policies"] == bench.POLICIES
+                 and selection["bauds"] == bench.DEFAULT_BAUDS and len(selection["cases"]) == len(bench.CASES)
+                 and selection["cobs_uart"] == (bench.DEFAULT_COBS_UART,))
+    if uart and full_uart:
+        uart = {key[:5]: row for key, row in uart.items()}
         print("\n### Actual UART echo, random252, equal scheduled rate\n")
         print("| Baud | Frames/s | COBS NoCrc % | RTU NoCrc % | COBS Bitwise % | RTU Bitwise % | COBS Table % | RTU Table % |")
         print("|---:|---:|---:|---:|---:|---:|---:|---:|")
@@ -194,16 +302,19 @@ def main():
     data = json.loads(args.results.read_text(encoding="utf-8"))
     core, uart, missing = verify(data, args.core_only)
     print(f"PASS {len(core)} core groups / {sum(len(g['samples']) for g in core.values())} windows; {len(uart)} UART rows; {len(data['probes'])} framing probes; restored firmware")
-    if missing: print(f"CAVEAT {len(missing)} ignored Cube source files unavailable")
-    if args.nm: verify_images(data, args.nm)
+    if args.nm:
+        verify_images(data, args.nm)
+    elif any(run["protocol"] == "cobs" and run["policy"] != "none" for run in (*data["uart"], *data["probes"])) or data["core"]:
+        print("CAVEAT flashed images not inspected (no --nm): COBS Bitwise/Table labels rest on the recorded ELF hashes; "
+              "RTU labels are confirmed by the board's HELLO")
     if args.check_doc:
         output = io.StringIO()
-        with redirect_stdout(output): tables(core, uart, data["probes"])
+        with redirect_stdout(output): tables(core, uart, data["probes"], selection_of(data))
         rows = {line for line in output.getvalue().splitlines() if line.startswith("|")}
         published = set(args.check_doc.read_text(encoding="utf-8").splitlines())
         assert rows <= published, f"missing/stale document rows: {rows - published}"
         print(f"PASS {len(rows)} distinct comparison table/header rows in document")
-    tables(core, uart, data["probes"])
+    tables(core, uart, data["probes"], selection_of(data))
 
 
 if __name__ == "__main__": main()

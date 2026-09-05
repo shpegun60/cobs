@@ -38,7 +38,7 @@ The API deliberately follows the established COBS ownership vocabulary:
 |---|---|---|
 | dynamic storage | `wire::Heap` | `wire::Heap` |
 | fixed storage | `wire::Pool<Rx, Tx>` | `wire::Pool<Rx, Tx>` |
-| endpoint | `cobs::Endpoint<Memory, Format>` | `modbus::rtu::Endpoint<Storage, Crc>` |
+| endpoint | `cobs::Endpoint<Memory, Format>` | `modbus::rtu::Endpoint<Memory, Format>` |
 | receive owner | copyable `Packet` | copyable `Packet` |
 | transmit owner | move-only `Message` | move-only `Message` |
 | nullable/ownership API | `bool`, `reset`, `data`, `size` | same |

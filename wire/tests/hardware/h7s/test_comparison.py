@@ -38,6 +38,16 @@ class ComparisonTests(unittest.TestCase):
                 self.assertEqual(bench.wire(protocol, "bitwise", body, 1024),
                                  bench.wire(protocol, "table", body, 1024))
 
+    def test_uart_geometry_selection(self):
+        self.assertEqual(bench.parse_cobs_uart("128x8"), ((128, 8),))
+        self.assertEqual(bench.parse_cobs_uart("128x8, 256X4"), ((128, 8), (256, 4)))
+        with self.assertRaises(AssertionError): bench.parse_cobs_uart("128x8,128x8")
+        with self.assertRaises(AssertionError): bench.parse_cobs_uart("32x8")
+        with self.assertRaises(AssertionError): bench.parse_cobs_uart("1024x8")
+        self.assertEqual(bench.image_tag("cobs", "bitwise", 1000000), "cobs-bitwise-1000000")
+        self.assertEqual(bench.image_tag("cobs", "bitwise", 1000000, (256, 4)), "cobs-bitwise-1000000-256x4")
+        self.assertEqual(bench.image_tag("rtu", "table", 115200, None), "rtu-table-115200")
+
     def test_cadence_budget_for_worst_frame(self):
         for case in bench.CASES:
             for baud in (115200, 1000000):
@@ -47,6 +57,59 @@ class ComparisonTests(unittest.TestCase):
                     for protocol in ("cobs", "rtu"):
                         for policy in bench.POLICIES:
                             self.assertLessEqual(len(bench.wire(protocol, policy, body)) * 20 * fps / baud, 0.75)
+
+
+    def test_selection_validation(self):
+        import verify_comparison as verifier
+        good = dict(uart_only=True, protocols=["cobs", "rtu"], policies=["none", "bitwise", "table"],
+                    bauds=[1000000], cases=["random252"], cobs_uart=[[128, 8], [256, 4]])
+        self.assertEqual(verifier.selection_of(dict(selection=good))["cobs_uart"], ((128, 8), (256, 4)))
+        self.assertEqual(verifier.selection_of({})["policies"], bench.POLICIES)  # old full records
+        for broken in (dict(policies=[]), dict(protocols=[]), dict(cases=[]), dict(bauds=[]), dict(cobs_uart=[]),
+                       dict(cases=["random252", "random252"]), dict(policies=["none", "crc32"]),
+                       dict(protocols=["cobs", "tcp"]), dict(bauds=[0]), dict(cobs_uart=[[128, 8], [128, 8]]),
+                       dict(cobs_uart=[[32, 8]]), dict(core_only=True)):
+            with self.assertRaises(AssertionError, msg=str(broken)):
+                verifier.selection_of(dict(selection={**good, **broken}))
+
+    def test_provenance_never_accepts_an_older_version(self):
+        import contextlib, hashlib, io, subprocess, sys, tempfile
+        from pathlib import Path
+        sys.path.insert(0, str(bench.REPO / "wire/tests"))
+        from provenance import Provenance
+
+        def digest(text):
+            return hashlib.sha256(text.encode()).hexdigest()
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            repo = Path(tmp)
+
+            def git(*args):
+                return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+
+            git("init", "-q")
+            git("config", "user.email", "test@example.invalid"); git("config", "user.name", "test")
+            git("config", "commit.gpgsign", "false")
+            commits = []
+            for version in ("v1", "v2", "v3"):
+                (repo / "src.h").write_text(version)
+                git("add", "src.h"); git("commit", "-q", "-m", version)
+                commits.append(git("rev-parse", "HEAD"))
+            older, base, later = commits
+            provenance = Provenance(repo)
+            self.assertEqual(provenance.committed_match(base, "src.h", digest("v2")), base)
+            self.assertEqual(provenance.committed_match(base, "src.h", digest("v3")), later)
+            self.assertIsNone(provenance.committed_match(base, "src.h", digest("v1")), "older than the base")
+            self.assertIsNone(provenance.committed_match(base, "src.h", digest("v4")))
+            with self.assertRaises(AssertionError):
+                provenance.check(base, {"src.h": digest("v1")})
+            provenance.check(base, {"src.h": digest("v3")})
+            self.assertEqual(provenance.later, {(base[:12], later[:12]): {"src.h"}})
+            (repo / "src.h").write_text("v4")  # measured but not committed: accepted only with a CAVEAT
+            provenance.check(base, {"src.h": digest("v4")})
+            self.assertEqual(provenance.uncommitted, {"src.h"})
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertTrue(any(line.startswith("CAVEAT") for line in provenance.report()))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,2204 @@
+{
+  "backup_sha256": "a5903024dba85fab5121150ca8ad13482f97384aa450aab67413881991fb9456",
+  "core": [],
+  "finished_utc": "2026-09-05T18:20:49.436530+00:00",
+  "port": "COM6",
+  "probes": [],
+  "restored_and_verified": true,
+  "schema": 1,
+  "selection": {
+    "bauds": [
+      1000000
+    ],
+    "cases": [
+      "random252"
+    ],
+    "cobs_uart": [
+      [
+        128,
+        8
+      ],
+      [
+        256,
+        4
+      ]
+    ],
+    "core_only": false,
+    "policies": [
+      "none",
+      "bitwise",
+      "table"
+    ],
+    "protocols": [
+      "cobs",
+      "rtu"
+    ],
+    "uart_only": true
+  },
+  "session": "C:\\Users\\admin\\Documents\\my_workspace\\Qt\\COBS\\wire\\tests\\out\\comparison-20260905-201908",
+  "source_base_commit": "9a53ee58320e795bc92d5268afcb8a08edebdb6a",
+  "source_sha256": {
+    "cobs/Cobs.h": "a3b96913899a9760bb20d7478166ec8b67931d9e00f371835aa52429cd4a8fe1",
+    "cobs/Codec.h": "44afc977b5ab9e28699540e7d720629b11b7e6006f71024631655cb6b5110133",
+    "cobs/Decoder.cpp": "ad336654c67a496498b764c5f5a4c1104d8e97068c68b61122a75e6c62f2b856",
+    "cobs/Encoder.cpp": "c915b056dc790772d02d851be8ee3968204d834f8f091cab57e380c90e0c6445",
+    "cobs/Format.h": "e647b1c4cdb3063156129db210b738ab7fee843010176374a748b80b5e475102",
+    "cobs/Read.h": "0f2df2015133c619596d946ad6fc8d897da2ead68edae9b6fd78cfbe29c5c164",
+    "cobs/Stats.h": "6de9c7602f1c4d07b49aa97f45427069e59a7ccb5aa1f071996e6888ebae39a0",
+    "cobs/detail/Message.h": "eb99d4887c1393e49b3cccb61dd93167523bc7fd86ba3d1c6c71c173c02c3b21",
+    "cobs/detail/Packet.h": "c413045cf8a8d43c0862252cde5099bf1bb0ba2ad9943f86d1162a4dd1109c05",
+    "cobs/detail/Receiver.h": "5318e6f5132851f27940292f6ad61e4455efcf6f2693db64b295946d835c12fb",
+    "cobs/detail/RxBlock.h": "1fdc78168396657cfce5c4b06f532c7bd93c3a5aab8329d158c0f5c54704b1f4",
+    "cobs/tests/hardware/h7s/build.sh": "1e9937cd4add4b1aa96253b3de99869bdd39567e4579f0c5fadc78d7391802f0",
+    "cobs/tests/hardware/h7s/cobs_bench.cpp": "127eefe763b856ee77b2a0f701d9a9282fb4af90380b1852e8c400c35752f848",
+    "cobs/tests/hardware/h7s/cobs_hardware.py": "ed8a32dc685ccaa88f98432c8249cfeaa719ab83b93bbba275e223eb83adce4a",
+    "crc/Crc.h": "ab1cb9552d42289d04bd4f6775cf51edbaef7fcc103828220cec0d45a97a3a08",
+    "modbus/Pdu.h": "aa476c624f4b4a4e22858a766d90f2c891f06ae21a813f685a735df0d3e819ba",
+    "modbus/Types.h": "3f48a801c1ca2e0f1e8a0c990c4789b59ea3355e8e27ab791ab83a21217936e7",
+    "modbus/rtu/Format.h": "24587a0b7da8bccfd64bb3e51612bb378cbfd6d62acc3279613792d3271edbe1",
+    "modbus/rtu/Rtu.h": "045a60f134228376bfb9c02b7db125c127cb0e6e5ad3c9039894c8c93667f5b0",
+    "modbus/rtu/RtuLimits.h": "939e2fb2704c89a3db422d32c446f8e677ddbc786b4d9e8688ca31ba34d596aa",
+    "modbus/rtu/Stats.h": "567200b02b0d04d1488ce4dd9de5a49a9528902ff46a45010c9c9b25a9c0c2f8",
+    "modbus/rtu/detail/Message.h": "d8862875ecf7834d5b9c1f975dfb4a0b3c1425a3be3fdbb0a6baee22d353da80",
+    "modbus/rtu/detail/Packet.h": "54c6ad21fc87c4a51214b098a10b6d996320112aafb74d79480a086fdb73550b",
+    "modbus/rtu/detail/Receiver.h": "87048b2ace18c1f6ef01937ec25948a3f9cbcff1594dc2d0da8c2338025a23c9",
+    "modbus/rtu/detail/RxBlock.h": "0d0c02d67afbd2eb34b64c5eb5dc00498730cdf8fc6aa2bc3095488b5ea255f1",
+    "modbus/rtu/tests/hardware/h7s/build.sh": "374ad2bc78ffe5d6ca3098581bf3a560f093ae794f61218f0c133220187c0526",
+    "modbus/rtu/tests/hardware/h7s/modbus_bench.cpp": "6d30a9ad20ff43d378f2e32e3a37854bb85c03d0bc7baa0637ec2d0508c38389",
+    "modbus/rtu/tests/hardware/h7s/modbus_hardware.py": "6b385774a6a23f07711a502164f2e7893011f496c0f8cb790bb4947b28f58631",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Inc/gpdma.h": "4b8ed88d06449a34347b413fa3cf79cf59d8f0b21083cca134ee525e6c7587f7",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Inc/gpio.h": "e2d62f964a0b7f238384ed6a20a181d09df9647240a268dc547acf5b35099f74",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Inc/main.h": "5a8bf98b921016533593c4c7105d08bc4435d03de8184c33e2a83f5c4c3d279a",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Inc/stm32h7rsxx_hal_conf.h": "3242603358d98548d2e1475b056254ea5ab5efb8ab6d0651fc2252547d75319d",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Inc/stm32h7rsxx_it.h": "fcbd25a96bc4788b16282281e627352721db9dd7a413db6bdbcc298683f52326",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Inc/uart_bench.h": "55b6dbbfaa58b584df5a223df4dba8590eed09d52a99aa2ca0972899910243aa",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Inc/usart.h": "8167e4e06c52c66878f9effd3e551251c0f1393284a111f4ab2f73b491657f60",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Src/gpdma.c": "c9f0e13f00c5b7310344c2cd550645f8878e66cafcc7c3cfd9612677da0dd89e",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Src/gpio.c": "6fec7c8296be9fcac43d944e0b8fe7bf78f13333c7f86bd7eb450e76bee72eba",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Src/main.c": "e631288497f8e900fdd4aa449851f3bd2b5479a964cc6d773578c75b5e700813",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Src/stm32h7rsxx_hal_msp.c": "c7d803158f25c14294d427b177be6702e60822d6ebcde0f787fc5aa9b2bedfd2",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Src/stm32h7rsxx_it.c": "a149f3c8d30bea6e1351829e6fe0739521fac72b53f88126fa06256b0bc66431",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Src/syscalls.c": "b993ebb4f882e8be21cec8d95983655a0caf4f0eb11348f20f6371f5a5031717",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Src/sysmem.c": "147c60a13e805f62003d63f9de068b925e386de6d8844b1279620f715919c940",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Src/system_stm32h7rsxx.c": "c35a221d06d699bd0d2fa14adffcde197f654d51b715c8586215e0bfcfd03ca9",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Src/usart.c": "0254c61e05015266d20d71c93f826b75b7ae97e9edcaa3f97ce69f76103cb6be",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Startup/startup_stm32h7s3l8hx.s": "fd29b9238480ce665eb224f7e4a87580c64a1516f9e28b550b26b303cf36d888",
+    "stm32_cube_test/h7s_cobs_test/Boot/STM32H7S3L8HX_FLASH.ld": "b4295e5f0a20cff5ce73d68dd7ff2b8a41530ada3f6df510b5eec06c9055a086",
+    "uart/Uart.h": "5f7b068aaf6a63a2e0e48bfe6e7f4945128b534f7d54cb25453c0f7f0c537f39",
+    "uart/detail/IrqGuard.h": "9c6ab88d1573199c6cbeac7d77e202d98d19d5ab17aff855475a658811a4d3f5",
+    "uart/detail/UartRegs.h": "bf6d17a2a9f869f5af860a9f1bb414ef8c85a70cd157a495020ebe460ba4f4c7",
+    "uart/uart_probe.h": "2ce4e9ae4f5604a07f53e7e2f53bba2e1f559c5e8e68eb00226a28fa1b5eda06",
+    "wire/Read.h": "3f5fd2119d0600a2210966fb74482eda986fb5c6cf8c97ac7328f3ed63ce2088",
+    "wire/Scalar.h": "0de75675b294bfdfe020ea26d2c30824725b93bc6c1981f641013c9f040a6ee0",
+    "wire/Storage.h": "6de177a7f4fc7e3403d9b1f5f1574db4515e880a899588c8d198c9206918913d",
+    "wire/detail/BlockPool.h": "e29ecdb6d75186d15cc24ae0c56f30c70da61f282736d3d272ce0c3d0a1c8f07",
+    "wire/tests/hardware/h7s/build.sh": "8788bfd8a554b6cb481b4189e7418fc6375b9f79d7f1413f00429b5d49e53ca4",
+    "wire/tests/hardware/h7s/protocol_bench.cpp": "d9ce0cc8c74443b8cc0f6a45876a522ff9f7f88bea9b901c620a55840990b10f",
+    "wire/tests/hardware/h7s/run_comparison.py": "3c7eb2fd3eb8827ad3e2b326645a40178d8e66eec65d31f1c60fd7076dd6c2f3"
+  },
+  "status": "passed",
+  "stlink_serial": "002A001F3033510135393935",
+  "timestamp_utc": "2026-09-05T18:19:08.497334+00:00",
+  "uart": [
+    {
+      "baud": 1000000,
+      "elf_sha256": "868ceba0fb87e8bab944e6487fef7662a2f33679d9f223e8532c248271e16ad7",
+      "hello": {
+        "baud": 1000000,
+        "core_clock": 600000000,
+        "crc_size": 0,
+        "length_size": 1,
+        "max_receive": 253,
+        "max_send": 253,
+        "rx_blocks": 8,
+        "tx_blocks": 2,
+        "uart_chunk_count": 8,
+        "uart_chunk_size": 128,
+        "version": 2
+      },
+      "policy": "none",
+      "protocol": "cobs",
+      "rows": [
+        {
+          "actual_wire_percent": 35.518731988472624,
+          "baud": 1000000,
+          "case": "random252",
+          "corpus_sha256": "591a0afdb38938757f11265ca00ef34cddadd2471838692775e7429f5bb92458",
+          "cpu_percent": 0.23560598783221262,
+          "cycles_per_echo": 10148.931034482759,
+          "data_bytes": 73080,
+          "frames": 290,
+          "host_seconds": 2.000460800016299,
+          "instrumented_cycles": 2943190,
+          "max_lateness_ms": 6.480637937784195,
+          "normalized_cpu_percent": 0.24526583333333332,
+          "policy": "none",
+          "protocol": "cobs",
+          "repeat": 0,
+          "stats": {
+            "cobs_allocation_failure": 0,
+            "cobs_crc_errors": 0,
+            "cobs_frames_delivered": 291,
+            "cobs_frames_lost": 0,
+            "cobs_frames_sent": 290,
+            "cobs_length_mismatch": 0,
+            "cobs_malformed": 0,
+            "cobs_oversize": 0,
+            "cobs_resyncs": 0,
+            "cobs_send_failed": 0,
+            "cobs_send_refused_busy": 0,
+            "control_frames": 1,
+            "counters": {
+              "cobs_consume": {
+                "avg": 1379,
+                "calls": 581,
+                "max": 1540,
+                "total": 801653
+              },
+              "cobs_tx_release": {
+                "avg": 76,
+                "calls": 290,
+                "max": 76,
+                "total": 22040
+              },
+              "packet_process": {
+                "avg": 4325,
+                "calls": 290,
+                "max": 4445,
+                "total": 1254421
+              },
+              "rx_dma_irq": {
+                "avg": 1039,
+                "calls": 290,
+                "max": 1107,
+                "total": 301390
+              },
+              "tx_dma_irq": {
+                "avg": 277,
+                "calls": 290,
+                "max": 281,
+                "total": 80338
+              },
+              "uart_rx": {
+                "avg": 603,
+                "calls": 581,
+                "max": 615,
+                "total": 350376
+              },
+              "uart_slow": {
+                "avg": 1570,
+                "calls": 591,
+                "max": 1752,
+                "total": 928453
+              },
+              "uart_tx_start": {
+                "avg": 472,
+                "calls": 290,
+                "max": 473,
+                "total": 136899
+              },
+              "usart_irq": {
+                "avg": 613,
+                "calls": 581,
+                "max": 1016,
+                "total": 356548
+              }
+            },
+            "echo_bytes": 73080,
+            "echo_frames": 290,
+            "response_failures": 0,
+            "rx_available": 7,
+            "rx_exhausted": 0,
+            "rx_high_water": 1,
+            "rx_in_use": 1,
+            "rx_rejected": 0,
+            "selftest_failures": 0,
+            "tx_available": 2,
+            "tx_exhausted": 0,
+            "tx_high_water": 1,
+            "tx_in_use": 0,
+            "tx_rejected": 0,
+            "uart_restarts": 0,
+            "uart_rx_errors": 0,
+            "uart_rx_overrun": 0,
+            "uart_tx_errors": 0,
+            "version": 2,
+            "window_ms": 2082
+          },
+          "target_fps": 145,
+          "wire_bytes_per_direction": 73950
+        },
+        {
+          "actual_wire_percent": 35.53580009610764,
+          "baud": 1000000,
+          "case": "random252",
+          "corpus_sha256": "591a0afdb38938757f11265ca00ef34cddadd2471838692775e7429f5bb92458",
+          "cpu_percent": 0.23569766138074644,
+          "cycles_per_echo": 10148.003448275862,
+          "data_bytes": 73080,
+          "frames": 290,
+          "host_seconds": 2.000326799985487,
+          "instrumented_cycles": 2942921,
+          "max_lateness_ms": 1.117768930271268,
+          "normalized_cpu_percent": 0.24524341666666666,
+          "policy": "none",
+          "protocol": "cobs",
+          "repeat": 1,
+          "stats": {
+            "cobs_allocation_failure": 0,
+            "cobs_crc_errors": 0,
+            "cobs_frames_delivered": 291,
+            "cobs_frames_lost": 0,
+            "cobs_frames_sent": 290,
+            "cobs_length_mismatch": 0,
+            "cobs_malformed": 0,
+            "cobs_oversize": 0,
+            "cobs_resyncs": 0,
+            "cobs_send_failed": 0,
+            "cobs_send_refused_busy": 0,
+            "control_frames": 1,
+            "counters": {
+              "cobs_consume": {
+                "avg": 1379,
+                "calls": 581,
+                "max": 1539,
+                "total": 801678
+              },
+              "cobs_tx_release": {
+                "avg": 76,
+                "calls": 290,
+                "max": 76,
+                "total": 22040
+              },
+              "packet_process": {
+                "avg": 4325,
+                "calls": 290,
+                "max": 4326,
+                "total": 1254264
+              },
+              "rx_dma_irq": {
+                "avg": 1038,
+                "calls": 290,
+                "max": 1039,
+                "total": 301294
+              },
+              "tx_dma_irq": {
+                "avg": 277,
+                "calls": 290,
+                "max": 277,
+                "total": 80330
+              },
+              "uart_rx": {
+                "avg": 602,
+                "calls": 581,
+                "max": 603,
+                "total": 350300
+              },
+              "uart_slow": {
+                "avg": 1571,
+                "calls": 591,
+                "max": 1784,
+                "total": 928481
+              },
+              "uart_tx_start": {
+                "avg": 472,
+                "calls": 290,
+                "max": 473,
+                "total": 136894
+              },
+              "usart_irq": {
+                "avg": 613,
+                "calls": 581,
+                "max": 1004,
+                "total": 356512
+              }
+            },
+            "echo_bytes": 73080,
+            "echo_frames": 290,
+            "response_failures": 0,
+            "rx_available": 7,
+            "rx_exhausted": 0,
+            "rx_high_water": 1,
+            "rx_in_use": 1,
+            "rx_rejected": 0,
+            "selftest_failures": 0,
+            "tx_available": 2,
+            "tx_exhausted": 0,
+            "tx_high_water": 1,
+            "tx_in_use": 0,
+            "tx_rejected": 0,
+            "uart_restarts": 0,
+            "uart_rx_errors": 0,
+            "uart_rx_overrun": 0,
+            "uart_tx_errors": 0,
+            "version": 2,
+            "window_ms": 2081
+          },
+          "target_fps": 145,
+          "wire_bytes_per_direction": 73950
+        }
+      ],
+      "uart_chunk": [
+        128,
+        8
+      ]
+    },
+    {
+      "baud": 1000000,
+      "elf_sha256": "b01e4a2034fe0d03876181a2854df4af9528954bfaba155ca042a4f7c816404f",
+      "hello": {
+        "baud": 1000000,
+        "core_clock": 600000000,
+        "crc_size": 0,
+        "length_size": 1,
+        "max_receive": 253,
+        "max_send": 253,
+        "rx_blocks": 8,
+        "tx_blocks": 2,
+        "uart_chunk_count": 4,
+        "uart_chunk_size": 256,
+        "version": 2
+      },
+      "policy": "none",
+      "protocol": "cobs",
+      "rows": [
+        {
+          "actual_wire_percent": 35.518731988472624,
+          "baud": 1000000,
+          "case": "random252",
+          "corpus_sha256": "591a0afdb38938757f11265ca00ef34cddadd2471838692775e7429f5bb92458",
+          "cpu_percent": 0.2000349823887288,
+          "cycles_per_echo": 8616.679310344827,
+          "data_bytes": 73080,
+          "frames": 290,
+          "host_seconds": 2.0005059000104666,
+          "instrumented_cycles": 2498837,
+          "max_lateness_ms": 1.5491758240386844,
+          "normalized_cpu_percent": 0.20823641666666667,
+          "policy": "none",
+          "protocol": "cobs",
+          "repeat": 0,
+          "stats": {
+            "cobs_allocation_failure": 0,
+            "cobs_crc_errors": 0,
+            "cobs_frames_delivered": 291,
+            "cobs_frames_lost": 0,
+            "cobs_frames_sent": 290,
+            "cobs_length_mismatch": 0,
+            "cobs_malformed": 0,
+            "cobs_oversize": 0,
+            "cobs_resyncs": 0,
+            "cobs_send_failed": 0,
+            "cobs_send_refused_busy": 0,
+            "control_frames": 1,
+            "counters": {
+              "cobs_consume": {
+                "avg": 2655,
+                "calls": 291,
+                "max": 2663,
+                "total": 772823
+              },
+              "cobs_tx_release": {
+                "avg": 77,
+                "calls": 290,
+                "max": 77,
+                "total": 22330
+              },
+              "packet_process": {
+                "avg": 4078,
+                "calls": 290,
+                "max": 4130,
+                "total": 1182662
+              },
+              "rx_dma_irq": {
+                "avg": 0,
+                "calls": 0,
+                "max": 0,
+                "total": 0
+              },
+              "tx_dma_irq": {
+                "avg": 277,
+                "calls": 290,
+                "max": 277,
+                "total": 80330
+              },
+              "uart_rx": {
+                "avg": 666,
+                "calls": 291,
+                "max": 667,
+                "total": 194029
+              },
+              "uart_slow": {
+                "avg": 2784,
+                "calls": 301,
+                "max": 2913,
+                "total": 838125
+              },
+              "uart_tx_start": {
+                "avg": 471,
+                "calls": 290,
+                "max": 502,
+                "total": 136852
+              },
+              "usart_irq": {
+                "avg": 646,
+                "calls": 581,
+                "max": 1068,
+                "total": 375390
+              }
+            },
+            "echo_bytes": 73080,
+            "echo_frames": 290,
+            "response_failures": 0,
+            "rx_available": 7,
+            "rx_exhausted": 0,
+            "rx_high_water": 1,
+            "rx_in_use": 1,
+            "rx_rejected": 0,
+            "selftest_failures": 0,
+            "tx_available": 2,
+            "tx_exhausted": 0,
+            "tx_high_water": 1,
+            "tx_in_use": 0,
+            "tx_rejected": 0,
+            "uart_restarts": 0,
+            "uart_rx_errors": 0,
+            "uart_rx_overrun": 0,
+            "uart_tx_errors": 0,
+            "version": 2,
+            "window_ms": 2082
+          },
+          "target_fps": 145,
+          "wire_bytes_per_direction": 73950
+        },
+        {
+          "actual_wire_percent": 35.53580009610764,
+          "baud": 1000000,
+          "case": "random252",
+          "corpus_sha256": "591a0afdb38938757f11265ca00ef34cddadd2471838692775e7429f5bb92458",
+          "cpu_percent": 0.20014344065353196,
+          "cycles_per_echo": 8617.210344827587,
+          "data_bytes": 73080,
+          "frames": 290,
+          "host_seconds": 2.000384800019674,
+          "instrumented_cycles": 2498991,
+          "max_lateness_ms": 0.8860034286044538,
+          "normalized_cpu_percent": 0.20824925,
+          "policy": "none",
+          "protocol": "cobs",
+          "repeat": 1,
+          "stats": {
+            "cobs_allocation_failure": 0,
+            "cobs_crc_errors": 0,
+            "cobs_frames_delivered": 291,
+            "cobs_frames_lost": 0,
+            "cobs_frames_sent": 290,
+            "cobs_length_mismatch": 0,
+            "cobs_malformed": 0,
+            "cobs_oversize": 0,
+            "cobs_resyncs": 0,
+            "cobs_send_failed": 0,
+            "cobs_send_refused_busy": 0,
+            "control_frames": 1,
+            "counters": {
+              "cobs_consume": {
+                "avg": 2656,
+                "calls": 291,
+                "max": 2698,
+                "total": 773028
+              },
+              "cobs_tx_release": {
+                "avg": 77,
+                "calls": 290,
+                "max": 77,
+                "total": 22330
+              },
+              "packet_process": {
+                "avg": 4077,
+                "calls": 290,
+                "max": 4109,
+                "total": 1182586
+              },
+              "rx_dma_irq": {
+                "avg": 0,
+                "calls": 0,
+                "max": 0,
+                "total": 0
+              },
+              "tx_dma_irq": {
+                "avg": 277,
+                "calls": 290,
+                "max": 277,
+                "total": 80330
+              },
+              "uart_rx": {
+                "avg": 666,
+                "calls": 291,
+                "max": 667,
+                "total": 194001
+              },
+              "uart_slow": {
+                "avg": 2776,
+                "calls": 302,
+                "max": 2916,
+                "total": 838383
+              },
+              "uart_tx_start": {
+                "avg": 471,
+                "calls": 290,
+                "max": 474,
+                "total": 136829
+              },
+              "usart_irq": {
+                "avg": 646,
+                "calls": 581,
+                "max": 1068,
+                "total": 375362
+              }
+            },
+            "echo_bytes": 73080,
+            "echo_frames": 290,
+            "response_failures": 0,
+            "rx_available": 7,
+            "rx_exhausted": 0,
+            "rx_high_water": 1,
+            "rx_in_use": 1,
+            "rx_rejected": 0,
+            "selftest_failures": 0,
+            "tx_available": 2,
+            "tx_exhausted": 0,
+            "tx_high_water": 1,
+            "tx_in_use": 0,
+            "tx_rejected": 0,
+            "uart_restarts": 0,
+            "uart_rx_errors": 0,
+            "uart_rx_overrun": 0,
+            "uart_tx_errors": 0,
+            "version": 2,
+            "window_ms": 2081
+          },
+          "target_fps": 145,
+          "wire_bytes_per_direction": 73950
+        }
+      ],
+      "uart_chunk": [
+        256,
+        4
+      ]
+    },
+    {
+      "baud": 1000000,
+      "elf_sha256": "20de54f1aa9cc9652be8bc7d6fcdd484c47e9698a0a4daed8efbd69577cd9ab1",
+      "hello": {
+        "baud": 1000000,
+        "core_clock": 600000000,
+        "crc_policy": 2,
+        "max_frame": 256,
+        "max_receive": 254,
+        "max_send": 254,
+        "rx_blocks": 8,
+        "tx_blocks": 2,
+        "uart_chunk_count": 4,
+        "uart_chunk_size": 256,
+        "version": 3
+      },
+      "policy": "none",
+      "protocol": "rtu",
+      "rows": [
+        {
+          "actual_wire_percent": 35.39644401729937,
+          "baud": 1000000,
+          "case": "random252",
+          "corpus_sha256": "591a0afdb38938757f11265ca00ef34cddadd2471838692775e7429f5bb92458",
+          "cpu_percent": 0.09575844946339901,
+          "cycles_per_echo": 4122.896551724138,
+          "data_bytes": 73080,
+          "frames": 290,
+          "host_seconds": 2.000286700029392,
+          "instrumented_cycles": 1195640,
+          "max_lateness_ms": 0.8213069522753358,
+          "normalized_cpu_percent": 0.09963666666666667,
+          "policy": "none",
+          "protocol": "rtu",
+          "repeat": 0,
+          "stats": {
+            "control_frames": 1,
+            "counters": {
+              "packet_process": {
+                "avg": 1493,
+                "calls": 290,
+                "max": 1598,
+                "total": 433089
+              },
+              "rtu_receive": {
+                "avg": 755,
+                "calls": 291,
+                "max": 758,
+                "total": 219811
+              },
+              "rtu_tx_release": {
+                "avg": 78,
+                "calls": 290,
+                "max": 78,
+                "total": 22620
+              },
+              "rx_dma_irq": {
+                "avg": 0,
+                "calls": 0,
+                "max": 0,
+                "total": 0
+              },
+              "tx_dma_irq": {
+                "avg": 277,
+                "calls": 290,
+                "max": 277,
+                "total": 80330
+              },
+              "uart_slow": {
+                "avg": 948,
+                "calls": 301,
+                "max": 980,
+                "total": 285618
+              },
+              "usart_irq": {
+                "avg": 643,
+                "calls": 581,
+                "max": 1067,
+                "total": 373983
+              }
+            },
+            "echo_data_bytes": 73080,
+            "echo_frames": 290,
+            "response_failures": 0,
+            "rtu_allocation_failure": 0,
+            "rtu_candidates": 291,
+            "rtu_crc_errors": 0,
+            "rtu_frames_received": 291,
+            "rtu_frames_sent": 290,
+            "rtu_oversize": 0,
+            "rtu_send_failed": 0,
+            "rtu_send_refused_busy": 0,
+            "rtu_stream_gaps": 0,
+            "rtu_too_short": 0,
+            "rx_available": 7,
+            "rx_exhausted": 0,
+            "rx_high_water": 1,
+            "rx_in_use": 1,
+            "rx_rejected": 0,
+            "selftest_failures": 0,
+            "tx_available": 2,
+            "tx_exhausted": 0,
+            "tx_high_water": 1,
+            "tx_in_use": 0,
+            "tx_rejected": 0,
+            "uart_restarts": 0,
+            "uart_rx_errors": 0,
+            "uart_rx_overrun": 0,
+            "uart_tx_errors": 0,
+            "version": 3,
+            "window_ms": 2081
+          },
+          "target_fps": 145,
+          "wire_bytes_per_direction": 73660
+        },
+        {
+          "actual_wire_percent": 35.39644401729937,
+          "baud": 1000000,
+          "case": "random252",
+          "corpus_sha256": "591a0afdb38938757f11265ca00ef34cddadd2471838692775e7429f5bb92458",
+          "cpu_percent": 0.09576894121415985,
+          "cycles_per_echo": 4123.348275862069,
+          "data_bytes": 73080,
+          "frames": 290,
+          "host_seconds": 2.000054400006775,
+          "instrumented_cycles": 1195771,
+          "max_lateness_ms": 0.8952310308814049,
+          "normalized_cpu_percent": 0.09964758333333333,
+          "policy": "none",
+          "protocol": "rtu",
+          "repeat": 1,
+          "stats": {
+            "control_frames": 1,
+            "counters": {
+              "packet_process": {
+                "avg": 1493,
+                "calls": 290,
+                "max": 1524,
+                "total": 433038
+              },
+              "rtu_receive": {
+                "avg": 755,
+                "calls": 291,
+                "max": 791,
+                "total": 219852
+              },
+              "rtu_tx_release": {
+                "avg": 78,
+                "calls": 290,
+                "max": 78,
+                "total": 22620
+              },
+              "rx_dma_irq": {
+                "avg": 0,
+                "calls": 0,
+                "max": 0,
+                "total": 0
+              },
+              "tx_dma_irq": {
+                "avg": 277,
+                "calls": 290,
+                "max": 277,
+                "total": 80330
+              },
+              "uart_slow": {
+                "avg": 946,
+                "calls": 302,
+                "max": 1015,
+                "total": 285816
+              },
+              "usart_irq": {
+                "avg": 643,
+                "calls": 581,
+                "max": 1067,
+                "total": 373967
+              }
+            },
+            "echo_data_bytes": 73080,
+            "echo_frames": 290,
+            "response_failures": 0,
+            "rtu_allocation_failure": 0,
+            "rtu_candidates": 291,
+            "rtu_crc_errors": 0,
+            "rtu_frames_received": 291,
+            "rtu_frames_sent": 290,
+            "rtu_oversize": 0,
+            "rtu_send_failed": 0,
+            "rtu_send_refused_busy": 0,
+            "rtu_stream_gaps": 0,
+            "rtu_too_short": 0,
+            "rx_available": 7,
+            "rx_exhausted": 0,
+            "rx_high_water": 1,
+            "rx_in_use": 1,
+            "rx_rejected": 0,
+            "selftest_failures": 0,
+            "tx_available": 2,
+            "tx_exhausted": 0,
+            "tx_high_water": 1,
+            "tx_in_use": 0,
+            "tx_rejected": 0,
+            "uart_restarts": 0,
+            "uart_rx_errors": 0,
+            "uart_rx_overrun": 0,
+            "uart_tx_errors": 0,
+            "version": 3,
+            "window_ms": 2081
+          },
+          "target_fps": 145,
+          "wire_bytes_per_direction": 73660
+        }
+      ],
+      "uart_chunk": null
+    },
+    {
+      "baud": 1000000,
+      "elf_sha256": "18fb8c6f1956e60f93c12d5a7cf51319359bf7748f18292e9f334d1ed085fb00",
+      "hello": {
+        "baud": 1000000,
+        "core_clock": 600000000,
+        "crc_policy": 0,
+        "max_frame": 256,
+        "max_receive": 252,
+        "max_send": 252,
+        "rx_blocks": 8,
+        "tx_blocks": 2,
+        "uart_chunk_count": 4,
+        "uart_chunk_size": 256,
+        "version": 3
+      },
+      "policy": "bitwise",
+      "protocol": "rtu",
+      "rows": [
+        {
+          "actual_wire_percent": 35.675156174915905,
+          "baud": 1000000,
+          "case": "random252",
+          "corpus_sha256": "591a0afdb38938757f11265ca00ef34cddadd2471838692775e7429f5bb92458",
+          "cpu_percent": 0.8620578247637354,
+          "cycles_per_echo": 37116.04827586207,
+          "data_bytes": 73080,
+          "frames": 290,
+          "host_seconds": 2.0003266999847256,
+          "instrumented_cycles": 10763654,
+          "max_lateness_ms": 0.8472655317746103,
+          "normalized_cpu_percent": 0.8969711666666667,
+          "policy": "bitwise",
+          "protocol": "rtu",
+          "repeat": 0,
+          "stats": {
+            "control_frames": 1,
+            "counters": {
+              "packet_process": {
+                "avg": 17835,
+                "calls": 290,
+                "max": 17886,
+                "total": 5172301
+              },
+              "rtu_receive": {
+                "avg": 17190,
+                "calls": 291,
+                "max": 17277,
+                "total": 5002556
+              },
+              "rtu_tx_release": {
+                "avg": 80,
+                "calls": 290,
+                "max": 80,
+                "total": 23200
+              },
+              "rx_dma_irq": {
+                "avg": 1087,
+                "calls": 290,
+                "max": 1155,
+                "total": 315362
+              },
+              "tx_dma_irq": {
+                "avg": 277,
+                "calls": 290,
+                "max": 281,
+                "total": 80346
+              },
+              "uart_slow": {
+                "avg": 16835,
+                "calls": 301,
+                "max": 17496,
+                "total": 5067617
+              },
+              "usart_irq": {
+                "avg": 180,
+                "calls": 581,
+                "max": 1008,
+                "total": 104828
+              }
+            },
+            "echo_data_bytes": 73080,
+            "echo_frames": 290,
+            "response_failures": 0,
+            "rtu_allocation_failure": 0,
+            "rtu_candidates": 291,
+            "rtu_crc_errors": 0,
+            "rtu_frames_received": 291,
+            "rtu_frames_sent": 290,
+            "rtu_oversize": 0,
+            "rtu_send_failed": 0,
+            "rtu_send_refused_busy": 0,
+            "rtu_stream_gaps": 0,
+            "rtu_too_short": 0,
+            "rx_available": 7,
+            "rx_exhausted": 0,
+            "rx_high_water": 1,
+            "rx_in_use": 1,
+            "rx_rejected": 0,
+            "selftest_failures": 0,
+            "tx_available": 2,
+            "tx_exhausted": 0,
+            "tx_high_water": 1,
+            "tx_in_use": 0,
+            "tx_rejected": 0,
+            "uart_restarts": 0,
+            "uart_rx_errors": 0,
+            "uart_rx_overrun": 0,
+            "uart_tx_errors": 0,
+            "version": 3,
+            "window_ms": 2081
+          },
+          "target_fps": 145,
+          "wire_bytes_per_direction": 74240
+        },
+        {
+          "actual_wire_percent": 35.65802113352546,
+          "baud": 1000000,
+          "case": "random252",
+          "corpus_sha256": "591a0afdb38938757f11265ca00ef34cddadd2471838692775e7429f5bb92458",
+          "cpu_percent": 0.8616443323727185,
+          "cycles_per_echo": 37116.0724137931,
+          "data_bytes": 73080,
+          "frames": 290,
+          "host_seconds": 2.0004579999949783,
+          "instrumented_cycles": 10763661,
+          "max_lateness_ms": 1.0119310463778675,
+          "normalized_cpu_percent": 0.89697175,
+          "policy": "bitwise",
+          "protocol": "rtu",
+          "repeat": 1,
+          "stats": {
+            "control_frames": 1,
+            "counters": {
+              "packet_process": {
+                "avg": 17835,
+                "calls": 290,
+                "max": 17868,
+                "total": 5172329
+              },
+              "rtu_receive": {
+                "avg": 17191,
+                "calls": 291,
+                "max": 17289,
+                "total": 5002821
+              },
+              "rtu_tx_release": {
+                "avg": 80,
+                "calls": 290,
+                "max": 80,
+                "total": 23200
+              },
+              "rx_dma_irq": {
+                "avg": 1087,
+                "calls": 290,
+                "max": 1099,
+                "total": 315338
+              },
+              "tx_dma_irq": {
+                "avg": 277,
+                "calls": 290,
+                "max": 277,
+                "total": 80330
+              },
+              "uart_slow": {
+                "avg": 16780,
+                "calls": 302,
+                "max": 17507,
+                "total": 5067636
+              },
+              "usart_irq": {
+                "avg": 180,
+                "calls": 581,
+                "max": 1008,
+                "total": 104828
+              }
+            },
+            "echo_data_bytes": 73080,
+            "echo_frames": 290,
+            "response_failures": 0,
+            "rtu_allocation_failure": 0,
+            "rtu_candidates": 291,
+            "rtu_crc_errors": 0,
+            "rtu_frames_received": 291,
+            "rtu_frames_sent": 290,
+            "rtu_oversize": 0,
+            "rtu_send_failed": 0,
+            "rtu_send_refused_busy": 0,
+            "rtu_stream_gaps": 0,
+            "rtu_too_short": 0,
+            "rx_available": 7,
+            "rx_exhausted": 0,
+            "rx_high_water": 1,
+            "rx_in_use": 1,
+            "rx_rejected": 0,
+            "selftest_failures": 0,
+            "tx_available": 2,
+            "tx_exhausted": 0,
+            "tx_high_water": 1,
+            "tx_in_use": 0,
+            "tx_rejected": 0,
+            "uart_restarts": 0,
+            "uart_rx_errors": 0,
+            "uart_rx_overrun": 0,
+            "uart_tx_errors": 0,
+            "version": 3,
+            "window_ms": 2082
+          },
+          "target_fps": 145,
+          "wire_bytes_per_direction": 74240
+        }
+      ],
+      "uart_chunk": null
+    },
+    {
+      "baud": 1000000,
+      "elf_sha256": "acf451e26ef1740ec14460523fa3779038e22bc50e64cae77dc5f17a7c96cc85",
+      "hello": {
+        "baud": 1000000,
+        "core_clock": 600000000,
+        "crc_size": 2,
+        "length_size": 1,
+        "max_receive": 253,
+        "max_send": 253,
+        "rx_blocks": 8,
+        "tx_blocks": 2,
+        "uart_chunk_count": 8,
+        "uart_chunk_size": 128,
+        "version": 2
+      },
+      "policy": "bitwise",
+      "protocol": "cobs",
+      "rows": [
+        {
+          "actual_wire_percent": 35.79731027857829,
+          "baud": 1000000,
+          "case": "random252",
+          "corpus_sha256": "591a0afdb38938757f11265ca00ef34cddadd2471838692775e7429f5bb92458",
+          "cpu_percent": 1.0122000480307396,
+          "cycles_per_echo": 43601.38965517242,
+          "data_bytes": 73080,
+          "frames": 290,
+          "host_seconds": 2.000215500011109,
+          "instrumented_cycles": 12644403,
+          "max_lateness_ms": 1.0558413923718035,
+          "normalized_cpu_percent": 1.05370025,
+          "policy": "bitwise",
+          "protocol": "cobs",
+          "repeat": 0,
+          "stats": {
+            "cobs_allocation_failure": 0,
+            "cobs_crc_errors": 0,
+            "cobs_frames_delivered": 291,
+            "cobs_frames_lost": 0,
+            "cobs_frames_sent": 290,
+            "cobs_length_mismatch": 0,
+            "cobs_malformed": 0,
+            "cobs_oversize": 0,
+            "cobs_resyncs": 0,
+            "cobs_send_failed": 0,
+            "cobs_send_refused_busy": 0,
+            "control_frames": 1,
+            "counters": {
+              "cobs_consume": {
+                "avg": 6250,
+                "calls": 871,
+                "max": 16131,
+                "total": 5444074
+              },
+              "cobs_tx_release": {
+                "avg": 87,
+                "calls": 290,
+                "max": 87,
+                "total": 25230
+              },
+              "packet_process": {
+                "avg": 20533,
+                "calls": 290,
+                "max": 20650,
+                "total": 5954643
+              },
+              "rx_dma_irq": {
+                "avg": 1033,
+                "calls": 580,
+                "max": 1111,
+                "total": 599280
+              },
+              "tx_dma_irq": {
+                "avg": 277,
+                "calls": 290,
+                "max": 277,
+                "total": 80330
+              },
+              "uart_rx": {
+                "avg": 594,
+                "calls": 871,
+                "max": 620,
+                "total": 517475
+              },
+              "uart_slow": {
+                "avg": 6395,
+                "calls": 881,
+                "max": 16348,
+                "total": 5634167
+              },
+              "uart_tx_start": {
+                "avg": 471,
+                "calls": 290,
+                "max": 473,
+                "total": 136757
+              },
+              "usart_irq": {
+                "avg": 603,
+                "calls": 581,
+                "max": 1004,
+                "total": 350753
+              }
+            },
+            "echo_bytes": 73080,
+            "echo_frames": 290,
+            "response_failures": 0,
+            "rx_available": 7,
+            "rx_exhausted": 0,
+            "rx_high_water": 1,
+            "rx_in_use": 1,
+            "rx_rejected": 0,
+            "selftest_failures": 0,
+            "tx_available": 2,
+            "tx_exhausted": 0,
+            "tx_high_water": 1,
+            "tx_in_use": 0,
+            "tx_rejected": 0,
+            "uart_restarts": 0,
+            "uart_rx_errors": 0,
+            "uart_rx_overrun": 0,
+            "uart_tx_errors": 0,
+            "version": 2,
+            "window_ms": 2082
+          },
+          "target_fps": 145,
+          "wire_bytes_per_direction": 74530
+        },
+        {
+          "actual_wire_percent": 35.81451225372417,
+          "baud": 1000000,
+          "case": "random252",
+          "corpus_sha256": "591a0afdb38938757f11265ca00ef34cddadd2471838692775e7429f5bb92458",
+          "cpu_percent": 1.012694457792728,
+          "cycles_per_echo": 43601.73448275862,
+          "data_bytes": 73080,
+          "frames": 290,
+          "host_seconds": 2.000427499995567,
+          "instrumented_cycles": 12644503,
+          "max_lateness_ms": 0.8633448160253465,
+          "normalized_cpu_percent": 1.0537085833333333,
+          "policy": "bitwise",
+          "protocol": "cobs",
+          "repeat": 1,
+          "stats": {
+            "cobs_allocation_failure": 0,
+            "cobs_crc_errors": 0,
+            "cobs_frames_delivered": 291,
+            "cobs_frames_lost": 0,
+            "cobs_frames_sent": 290,
+            "cobs_length_mismatch": 0,
+            "cobs_malformed": 0,
+            "cobs_oversize": 0,
+            "cobs_resyncs": 0,
+            "cobs_send_failed": 0,
+            "cobs_send_refused_busy": 0,
+            "control_frames": 1,
+            "counters": {
+              "cobs_consume": {
+                "avg": 6250,
+                "calls": 871,
+                "max": 16130,
+                "total": 5443928
+              },
+              "cobs_tx_release": {
+                "avg": 87,
+                "calls": 290,
+                "max": 87,
+                "total": 25230
+              },
+              "packet_process": {
+                "avg": 20533,
+                "calls": 290,
+                "max": 20567,
+                "total": 5954815
+              },
+              "rx_dma_irq": {
+                "avg": 1033,
+                "calls": 580,
+                "max": 1039,
+                "total": 599176
+              },
+              "tx_dma_irq": {
+                "avg": 277,
+                "calls": 290,
+                "max": 277,
+                "total": 80330
+              },
+              "uart_rx": {
+                "avg": 593,
+                "calls": 871,
+                "max": 603,
+                "total": 517329
+              },
+              "uart_slow": {
+                "avg": 6388,
+                "calls": 882,
+                "max": 16347,
+                "total": 5634248
+              },
+              "uart_tx_start": {
+                "avg": 471,
+                "calls": 290,
+                "max": 504,
+                "total": 136829
+              },
+              "usart_irq": {
+                "avg": 603,
+                "calls": 581,
+                "max": 984,
+                "total": 350704
+              }
+            },
+            "echo_bytes": 73080,
+            "echo_frames": 290,
+            "response_failures": 0,
+            "rx_available": 7,
+            "rx_exhausted": 0,
+            "rx_high_water": 1,
+            "rx_in_use": 1,
+            "rx_rejected": 0,
+            "selftest_failures": 0,
+            "tx_available": 2,
+            "tx_exhausted": 0,
+            "tx_high_water": 1,
+            "tx_in_use": 0,
+            "tx_rejected": 0,
+            "uart_restarts": 0,
+            "uart_rx_errors": 0,
+            "uart_rx_overrun": 0,
+            "uart_tx_errors": 0,
+            "version": 2,
+            "window_ms": 2081
+          },
+          "target_fps": 145,
+          "wire_bytes_per_direction": 74530
+        }
+      ],
+      "uart_chunk": [
+        128,
+        8
+      ]
+    },
+    {
+      "baud": 1000000,
+      "elf_sha256": "34063bcb373ed139eef53605e63ff8fc492b608e454dce60906aaf8274c827cf",
+      "hello": {
+        "baud": 1000000,
+        "core_clock": 600000000,
+        "crc_size": 2,
+        "length_size": 1,
+        "max_receive": 253,
+        "max_send": 253,
+        "rx_blocks": 8,
+        "tx_blocks": 2,
+        "uart_chunk_count": 4,
+        "uart_chunk_size": 256,
+        "version": 2
+      },
+      "policy": "bitwise",
+      "protocol": "cobs",
+      "rows": [
+        {
+          "actual_wire_percent": 35.81451225372417,
+          "baud": 1000000,
+          "case": "random252",
+          "corpus_sha256": "591a0afdb38938757f11265ca00ef34cddadd2471838692775e7429f5bb92458",
+          "cpu_percent": 0.9774075764856639,
+          "cycles_per_echo": 42082.45172413793,
+          "data_bytes": 73080,
+          "frames": 290,
+          "host_seconds": 2.0001108000287786,
+          "instrumented_cycles": 12203911,
+          "max_lateness_ms": 1.2395689846016467,
+          "normalized_cpu_percent": 1.0169925833333333,
+          "policy": "bitwise",
+          "protocol": "cobs",
+          "repeat": 0,
+          "stats": {
+            "cobs_allocation_failure": 0,
+            "cobs_crc_errors": 0,
+            "cobs_frames_delivered": 291,
+            "cobs_frames_lost": 0,
+            "cobs_frames_sent": 290,
+            "cobs_length_mismatch": 0,
+            "cobs_malformed": 0,
+            "cobs_oversize": 0,
+            "cobs_resyncs": 0,
+            "cobs_send_failed": 0,
+            "cobs_send_refused_busy": 0,
+            "control_frames": 1,
+            "counters": {
+              "cobs_consume": {
+                "avg": 9314,
+                "calls": 581,
+                "max": 16126,
+                "total": 5411760
+              },
+              "cobs_tx_release": {
+                "avg": 88,
+                "calls": 290,
+                "max": 88,
+                "total": 25520
+              },
+              "packet_process": {
+                "avg": 20283,
+                "calls": 290,
+                "max": 20333,
+                "total": 5882250
+              },
+              "rx_dma_irq": {
+                "avg": 1087,
+                "calls": 290,
+                "max": 1135,
+                "total": 315278
+              },
+              "tx_dma_irq": {
+                "avg": 277,
+                "calls": 290,
+                "max": 277,
+                "total": 80330
+              },
+              "uart_rx": {
+                "avg": 633,
+                "calls": 581,
+                "max": 669,
+                "total": 367777
+              },
+              "uart_slow": {
+                "avg": 9374,
+                "calls": 591,
+                "max": 16345,
+                "total": 5540207
+              },
+              "uart_tx_start": {
+                "avg": 471,
+                "calls": 290,
+                "max": 501,
+                "total": 136670
+              },
+              "usart_irq": {
+                "avg": 620,
+                "calls": 581,
+                "max": 1032,
+                "total": 360326
+              }
+            },
+            "echo_bytes": 73080,
+            "echo_frames": 290,
+            "response_failures": 0,
+            "rx_available": 7,
+            "rx_exhausted": 0,
+            "rx_high_water": 1,
+            "rx_in_use": 1,
+            "rx_rejected": 0,
+            "selftest_failures": 0,
+            "tx_available": 2,
+            "tx_exhausted": 0,
+            "tx_high_water": 1,
+            "tx_in_use": 0,
+            "tx_rejected": 0,
+            "uart_restarts": 0,
+            "uart_rx_errors": 0,
+            "uart_rx_overrun": 0,
+            "uart_tx_errors": 0,
+            "version": 2,
+            "window_ms": 2081
+          },
+          "target_fps": 145,
+          "wire_bytes_per_direction": 74530
+        },
+        {
+          "actual_wire_percent": 35.79731027857829,
+          "baud": 1000000,
+          "case": "random252",
+          "corpus_sha256": "591a0afdb38938757f11265ca00ef34cddadd2471838692775e7429f5bb92458",
+          "cpu_percent": 0.9769285142491194,
+          "cycles_per_echo": 42082.03793103448,
+          "data_bytes": 73080,
+          "frames": 290,
+          "host_seconds": 2.0003779999678954,
+          "instrumented_cycles": 12203791,
+          "max_lateness_ms": 0.8998379344120622,
+          "normalized_cpu_percent": 1.0169825833333332,
+          "policy": "bitwise",
+          "protocol": "cobs",
+          "repeat": 1,
+          "stats": {
+            "cobs_allocation_failure": 0,
+            "cobs_crc_errors": 0,
+            "cobs_frames_delivered": 291,
+            "cobs_frames_lost": 0,
+            "cobs_frames_sent": 290,
+            "cobs_length_mismatch": 0,
+            "cobs_malformed": 0,
+            "cobs_oversize": 0,
+            "cobs_resyncs": 0,
+            "cobs_send_failed": 0,
+            "cobs_send_refused_busy": 0,
+            "control_frames": 1,
+            "counters": {
+              "cobs_consume": {
+                "avg": 9314,
+                "calls": 581,
+                "max": 16126,
+                "total": 5411471
+              },
+              "cobs_tx_release": {
+                "avg": 88,
+                "calls": 290,
+                "max": 88,
+                "total": 25520
+              },
+              "packet_process": {
+                "avg": 20283,
+                "calls": 290,
+                "max": 20317,
+                "total": 5882120
+              },
+              "rx_dma_irq": {
+                "avg": 1087,
+                "calls": 290,
+                "max": 1087,
+                "total": 315230
+              },
+              "tx_dma_irq": {
+                "avg": 277,
+                "calls": 290,
+                "max": 281,
+                "total": 80334
+              },
+              "uart_rx": {
+                "avg": 632,
+                "calls": 581,
+                "max": 651,
+                "total": 367731
+              },
+              "uart_slow": {
+                "avg": 9358,
+                "calls": 592,
+                "max": 16348,
+                "total": 5540288
+              },
+              "uart_tx_start": {
+                "avg": 471,
+                "calls": 290,
+                "max": 473,
+                "total": 136627
+              },
+              "usart_irq": {
+                "avg": 620,
+                "calls": 581,
+                "max": 1016,
+                "total": 360299
+              }
+            },
+            "echo_bytes": 73080,
+            "echo_frames": 290,
+            "response_failures": 0,
+            "rx_available": 7,
+            "rx_exhausted": 0,
+            "rx_high_water": 1,
+            "rx_in_use": 1,
+            "rx_rejected": 0,
+            "selftest_failures": 0,
+            "tx_available": 2,
+            "tx_exhausted": 0,
+            "tx_high_water": 1,
+            "tx_in_use": 0,
+            "tx_rejected": 0,
+            "uart_restarts": 0,
+            "uart_rx_errors": 0,
+            "uart_rx_overrun": 0,
+            "uart_tx_errors": 0,
+            "version": 2,
+            "window_ms": 2082
+          },
+          "target_fps": 145,
+          "wire_bytes_per_direction": 74530
+        }
+      ],
+      "uart_chunk": [
+        256,
+        4
+      ]
+    },
+    {
+      "baud": 1000000,
+      "elf_sha256": "ed28c778e483767a17baa9f5d8fa22965564872ff1802b89104d6a909cb1cad9",
+      "hello": {
+        "baud": 1000000,
+        "core_clock": 600000000,
+        "crc_size": 2,
+        "length_size": 1,
+        "max_receive": 253,
+        "max_send": 253,
+        "rx_blocks": 8,
+        "tx_blocks": 2,
+        "uart_chunk_count": 8,
+        "uart_chunk_size": 128,
+        "version": 2
+      },
+      "policy": "table",
+      "protocol": "cobs",
+      "rows": [
+        {
+          "actual_wire_percent": 35.81451225372417,
+          "baud": 1000000,
+          "case": "random252",
+          "corpus_sha256": "591a0afdb38938757f11265ca00ef34cddadd2471838692775e7429f5bb92458",
+          "cpu_percent": 0.36866242191254206,
+          "cycles_per_echo": 15872.824137931035,
+          "data_bytes": 73080,
+          "frames": 290,
+          "host_seconds": 2.0003298000083305,
+          "instrumented_cycles": 4603119,
+          "max_lateness_ms": 1.058448280673474,
+          "normalized_cpu_percent": 0.38359325,
+          "policy": "table",
+          "protocol": "cobs",
+          "repeat": 0,
+          "stats": {
+            "cobs_allocation_failure": 0,
+            "cobs_crc_errors": 0,
+            "cobs_frames_delivered": 291,
+            "cobs_frames_lost": 0,
+            "cobs_frames_sent": 290,
+            "cobs_length_mismatch": 0,
+            "cobs_malformed": 0,
+            "cobs_oversize": 0,
+            "cobs_resyncs": 0,
+            "cobs_send_failed": 0,
+            "cobs_send_refused_busy": 0,
+            "control_frames": 1,
+            "counters": {
+              "cobs_consume": {
+                "avg": 1633,
+                "calls": 871,
+                "max": 2236,
+                "total": 1423143
+              },
+              "cobs_tx_release": {
+                "avg": 87,
+                "calls": 290,
+                "max": 87,
+                "total": 25230
+              },
+              "packet_process": {
+                "avg": 6671,
+                "calls": 290,
+                "max": 6721,
+                "total": 1934737
+              },
+              "rx_dma_irq": {
+                "avg": 1033,
+                "calls": 580,
+                "max": 1071,
+                "total": 599268
+              },
+              "tx_dma_irq": {
+                "avg": 277,
+                "calls": 290,
+                "max": 277,
+                "total": 80330
+              },
+              "uart_rx": {
+                "avg": 594,
+                "calls": 871,
+                "max": 617,
+                "total": 517451
+              },
+              "uart_slow": {
+                "avg": 1830,
+                "calls": 881,
+                "max": 2488,
+                "total": 1612512
+              },
+              "uart_tx_start": {
+                "avg": 471,
+                "calls": 290,
+                "max": 502,
+                "total": 136795
+              },
+              "usart_irq": {
+                "avg": 604,
+                "calls": 581,
+                "max": 1004,
+                "total": 351042
+              }
+            },
+            "echo_bytes": 73080,
+            "echo_frames": 290,
+            "response_failures": 0,
+            "rx_available": 7,
+            "rx_exhausted": 0,
+            "rx_high_water": 1,
+            "rx_in_use": 1,
+            "rx_rejected": 0,
+            "selftest_failures": 0,
+            "tx_available": 2,
+            "tx_exhausted": 0,
+            "tx_high_water": 1,
+            "tx_in_use": 0,
+            "tx_rejected": 0,
+            "uart_restarts": 0,
+            "uart_rx_errors": 0,
+            "uart_rx_overrun": 0,
+            "uart_tx_errors": 0,
+            "version": 2,
+            "window_ms": 2081
+          },
+          "target_fps": 145,
+          "wire_bytes_per_direction": 74530
+        },
+        {
+          "actual_wire_percent": 35.79731027857829,
+          "baud": 1000000,
+          "case": "random252",
+          "corpus_sha256": "591a0afdb38938757f11265ca00ef34cddadd2471838692775e7429f5bb92458",
+          "cpu_percent": 0.36852289465257765,
+          "cycles_per_echo": 15874.441379310345,
+          "data_bytes": 73080,
+          "frames": 290,
+          "host_seconds": 2.0003151000128128,
+          "instrumented_cycles": 4603588,
+          "max_lateness_ms": 1.0998068610206246,
+          "normalized_cpu_percent": 0.38363233333333335,
+          "policy": "table",
+          "protocol": "cobs",
+          "repeat": 1,
+          "stats": {
+            "cobs_allocation_failure": 0,
+            "cobs_crc_errors": 0,
+            "cobs_frames_delivered": 291,
+            "cobs_frames_lost": 0,
+            "cobs_frames_sent": 290,
+            "cobs_length_mismatch": 0,
+            "cobs_malformed": 0,
+            "cobs_oversize": 0,
+            "cobs_resyncs": 0,
+            "cobs_send_failed": 0,
+            "cobs_send_refused_busy": 0,
+            "control_frames": 1,
+            "counters": {
+              "cobs_consume": {
+                "avg": 1633,
+                "calls": 871,
+                "max": 2236,
+                "total": 1423137
+              },
+              "cobs_tx_release": {
+                "avg": 87,
+                "calls": 290,
+                "max": 87,
+                "total": 25230
+              },
+              "packet_process": {
+                "avg": 6670,
+                "calls": 290,
+                "max": 6704,
+                "total": 1934531
+              },
+              "rx_dma_irq": {
+                "avg": 1032,
+                "calls": 580,
+                "max": 1039,
+                "total": 599136
+              },
+              "tx_dma_irq": {
+                "avg": 277,
+                "calls": 290,
+                "max": 281,
+                "total": 80334
+              },
+              "uart_rx": {
+                "avg": 593,
+                "calls": 871,
+                "max": 603,
+                "total": 517339
+              },
+              "uart_slow": {
+                "avg": 1829,
+                "calls": 882,
+                "max": 2452,
+                "total": 1613363
+              },
+              "uart_tx_start": {
+                "avg": 471,
+                "calls": 290,
+                "max": 473,
+                "total": 136766
+              },
+              "usart_irq": {
+                "avg": 604,
+                "calls": 581,
+                "max": 984,
+                "total": 350994
+              }
+            },
+            "echo_bytes": 73080,
+            "echo_frames": 290,
+            "response_failures": 0,
+            "rx_available": 7,
+            "rx_exhausted": 0,
+            "rx_high_water": 1,
+            "rx_in_use": 1,
+            "rx_rejected": 0,
+            "selftest_failures": 0,
+            "tx_available": 2,
+            "tx_exhausted": 0,
+            "tx_high_water": 1,
+            "tx_in_use": 0,
+            "tx_rejected": 0,
+            "uart_restarts": 0,
+            "uart_rx_errors": 0,
+            "uart_rx_overrun": 0,
+            "uart_tx_errors": 0,
+            "version": 2,
+            "window_ms": 2082
+          },
+          "target_fps": 145,
+          "wire_bytes_per_direction": 74530
+        }
+      ],
+      "uart_chunk": [
+        128,
+        8
+      ]
+    },
+    {
+      "baud": 1000000,
+      "elf_sha256": "286bb61265ff0fc88140f30634fcdc17da0a7cc5827bf62a34ae1b2882e82360",
+      "hello": {
+        "baud": 1000000,
+        "core_clock": 600000000,
+        "crc_size": 2,
+        "length_size": 1,
+        "max_receive": 253,
+        "max_send": 253,
+        "rx_blocks": 8,
+        "tx_blocks": 2,
+        "uart_chunk_count": 4,
+        "uart_chunk_size": 256,
+        "version": 2
+      },
+      "policy": "table",
+      "protocol": "cobs",
+      "rows": [
+        {
+          "actual_wire_percent": 35.79731027857829,
+          "baud": 1000000,
+          "case": "random252",
+          "corpus_sha256": "591a0afdb38938757f11265ca00ef34cddadd2471838692775e7429f5bb92458",
+          "cpu_percent": 0.3334658981748319,
+          "cycles_per_echo": 14364.331034482759,
+          "data_bytes": 73080,
+          "frames": 290,
+          "host_seconds": 2.0005866000428796,
+          "instrumented_cycles": 4165656,
+          "max_lateness_ms": 0.8231069077737629,
+          "normalized_cpu_percent": 0.347138,
+          "policy": "table",
+          "protocol": "cobs",
+          "repeat": 0,
+          "stats": {
+            "cobs_allocation_failure": 0,
+            "cobs_crc_errors": 0,
+            "cobs_frames_delivered": 291,
+            "cobs_frames_lost": 0,
+            "cobs_frames_sent": 290,
+            "cobs_length_mismatch": 0,
+            "cobs_malformed": 0,
+            "cobs_oversize": 0,
+            "cobs_resyncs": 0,
+            "cobs_send_failed": 0,
+            "cobs_send_refused_busy": 0,
+            "control_frames": 1,
+            "counters": {
+              "cobs_consume": {
+                "avg": 2398,
+                "calls": 581,
+                "max": 2596,
+                "total": 1393717
+              },
+              "cobs_tx_release": {
+                "avg": 88,
+                "calls": 290,
+                "max": 88,
+                "total": 25520
+              },
+              "packet_process": {
+                "avg": 6419,
+                "calls": 290,
+                "max": 6508,
+                "total": 1861794
+              },
+              "rx_dma_irq": {
+                "avg": 1083,
+                "calls": 290,
+                "max": 1127,
+                "total": 314154
+              },
+              "tx_dma_irq": {
+                "avg": 277,
+                "calls": 290,
+                "max": 277,
+                "total": 80330
+              },
+              "uart_rx": {
+                "avg": 635,
+                "calls": 581,
+                "max": 673,
+                "total": 369217
+              },
+              "uart_slow": {
+                "avg": 2576,
+                "calls": 591,
+                "max": 2812,
+                "total": 1522670
+              },
+              "uart_tx_start": {
+                "avg": 471,
+                "calls": 290,
+                "max": 473,
+                "total": 136656
+              },
+              "usart_irq": {
+                "avg": 621,
+                "calls": 581,
+                "max": 1032,
+                "total": 361188
+              }
+            },
+            "echo_bytes": 73080,
+            "echo_frames": 290,
+            "response_failures": 0,
+            "rx_available": 7,
+            "rx_exhausted": 0,
+            "rx_high_water": 1,
+            "rx_in_use": 1,
+            "rx_rejected": 0,
+            "selftest_failures": 0,
+            "tx_available": 2,
+            "tx_exhausted": 0,
+            "tx_high_water": 1,
+            "tx_in_use": 0,
+            "tx_rejected": 0,
+            "uart_restarts": 0,
+            "uart_rx_errors": 0,
+            "uart_rx_overrun": 0,
+            "uart_tx_errors": 0,
+            "version": 2,
+            "window_ms": 2082
+          },
+          "target_fps": 145,
+          "wire_bytes_per_direction": 74530
+        },
+        {
+          "actual_wire_percent": 35.79731027857829,
+          "baud": 1000000,
+          "case": "random252",
+          "corpus_sha256": "591a0afdb38938757f11265ca00ef34cddadd2471838692775e7429f5bb92458",
+          "cpu_percent": 0.33351048671149536,
+          "cycles_per_echo": 14366.251724137932,
+          "data_bytes": 73080,
+          "frames": 290,
+          "host_seconds": 2.0003067000070587,
+          "instrumented_cycles": 4166213,
+          "max_lateness_ms": 1.107441436033696,
+          "normalized_cpu_percent": 0.34718441666666666,
+          "policy": "table",
+          "protocol": "cobs",
+          "repeat": 1,
+          "stats": {
+            "cobs_allocation_failure": 0,
+            "cobs_crc_errors": 0,
+            "cobs_frames_delivered": 291,
+            "cobs_frames_lost": 0,
+            "cobs_frames_sent": 290,
+            "cobs_length_mismatch": 0,
+            "cobs_malformed": 0,
+            "cobs_oversize": 0,
+            "cobs_resyncs": 0,
+            "cobs_send_failed": 0,
+            "cobs_send_refused_busy": 0,
+            "control_frames": 1,
+            "counters": {
+              "cobs_consume": {
+                "avg": 2398,
+                "calls": 581,
+                "max": 2596,
+                "total": 1393818
+              },
+              "cobs_tx_release": {
+                "avg": 88,
+                "calls": 290,
+                "max": 88,
+                "total": 25520
+              },
+              "packet_process": {
+                "avg": 6419,
+                "calls": 290,
+                "max": 6452,
+                "total": 1861749
+              },
+              "rx_dma_irq": {
+                "avg": 1083,
+                "calls": 290,
+                "max": 1087,
+                "total": 314098
+              },
+              "tx_dma_irq": {
+                "avg": 277,
+                "calls": 290,
+                "max": 281,
+                "total": 80334
+              },
+              "uart_rx": {
+                "avg": 635,
+                "calls": 581,
+                "max": 652,
+                "total": 369171
+              },
+              "uart_slow": {
+                "avg": 2573,
+                "calls": 592,
+                "max": 2816,
+                "total": 1523351
+              },
+              "uart_tx_start": {
+                "avg": 471,
+                "calls": 290,
+                "max": 473,
+                "total": 136669
+              },
+              "usart_irq": {
+                "avg": 621,
+                "calls": 581,
+                "max": 1020,
+                "total": 361161
+              }
+            },
+            "echo_bytes": 73080,
+            "echo_frames": 290,
+            "response_failures": 0,
+            "rx_available": 7,
+            "rx_exhausted": 0,
+            "rx_high_water": 1,
+            "rx_in_use": 1,
+            "rx_rejected": 0,
+            "selftest_failures": 0,
+            "tx_available": 2,
+            "tx_exhausted": 0,
+            "tx_high_water": 1,
+            "tx_in_use": 0,
+            "tx_rejected": 0,
+            "uart_restarts": 0,
+            "uart_rx_errors": 0,
+            "uart_rx_overrun": 0,
+            "uart_tx_errors": 0,
+            "version": 2,
+            "window_ms": 2082
+          },
+          "target_fps": 145,
+          "wire_bytes_per_direction": 74530
+        }
+      ],
+      "uart_chunk": [
+        256,
+        4
+      ]
+    },
+    {
+      "baud": 1000000,
+      "elf_sha256": "290cfa3f587525f540f9ab03d3a993fcacba740d5e9d62c11aac997d25e7c355",
+      "hello": {
+        "baud": 1000000,
+        "core_clock": 600000000,
+        "crc_policy": 1,
+        "max_frame": 256,
+        "max_receive": 252,
+        "max_send": 252,
+        "rx_blocks": 8,
+        "tx_blocks": 2,
+        "uart_chunk_count": 4,
+        "uart_chunk_size": 256,
+        "version": 3
+      },
+      "policy": "table",
+      "protocol": "rtu",
+      "rows": [
+        {
+          "actual_wire_percent": 35.675156174915905,
+          "baud": 1000000,
+          "case": "random252",
+          "corpus_sha256": "591a0afdb38938757f11265ca00ef34cddadd2471838692775e7429f5bb92458",
+          "cpu_percent": 0.21259226333493514,
+          "cycles_per_echo": 9153.196551724139,
+          "data_bytes": 73080,
+          "frames": 290,
+          "host_seconds": 2.000493599975016,
+          "instrumented_cycles": 2654427,
+          "max_lateness_ms": 1.0947379050776362,
+          "normalized_cpu_percent": 0.22120225,
+          "policy": "table",
+          "protocol": "rtu",
+          "repeat": 0,
+          "stats": {
+            "control_frames": 1,
+            "counters": {
+              "packet_process": {
+                "avg": 4026,
+                "calls": 290,
+                "max": 4059,
+                "total": 1167808
+              },
+              "rtu_receive": {
+                "avg": 3083,
+                "calls": 291,
+                "max": 3124,
+                "total": 897239
+              },
+              "rtu_tx_release": {
+                "avg": 80,
+                "calls": 290,
+                "max": 80,
+                "total": 23200
+              },
+              "rx_dma_irq": {
+                "avg": 1087,
+                "calls": 290,
+                "max": 1155,
+                "total": 315286
+              },
+              "tx_dma_irq": {
+                "avg": 277,
+                "calls": 290,
+                "max": 281,
+                "total": 80334
+              },
+              "uart_slow": {
+                "avg": 3199,
+                "calls": 301,
+                "max": 3339,
+                "total": 962971
+              },
+              "usart_irq": {
+                "avg": 180,
+                "calls": 581,
+                "max": 1008,
+                "total": 104828
+              }
+            },
+            "echo_data_bytes": 73080,
+            "echo_frames": 290,
+            "response_failures": 0,
+            "rtu_allocation_failure": 0,
+            "rtu_candidates": 291,
+            "rtu_crc_errors": 0,
+            "rtu_frames_received": 291,
+            "rtu_frames_sent": 290,
+            "rtu_oversize": 0,
+            "rtu_send_failed": 0,
+            "rtu_send_refused_busy": 0,
+            "rtu_stream_gaps": 0,
+            "rtu_too_short": 0,
+            "rx_available": 7,
+            "rx_exhausted": 0,
+            "rx_high_water": 1,
+            "rx_in_use": 1,
+            "rx_rejected": 0,
+            "selftest_failures": 0,
+            "tx_available": 2,
+            "tx_exhausted": 0,
+            "tx_high_water": 1,
+            "tx_in_use": 0,
+            "tx_rejected": 0,
+            "uart_restarts": 0,
+            "uart_rx_errors": 0,
+            "uart_rx_overrun": 0,
+            "uart_tx_errors": 0,
+            "version": 3,
+            "window_ms": 2081
+          },
+          "target_fps": 145,
+          "wire_bytes_per_direction": 74240
+        },
+        {
+          "actual_wire_percent": 35.675156174915905,
+          "baud": 1000000,
+          "case": "random252",
+          "corpus_sha256": "591a0afdb38938757f11265ca00ef34cddadd2471838692775e7429f5bb92458",
+          "cpu_percent": 0.21253387794329648,
+          "cycles_per_echo": 9150.68275862069,
+          "data_bytes": 73080,
+          "frames": 290,
+          "host_seconds": 2.0001386999501847,
+          "instrumented_cycles": 2653698,
+          "max_lateness_ms": 1.0596861247904599,
+          "normalized_cpu_percent": 0.2211415,
+          "policy": "table",
+          "protocol": "rtu",
+          "repeat": 1,
+          "stats": {
+            "control_frames": 1,
+            "counters": {
+              "packet_process": {
+                "avg": 4026,
+                "calls": 290,
+                "max": 4058,
+                "total": 1167668
+              },
+              "rtu_receive": {
+                "avg": 3083,
+                "calls": 291,
+                "max": 3125,
+                "total": 897264
+              },
+              "rtu_tx_release": {
+                "avg": 80,
+                "calls": 290,
+                "max": 80,
+                "total": 23200
+              },
+              "rx_dma_irq": {
+                "avg": 1087,
+                "calls": 290,
+                "max": 1099,
+                "total": 315339
+              },
+              "tx_dma_irq": {
+                "avg": 277,
+                "calls": 290,
+                "max": 277,
+                "total": 80330
+              },
+              "uart_slow": {
+                "avg": 3186,
+                "calls": 302,
+                "max": 3343,
+                "total": 962333
+              },
+              "usart_irq": {
+                "avg": 180,
+                "calls": 581,
+                "max": 1008,
+                "total": 104828
+              }
+            },
+            "echo_data_bytes": 73080,
+            "echo_frames": 290,
+            "response_failures": 0,
+            "rtu_allocation_failure": 0,
+            "rtu_candidates": 291,
+            "rtu_crc_errors": 0,
+            "rtu_frames_received": 291,
+            "rtu_frames_sent": 290,
+            "rtu_oversize": 0,
+            "rtu_send_failed": 0,
+            "rtu_send_refused_busy": 0,
+            "rtu_stream_gaps": 0,
+            "rtu_too_short": 0,
+            "rx_available": 7,
+            "rx_exhausted": 0,
+            "rx_high_water": 1,
+            "rx_in_use": 1,
+            "rx_rejected": 0,
+            "selftest_failures": 0,
+            "tx_available": 2,
+            "tx_exhausted": 0,
+            "tx_high_water": 1,
+            "tx_in_use": 0,
+            "tx_rejected": 0,
+            "uart_restarts": 0,
+            "uart_rx_errors": 0,
+            "uart_rx_overrun": 0,
+            "uart_tx_errors": 0,
+            "version": 3,
+            "window_ms": 2081
+          },
+          "target_fps": 145,
+          "wire_bytes_per_direction": 74240
+        }
+      ],
+      "uart_chunk": null
+    }
+  ]
+}

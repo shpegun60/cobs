@@ -142,8 +142,16 @@ function identity and the deliberately different COBS-stream/RTU-ADU boundary.
 
 ```bash
 sh wire/tests/run.sh
-sh wire/tests/check_shared_crc.sh
+sh wire/tests/check_shared_crc.sh   # ELF objects only: run under WSL or with arm-none-eabi (see below)
 python -B wire/tests/verify_hardware_migration.py
+```
+
+`check_shared_crc.sh` reads symbol sizes from `nm -S`, which COFF objects do
+not carry, so on a Windows host it refuses MinGW with an explicit message.
+Run it under WSL, or with the ARM toolchain:
+
+```bash
+CXX=arm-none-eabi-g++ NM=arm-none-eabi-nm CXXFLAGS="-mthumb -mcpu=cortex-m7 -mfloat-abi=soft" sh wire/tests/check_shared_crc.sh
 ```
 
 MSVC has a separate native x64/x86 runner (no sanitizer claim):

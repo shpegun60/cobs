@@ -63,6 +63,10 @@ For manual builds, `COBS_HW_CRC` is 0=NoCrc, 1=Bitwise, 2=Table and
 and `--max-payload` options and validates HELLO before testing. These are
 explicit test configurations, not automatic wire-version detection.
 
+`COBS_HW_UART_CHUNK_SIZE` / `COBS_HW_UART_CHUNK_COUNT` select the harness's
+`Uart<ChunkSize, ChunkCount>` (default 128/8; the paired comparison also builds
+256/4 to match the RTU harness). HELLO reports whichever pair was built in.
+
 ## Historical v1 measurements
 
 The geometry, wire/control version and numeric tables below describe the

@@ -106,7 +106,7 @@ ARM verification:
   alignment codecs. Real nm/objdump inspections, not execution on 106 boards.
 - Shared scalar/protocol matrix: 96 scalar, 60 protocol and 30 COBS objects.
 - Focused endpoint/layout and CRC emission guards passed.
-- `wire/tests/check_shared_crc.sh` passed on native GCC and GNU ARM Cortex-M7:
+- `wire/tests/check_shared_crc.sh` passed on Linux GCC (WSL) and GNU ARM Cortex-M7 (ELF objects; MinGW COFF is refused with a message):
   COBS and RTU compiled in two translation units link **one** 512-byte CRC16
   lookup for Table, and no lookup for Bitwise or NoCrc, at Os/O2/O3.
 
