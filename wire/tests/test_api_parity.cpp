@@ -22,6 +22,8 @@ using CobsEndpoint = cobs::Endpoint<cobs::Pool<2u, 2u>>;
 using RtuEndpoint = modbus::rtu::Endpoint<modbus::rtu::Pool<2u, 2u>>;
 using RtuTableEndpoint = modbus::rtu::Endpoint<
 	modbus::rtu::Pool<2u, 2u>, modbus::rtu::crc::Table>;
+using RtuNoCrcEndpoint = modbus::rtu::Endpoint<
+	modbus::rtu::Pool<2u, 2u>, ::crc::NoCrc>;
 
 template<class Packet>
 concept SharedPacket =
@@ -111,15 +113,26 @@ concept HasAduReceive = requires(
 
 static_assert(SharedPacket<typename CobsEndpoint::Packet>);
 static_assert(SharedPacket<typename RtuEndpoint::Packet>);
+static_assert(SharedPacket<typename RtuTableEndpoint::Packet>);
+static_assert(SharedPacket<typename RtuNoCrcEndpoint::Packet>);
 static_assert(SharedMessage<typename CobsEndpoint::Message>);
 static_assert(SharedMessage<typename RtuEndpoint::Message>);
+static_assert(SharedMessage<typename RtuTableEndpoint::Message>);
+static_assert(SharedMessage<typename RtuNoCrcEndpoint::Message>);
 static_assert(SharedEndpoint<CobsEndpoint>);
 static_assert(SharedEndpoint<RtuEndpoint>);
 static_assert(SharedEndpoint<RtuTableEndpoint>);
+static_assert(SharedEndpoint<RtuNoCrcEndpoint>);
 static_assert(std::same_as<RtuEndpoint::Message, RtuTableEndpoint::Message>);
 static_assert(std::same_as<RtuEndpoint::Packet, RtuTableEndpoint::Packet>);
+static_assert(std::same_as<RtuEndpoint::Format, RtuTableEndpoint::Format>);
+static_assert(sizeof(RtuEndpoint::Message) == sizeof(RtuTableEndpoint::Message));
+static_assert(sizeof(RtuEndpoint::Packet) == sizeof(RtuTableEndpoint::Packet));
 static_assert(std::same_as<RtuEndpoint::CrcType, modbus::rtu::crc::Bitwise>);
 static_assert(std::same_as<RtuTableEndpoint::CrcType, modbus::rtu::crc::Table>);
+static_assert(std::same_as<RtuNoCrcEndpoint::CrcType, ::crc::NoCrc>);
+static_assert(RtuEndpoint::max_send_size == 252u);
+static_assert(RtuNoCrcEndpoint::max_send_size == 254u);
 
 static_assert(!HasRtuMetadata<typename CobsEndpoint::Packet>);
 static_assert(HasRtuMetadata<typename RtuEndpoint::Packet>);

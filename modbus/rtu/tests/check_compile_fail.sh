@@ -38,11 +38,13 @@ expect_failure() {
 expect_failure "$CASES/storage_missing_tx.cpp" \
 	"Endpoint storage must satisfy modbus::rtu::Storage"
 expect_failure "$CASES/storage_wrong_geometry.cpp" \
-	"Modbus RTU storage must provide the complete fixed RTU geometry"
+	"Modbus RTU storage must provide one complete 256-byte ADU"
 expect_failure "$CASES/message_private_finalize.cpp" "finalize" "private"
 expect_failure "$CASES/packet_private_adopt.cpp" "adopt" "private"
 expect_failure "$CASES/append_struct.cpp" "append_be" "constraints not satisfied"
 expect_failure "$CASES/crc_missing_calculate.cpp" \
-	"Endpoint CRC must satisfy modbus::rtu::crc::Calculator"
+	"Endpoint CRC must satisfy crc::Policy"
+expect_failure "$CASES/crc_oversize.cpp" \
+	"CRC wire_size leaves no room for RTU address and function"
 
 echo "$count Modbus compile-fail contracts rejected with expected diagnostics"

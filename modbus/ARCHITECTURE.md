@@ -21,7 +21,8 @@ modbus::tcp::Endpoint<Storage> // future, not an empty placeholder
 Only transport-independent application protocol facts live directly in
 `modbus`:
 
-- the maximum 253-byte PDU and 252-byte function-data limits;
+- the standard Modbus maximum 253-byte PDU and 252-byte function-data limits
+  used by the default RTU CRC16 format;
 - `SendResult`, whose ownership meaning is transport-independent;
 - stateless, bounds-checked PDU readers re-exported from the shared wire layer.
 
@@ -71,14 +72,37 @@ immutable and cursor-free, while each application parser owns its offset.
 ## 3. RTU frame and logical payload
 
 ```text
-RTU ADU = address | function | function data | CRC low | CRC high
-bytes       1          1          0..252          1         1
+RTU ADU = address | function | function data | policy-owned trailer
+bytes       1          1          0..N          CrcT::wire_size
 ```
 
-`address_size`, `function_size`, `crc_size`, `adu_prefix_size`,
-`pdu_envelope_size`, and `adu_overhead` are one constexpr geometry set.
-`crc_size` is derived from `crc::wire_size`; Packet views, Message offsets and
-storage sizes do not repeat numeric `2/3/4` framing constants.
+The physical ADU ceiling remains 256 bytes. `Endpoint<StorageT, CrcT>` maps
+the policy to `Format<CrcT::wire_size>`, which owns `address_size`,
+`function_size`, `crc_size`, `adu_prefix_size`, `pdu_envelope_size`,
+`adu_overhead`, `min_adu_size`, and the effective data/PDU limits. Packet
+views and Message offsets consume that one format; Storage does not repeat it.
+
+```text
+modbus/rtu/RtuLimits.h (physical 256-byte ceiling)
+        |                         |
+        v                         v
+    Storage.h     crc/Crc.h -> Format<wire_size>
+        \                         /
+         +------ Endpoint -------+
+```
+
+`Storage.h` does not include the CRC or Format layer. This keeps allocation
+strategies reusable across every trailer policy and prevents policy geometry
+from leaking into pool types.
+
+```text
+max_data_size = 256 - 1 address - 1 function - CrcT::wire_size
+```
+
+The default two-byte CRC16 therefore retains the standard 252-byte function-
+data limit. `NoCrc` exposes 254, CRC8 exposes 253, CRC32 exposes 250, and CRC64
+exposes 246. Alternate widths define private RTU-like wire formats rather than
+standard Modbus RTU, and both peers must select the same policy.
 
 The public `Message::size()` and `Packet::size()` count function-data bytes
 only. Address, function and CRC are protocol metadata/service bytes. They are
@@ -94,6 +118,9 @@ packet.adu();      // address + PDU + CRC
 
 This definition gives `data()` and `size()` the same application-facing
 meaning as COBS: the bytes supplied by the message builder, not framing bytes.
+Policies with equal `wire_size` share one `Format`, Packet, Message, and
+Receiver instantiation; choosing CRC16 Table instead of Bitwise does not
+duplicate those ownership paths.
 
 ## 4. Packet ownership
 
@@ -123,9 +150,11 @@ execution domain and is deliberately non-atomic.
 
 ## 5. Message ownership
 
-`Message` exclusively owns one `TxBlock {memory, capacity}`. Capacity is in
-function-data bytes. The physical block additionally holds address, function
-and CRC.
+`Message` exclusively owns one `TxBlock {memory, adu_capacity}`. The block
+descriptor is physical and CRC-agnostic: `adu_capacity` counts complete ADU
+bytes. `Message::capacity()` exposes only
+`Format::data_capacity_for_adu(adu_capacity)`, so application code still sees
+function-data capacity with all envelope bytes hidden.
 
 ```text
 Empty -> Building -> Finalized -> Sent
@@ -139,7 +168,8 @@ Empty -> Building -> Finalized -> Sent
 - ordered spans convert each element, never the complete array as one blob;
 - a failed append leaves size, capacity and existing bytes unchanged;
 - Heap messages grow geometrically; Pool messages receive the full slab;
-- finalization adds CRC low byte first and is private to `Endpoint`;
+- finalization calls the selected policy's `calculate()` and `store()` and is
+  private to `Endpoint`;
 - `Sent` moves the block into Endpoint;
 - `Busy`, `Unbound`, `Failed` and `Invalid` do not steal caller ownership;
 - `poll()` releases the sent block only after the bound busy query is false.
@@ -151,16 +181,16 @@ select the scalar path at compile time. On little-endian STM32, native/LE are
 direct copies and BE uses the target's byte-reversal instruction, with no
 runtime endian branch.
 
-The library-owned fields do not use native serialization. Address and
-function are one byte. CRC calculation produces a numeric `uint16_t`, and the
-single `crc::store/load` wire codec always writes/reads low byte then high byte
-with shifts. COBS likewise owns its length prefix and stores/loads it with
-explicit little-endian bytes. User-selected serializers are therefore unable
-to alter either framing contract.
+The library-owned fields do not use native serialization. Address and function
+are one byte. The CRC policy owns trailer serialization through explicit
+`store/load`; built-in policies use the protocol-independent `crc::Codec` and
+never copy native object representation. COBS likewise owns its length prefix
+and stores/loads it with explicit little-endian bytes. Payload serializers
+cannot alter either envelope.
 
-### CRC calculation policy
+### CRC policy
 
-RTU separates the calculation mechanism from the fixed two-byte wire slot:
+RTU treats calculation and trailer representation as one static policy:
 
 ```cpp
 template<class StorageT = Heap, class CrcT = crc::Bitwise>
@@ -171,18 +201,29 @@ Each Endpoint owns exactly one `[[no_unique_address]] CrcT m_crc`. The same
 object is passed by reference to `Receiver::receive_adu()` and
 `Message::finalize()`. Selection is therefore a template instantiation, not a
 virtual call, delegate, function pointer, tag branch, or global singleton.
-`Message<StorageT>` and `Packet<StorageT>` do not depend on `CrcT`.
+Endpoint maps `CrcT::wire_size` to a geometry-only `Format<N>`. Packet,
+Message, and Receiver depend on that Format rather than on the algorithm type,
+so policies of equal width reuse those types and their code.
 
-The only structural requirement is:
+The structural `crc::Policy` requirement is:
 
 ```cpp
-crc.calculate(std::span<const uint8_t>) noexcept -> uint16_t
+typename CrcT::value_type;                  // equality comparable
+constexpr std::size_t CrcT::wire_size;
+CrcT::calculate(span) noexcept -> value_type;
+CrcT::store(uint8_t*, value_type) noexcept -> void;
+CrcT::load(const uint8_t*) noexcept -> value_type;
 ```
 
-The two built-ins are `crc::Bitwise` and `crc::Table`. Both calculate
-CRC-16/MODBUS; the default `Bitwise` has no table, while `Table` uses one
-constexpr 256-entry `uint16_t` table. Both policy types are empty and add zero
-Endpoint RAM on the tested x64 and Cortex-M layouts.
+The independent `crc/Crc.h` module provides CRC8, CRC16, CRC32, and CRC64 in
+Bitwise and Table forms plus `NoCrc`. `modbus::rtu::crc::Bitwise` and `Table`
+remain aliases for the two CRC-16/MODBUS forms. Built-in algorithms are empty
+types and add zero Endpoint RAM on tested x64 and Cortex-M layouts.
+
+Every lookup is a private static member of its exact Table specialization.
+Including the header or merely naming Table types emits none. Calling a table
+specialization emits one immutable 256-entry object of its result width in
+read-only program memory; it never becomes an instance member or consumes RAM.
 
 Custom policies are intentionally not semantically inspected. Endpoint does
 not verify the initial value or polynomial and does not recalculate a built-in
@@ -192,12 +233,22 @@ valid private protocol configuration as long as its peer agrees; it is not
 standard Modbus RTU. A stateful policy may contain a peripheral handle and
 increases Endpoint only by its state plus unavoidable alignment padding.
 
-Regardless of the calculation, RX first checks the physical ADU size, excludes
-the final two bytes from the policy input, loads those two bytes low-first and
-compares the returned `uint16_t`. TX calls the same object over
-address/function/data and stores its result low-first. No semantic-validation
-fallback or extra calculation exists in either hot path. With a custom policy,
-the legacy `crc_errors` counter records a selected-calculator mismatch.
+`crc::Codec<Integer, WireSize, WireOrder>` supplies reusable constexpr
+store/load for custom integer policies. A custom policy can instead implement
+all three operations itself, including a non-integer equality-comparable
+result. RTU never assumes `uint16_t` or an endian order.
+
+RX checks policy-derived minimum and physical maximum sizes, excludes exactly
+`CrcT::wire_size` final bytes, calculates over the preceding bytes, loads the
+trailer through the same object, and compares `value_type`. TX calculates over
+address/function/data and asks the object to store its result. No fallback or
+second calculation exists in either hot path. With a custom policy,
+`crc_errors` records only a selected-policy mismatch.
+
+`NoCrc::wire_size` is zero. Its calculation and codec inline away, RX performs
+no integrity check, minimum ADU size becomes two, and the default CRC16's two
+wire bytes become useful function-data capacity. This is an explicit private
+format, not standard Modbus RTU.
 
 ## 6. Storage extension contract
 
@@ -205,20 +256,22 @@ the legacy `crc_errors` counter records a selected-calculator mismatch.
 custom implementation must additionally preserve these runtime obligations:
 
 - `T::RxBlock` is exactly `modbus::rtu::RxBlock<T>`;
-- `max_adu_size` is 256 and `max_data_size` is 252;
+- `max_adu_size` is 256; Storage publishes no CRC-dependent data limit;
 - `acquire_rx(n)` accepts `n <= 256` and returns either null or one uniquely
   owned, properly aligned `RxBlock` followed by at least `n` writable bytes;
-- `acquire_tx(n)` accepts `n <= 252` and returns either an empty `TxBlock` or
-  a unique block whose reported capacity is in `[n, 252]` and whose physical
-  allocation holds at least `capacity + 4` bytes;
+- `acquire_tx(n)` accepts a requested complete-ADU capacity `n <= 256` and
+  returns either an empty `TxBlock` or a unique block whose `adu_capacity` is
+  in `[n, 256]` and whose physical allocation holds at least that many bytes;
 - successful live allocations never overlap;
 - each block is returned to the exact storage instance that created it;
 - release of a valid live block is allocation-free and `noexcept`;
 - the storage object remains at a stable address until every Packet, Message,
   and active transport borrow originating from it has ended.
 
-The built-in `Heap` uses exact dynamic allocations. `Pool<Rx, Tx>` uses two
-independent fixed pools and therefore performs no dynamic allocation.
+The built-in `Heap` uses exact physical allocations. `Pool<Rx, Tx>` uses two
+independent fixed pools of 256-byte ADU slabs and therefore performs no dynamic
+allocation. Message converts its data-capacity request through Format before
+calling Storage and defensively rejects an invalid returned descriptor.
 `MODBUS_POOL_CHECKS` defaults to `1`, detecting foreign and duplicate releases;
 if an integration disables it after measurement, the macro value must be
 identical in every translation unit that instantiates the same pool types.
@@ -250,8 +303,8 @@ short ADU      -> UART IDLE -> one candidate
 
 The receiver performs only:
 
-1. size `4..256` validation;
-2. validation with the Endpoint's selected 16-bit calculator;
+1. policy-derived size `(2 + CrcT::wire_size)..256` validation;
+2. validation with the Endpoint's selected policy (`NoCrc` is a no-op);
 3. RX storage acquisition;
 4. one complete-ADU copy;
 5. immutable Packet publication.
@@ -274,17 +327,16 @@ pause and cannot prove whether the peer violated t1.5 or the IDLE adapter made
 an early boundary. That evidence is retained under `rtu/tests/hardware/h7s`
 without attributing the cause solely to the VCP.
 
-A future strict `modbus::rtu::Framer` must consume byte/burst events carrying
-timestamps from the physical RX event, enforce t1.5/t3.5, and only then call
-`receive_adu()`. Main-loop arrival time is not an adequate substitute, and CRC
-scanning or function-length tables remain rejected framing strategies.
+Framing remains outside this endpoint. It neither grows a timer-based framer
+nor infers boundaries from CRC or function-length tables; a transport adapter
+must call `receive_adu()` only when it has selected one complete candidate.
 
 ## 9. UART gaps
 
 The current UART never publishes the unreliable partial RX chunk that spans a
 physical loss. Its ordered `GapHandler` is forwarded to `notify_gap()`, which
 increments `stats.rx.stream_gaps`. There is no COBS-style byte resynchronizer:
-the next complete physical burst is a new independently CRC-validated
+the next complete physical burst is a new independently policy-validated
 candidate.
 
 ## 10. Future TCP contract
@@ -343,12 +395,13 @@ Client, Server and function helpers can be layered later over validated
 
 ## 13. Hot-path and size evidence
 
-The receive path performs bounds checks and CRC before allocation, then one
-copy of at most 256 bytes into final Packet storage and one O(1) intrusive
+The receive path performs bounds checks and the selected policy before
+allocation, then one copy of at most 256 bytes into final Packet storage and
+one O(1) intrusive
 queue insertion. Packet copies and views touch only the block pointer and
 reference count. The transmit path builds directly in its final contiguous
-block, appends CRC in place, and lends that same span to DMA; no encoded-frame
-copy or virtual dispatch exists.
+block, appends the selected trailer in place, and lends that same span to DMA;
+no encoded-frame copy or virtual dispatch exists.
 
 The NUCLEO-H7S3L8 Pool-only images link no `new`, `delete`, `malloc`, `free`,
 or `_sbrk` symbol. The original 2026-09-02 tableless baseline measured roughly
@@ -358,22 +411,29 @@ traffic and `-Os` configuration:
 
 | CRC policy / 15 s | Exact ADUs | Function-data bytes | Integrated CPU | `receive_adu` avg/max |
 |---|---:|---:|---:|---:|
-| `crc::Bitwise` | 7,313 | 631,912 | 1.197% | 6,070 / 17,224 cycles |
-| `crc::Table` | 7,444 | 643,196 | 0.406% | 1,128 / 2,854 cycles |
+| `crc::Bitwise` | 7,337 | 634,317 | 1.192% | 6,011 / 16,997 cycles |
+| `crc::Table` | 7,411 | 640,343 | 0.419% | 1,189 / 3,079 cycles |
 
 Both passed vectors, four corruption/recovery cases, TX backpressure,
 deterministic RX exhaustion, 5-second stress and 15-second stress with zero
 unexpected RTU, UART, ownership or pool failures. On this target Table reduced
-measured integrated CPU by 66.1% and average `receive_adu` cycles by 81.4%.
+measured integrated CPU by 64.9% and average `receive_adu` cycles by 80.2%.
 Those are end-to-end observations, not a cross-target timing guarantee.
 
-The 1M linked `Bitwise` image is 22,620 bytes text; `Table` is 23,120 bytes.
+The 1M linked `Bitwise` image is 22,728 bytes text; `Table` is 23,228 bytes.
 Thus the 512-byte lookup replaces 12 bytes of bitwise code for a net 500-byte
 text cost. Both images remain 12 bytes data and 6,832 bytes BSS. Object-code
 guards across `-Os/-O2/-O3` prove that `Endpoint<>` emits no table symbol,
-`crc::Table` emits exactly one 512-byte read-only table, and both loops are
-inlined without helper calls. The default remains `Bitwise`, so the Table
-speedup costs flash only when the application selects it in the Endpoint type.
+`crc::Table` emits exactly one private 512-byte read-only class table, and both
+loops are inlined without helper calls. A wider standalone guard compiles all
+CRC8/16/32/64 table policies at the same optimization levels: unused table
+types emit zero lookup bytes, while each selected type emits exactly one
+256-entry table of 256/512/1024/2048 bytes on both CPU byte orders. Default
+and strict-alignment codec probes prove that every Bitwise/Table calculation is
+helper-call-free, all 1/2/4/8-byte LE/BE wire paths are branch/call-free, and
+`NoCrc` verification folds to constant true. The
+default remains Bitwise, so table flash is paid only when that exact
+implementation is called.
 
 ## 14. Normative references
 

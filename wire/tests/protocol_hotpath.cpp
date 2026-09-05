@@ -36,13 +36,13 @@ extern "C" WIRE_NOINLINE void modbus_crc_store(
 		uint8_t* const destination,
 		const uint16_t value) noexcept
 {
-	modbus::rtu::crc::store(destination, value);
+	modbus::rtu::crc::Bitwise::store(destination, value);
 }
 
 extern "C" WIRE_NOINLINE uint16_t modbus_crc_load(
 		const uint8_t* const source) noexcept
 {
-	return modbus::rtu::crc::load(source);
+	return modbus::rtu::crc::Bitwise::load(source);
 }
 
 extern "C" WIRE_NOINLINE uint32_t modbus_read_be32_exact(

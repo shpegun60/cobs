@@ -37,20 +37,33 @@ inline void check(const bool condition, const std::string_view description)
 	}
 }
 
+template<::crc::Policy CrcT>
 inline std::vector<uint8_t> make_adu(
+		CrcT& policy,
 		const uint8_t address,
 		const uint8_t function,
 		const std::span<const uint8_t> data = {})
 {
 	std::vector<uint8_t> adu;
-	adu.reserve(data.size() + 4u);
+	adu.reserve(data.size() + 2u + CrcT::wire_size);
 	adu.push_back(address);
 	adu.push_back(function);
 	adu.insert(adu.end(), data.begin(), data.end());
-	const uint16_t crc = modbus::rtu::crc::calculate(adu);
-	adu.push_back(static_cast<uint8_t>(crc & 0xFFu));
-	adu.push_back(static_cast<uint8_t>(crc >> 8u));
+	const std::size_t body_size = adu.size();
+	adu.resize(body_size + CrcT::wire_size);
+	const typename CrcT::value_type value = policy.calculate(
+		std::span<const uint8_t>{adu}.first(body_size));
+	policy.store(adu.data() + body_size, value);
 	return adu;
+}
+
+inline std::vector<uint8_t> make_adu(
+		const uint8_t address,
+		const uint8_t function,
+		const std::span<const uint8_t> data = {})
+{
+	modbus::rtu::crc::Bitwise policy{};
+	return make_adu(policy, address, function, data);
 }
 
 inline bool equal(

@@ -5,10 +5,14 @@ SPDX-License-Identifier: MIT
 
 # NUCLEO-H7S3L8 Modbus RTU + UART hardware verification
 
-Status: audited on real silicon, including CRC-policy A/B, 2026-09-05.
+Status: audited on real silicon after the protocol-independent CRC extraction,
+including CRC-policy A/B, 2026-09-05.
 
 Raw evidence:
 
+- [`results_crc_library_2026-09-05.jsonl`](results_crc_library_2026-09-05.jsonl)
+  — final post-extraction `crc::Crc16Bitwise` versus `crc::Crc16Table` matrix
+  at 115200/1M, extended 1M stress, and restored default-image smoke test;
 - [`results_crc_policy_2026-09-05.jsonl`](results_crc_policy_2026-09-05.jsonl)
   — same-target `crc::Bitwise` versus `crc::Table` functional, fault, pool,
   5-second and 15-second stress comparison;
@@ -219,6 +223,31 @@ SHA-256 `360078B330A477B4F164D62BA532281E2D4E1DB242B7942870828FDFA93EE892`.
 ELF container hashes are not used for this claim because rebuild metadata does
 not belong to the MCU load image.
 
+### General CRC library regression, 2026-09-05
+
+After moving the algorithms and wire codecs into `crc/Crc.h`, the complete
+`-Os`, no-LTO matrix was repeated from the final refactored tree. The JSONL has
+23 passing records and no failed record. Both policies passed vectors, all four
+intentional corruption cases and immediate recoveries, backpressure, the
+deterministic 16-into-8 pool test, 5-second stress at both 115200 and 1M, and
+15-second stress at 1M. Every unexpected RTU, UART, ownership and pool counter
+remained zero.
+
+| Policy / 1M duration | Frames | Data bytes | Data MiB/s | Integrated CPU | RTU RX avg/max cycles | Packet/TX avg/max cycles |
+|---|---:|---:|---:|---:|---:|---:|
+| `crc::Crc16Bitwise` / 5 s | 2,464 | 213,024 | 0.0406 | 1.188% | 6,010 / 16,997 | 6,865 / 17,822 |
+| `crc::Crc16Table` / 5 s | 2,479 | 214,009 | 0.0408 | 0.415% | 1,188 / 3,078 | 2,088 / 4,254 |
+| `crc::Crc16Bitwise` / 15 s | 7,337 | 634,317 | 0.0403 | 1.192% | 6,011 / 16,997 | 6,865 / 17,823 |
+| `crc::Crc16Table` / 15 s | 7,411 | 640,343 | 0.0407 | 0.419% | 1,189 / 3,079 | 2,088 / 4,264 |
+
+On this workload the table policy reduced measured integrated CPU by 64.9%
+and average `receive_adu()` cost by 80.2%. The refactored 1M images are
+`22,728 B text` for Bitwise and `23,228 B text` for Table; both remain
+`12 B data` and `6,832 B BSS`. The 500-byte net text difference is the private
+512-byte class table minus code no longer needed by the table loop. The matrix
+then restored, verified, and smoke-tested the default 115200 Bitwise image
+(`22,724 B text`).
+
 ### Optimization cross-check
 
 The hardware build accepts only the explicit `-Os`, `-O2`, or `-O3` values.
@@ -247,5 +276,6 @@ inside one host write. It is not evidence that identifies the component which
 created the pause, nor does it show whether the pause was below or above the
 Modbus t1.5 threshold. Streaming COBS tolerates such fragmentation; this
 constrained burst adapter does not. Therefore 3M is not claimed as a reliable
-full-size result, while the complete 1M matrix is. Strict interoperability
-requires a timestamped t1.5/t3.5 framer before `receive_adu()`.
+full-size result, while the complete 1M matrix is. Any adapter with a different
+boundary contract remains outside Endpoint and supplies only complete
+candidates to `receive_adu()`.

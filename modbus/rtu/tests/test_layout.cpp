@@ -18,8 +18,12 @@ using TableHeapEndpoint = modbus::rtu::Endpoint<
 	modbus::rtu::Heap, modbus::rtu::crc::Table>;
 using TablePoolEndpoint = modbus::rtu::Endpoint<
 	Pool, modbus::rtu::crc::Table>;
+using NoCrcHeapEndpoint = modbus::rtu::Endpoint<
+	modbus::rtu::Heap, ::crc::NoCrc>;
+using Crc64TablePoolEndpoint = modbus::rtu::Endpoint<
+	Pool, ::crc::Crc64Table>;
 
-struct StatefulCrc final {
+struct StatefulCrc final : ::crc::Codec<uint16_t, 2u, std::endian::little> {
 	void* handle = nullptr;
 
 	[[nodiscard]] uint16_t calculate(
@@ -45,6 +49,8 @@ static_assert(std::is_empty_v<modbus::rtu::crc::Bitwise>);
 static_assert(std::is_empty_v<modbus::rtu::crc::Table>);
 static_assert(sizeof(TableHeapEndpoint) == sizeof(HeapEndpoint));
 static_assert(sizeof(TablePoolEndpoint) == sizeof(PoolEndpoint));
+static_assert(sizeof(NoCrcHeapEndpoint) == sizeof(HeapEndpoint));
+static_assert(sizeof(Crc64TablePoolEndpoint) == sizeof(PoolEndpoint));
 static_assert(sizeof(StatefulHeapEndpoint) >= sizeof(HeapEndpoint));
 static_assert(sizeof(StatefulHeapEndpoint) <=
 	(sizeof(HeapEndpoint) + sizeof(StatefulCrc) +

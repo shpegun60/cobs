@@ -3,7 +3,7 @@ Author: shpegun60
 SPDX-License-Identifier: MIT
 -->
 
-# COBS, Modbus RTU + STM32 DMA UART for C++20
+# CRC, COBS, Modbus RTU + STM32 DMA UART for C++20
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C.svg)](https://en.cppreference.com/w/cpp/20)
 [![STM32](https://img.shields.io/badge/STM32-DMA%20UART-03234B.svg)](https://www.st.com/stm32)
@@ -12,8 +12,10 @@ SPDX-License-Identifier: MIT
 Production-oriented C++20 libraries for framed serial communication:
 
 - a streaming COBS codec and ownership-safe packet endpoint;
-- a Modbus RTU endpoint with CRC-16, explicit protocol metadata, and the same
-  ownership model;
+- a protocol-independent CRC8/16/32/64 policy library with bitwise/table modes
+  and `NoCrc`;
+- a Modbus RTU endpoint with policy-derived integrity framing, explicit
+  protocol metadata, and the same ownership model;
 - an always-DMA STM32 UART byte transport with zero-copy RX chunks;
 - fixed-pool or heap-backed COBS and Modbus storage;
 - explicit transport-gap propagation, backpressure, recovery, and statistics;
@@ -29,7 +31,8 @@ Author: [shpegun60](https://github.com/shpegun60)
 | COBS storage API | [`cobs/Storage.h`](cobs/Storage.h) | `Format`, `Heap`, `Pool`, custom storage contract |
 | Low-level codec | [`cobs/Codec.h`](cobs/Codec.h) | streaming decoder and canonical in-place encoder |
 | Shared scalar I/O | [`wire/Scalar.h`](wire/Scalar.h), [`wire/Read.h`](wire/Read.h) | constrained native/BE/LE scalar representation and stateless bounds-checked readers |
-| Modbus RTU API | [`modbus/rtu/Rtu.h`](modbus/rtu/Rtu.h) | burst-delimited RTU ADUs, CRC, metadata, packet/message ownership |
+| CRC policy API | [`crc/Crc.h`](crc/Crc.h) | bitwise/table CRC8/16/32/64, wire codecs, custom policy contract, `NoCrc` |
+| Modbus RTU API | [`modbus/rtu/Rtu.h`](modbus/rtu/Rtu.h) | burst-delimited RTU ADUs, policy-derived trailer, metadata, packet/message ownership |
 | Modbus PDU helpers | [`modbus/Pdu.h`](modbus/Pdu.h) | stateless bounds-checked native/BE/LE function-data readers |
 | STM32 UART transport | [`uart/Uart.h`](uart/Uart.h) | DMA RX chunks, borrowed DMA TX, gap/error recovery |
 | Integration proof | [`cobs/tests/hardware/h7s`](cobs/tests/hardware/h7s) | real UART + COBS stack on NUCLEO-H7S3L8 |
@@ -39,10 +42,11 @@ The layers are intentionally independent. `Uart` transports ordered byte
 spans and reports physical gaps. `cobs::Endpoint` and
 `modbus::rtu::Endpoint` independently own their framing and messages. A
 different byte transport can be bound to either endpoint, and UART can be
-used without either protocol layer. COBS and Modbus share only the stateless
+used without either protocol layer. COBS and Modbus share the stateless
 `wire/Scalar.h` and `wire/Read.h` primitives so their native/BE/LE scalar I/O
-contracts cannot drift; neither protocol depends on the other's framing or
-ownership types.
+contracts cannot drift. Modbus additionally selects policies from the
+protocol-independent CRC module; COBS does not use that module yet. Neither
+protocol depends on the other's framing or ownership types.
 
 ```text
 RX wire
@@ -72,7 +76,9 @@ application payload
 - `cobs::Pool` performs deterministic O(1) fixed-block allocation without a
   heap.
 - `modbus::rtu::Packet` exposes zero-copy `data()`, `pdu()`, and `adu()` views;
-  `Message` adds address, function, and CRC around up to 252 data bytes.
+  `Message` adds address, function, and a compile-time CRC/checksum policy.
+- RTU keeps one 256-byte physical slab while CRC width determines useful data:
+  254 bytes with `NoCrc`, 253/252/250/246 with CRC8/16/32/64.
 - `modbus::rtu::Pool<Rx, Tx>` provides fixed 256-byte RTU slabs with independent
   RX/TX ownership quotas and no heap use.
 - UART RX DMA writes directly into cache-aligned SPSC chunks; there is no
@@ -273,9 +279,10 @@ independent parsers over one immutable packet safe and explicit.
 
 The selected serializer applies only to application payload/function data.
 Library-owned framing never uses native object order: COBS writes and reads its
-length prefix explicitly little-endian, and Modbus RTU writes and reads CRC
-explicitly low byte then high byte. COBS code bytes and Modbus address/function
-are single-byte fields. User code cannot reorder any of them.
+length prefix explicitly little-endian, while a Modbus RTU CRC policy owns its
+trailer through explicit `store/load` operations. The default CRC16 policy is
+low-byte-first. COBS code bytes and Modbus address/function are single-byte
+fields. Payload append calls cannot reorder any library-owned field.
 
 Call `poll()` regularly. It returns the active TX block to storage after the
 transport's busy query becomes false:
@@ -416,24 +423,25 @@ messages/transport borrows. The heap-backed convenience form is simply:
 modbus::rtu::Endpoint<> link;
 ```
 
-The second Endpoint template argument selects the 16-bit CRC/checksum
-calculator at compile time. The portable table-free implementation remains
-the default; the faster built-in uses one 512-byte flash table:
+The second Endpoint template argument selects a complete CRC/checksum policy
+at compile time: result type, wire width, calculation, and store/load codec.
+The portable table-free CRC-16/MODBUS implementation remains the default; its
+faster alias uses one private 512-byte flash table:
 
 ```cpp
 using FastModbus = modbus::rtu::Endpoint<
     Memory, modbus::rtu::crc::Table>;
 ```
 
-Both built-ins produce CRC-16/MODBUS. A custom stateful policy may expose
-`uint16_t calculate(std::span<const uint8_t>) noexcept` and may intentionally
-implement another checksum (even a wrapping sum). The library performs no
-semantic validation: it invokes the same object for RX and TX and always owns
-the final low-byte-first two-byte wire field. See the full
-[CRC policy guide](modbus/README.md#crc-calculation-policy).
+The independent [`crc/Crc.h`](crc/Crc.h) module also supplies CRC8/32/64,
+bitwise/table variants, reusable integer wire codecs, and `NoCrc`. A custom
+stateful policy can retain a hardware peripheral handle and can intentionally
+implement another checksum. The library performs no semantic validation: it
+uses the same object for RX and TX exactly as supplied. See the full
+[CRC policy guide](modbus/README.md#crc-policy-and-compile-time-rtu-format).
 
 Create an RTU request by passing address and function once; the library adds
-the CRC and never subtracts framing bytes from the advertised data capacity:
+the selected trailer and advertises only policy-derived useful data capacity:
 
 ```cpp
 auto request = link.make_message(1u, 0x03u);
@@ -452,7 +460,7 @@ Receive packets expose immutable metadata and three zero-copy views:
 while (auto packet = link.pop_packet()) {
     use(packet.address(), packet.function(), packet.data());
     inspect_pdu(packet.pdu()); // function + data
-    inspect_adu(packet.adu()); // address + PDU + CRC
+    inspect_adu(packet.adu()); // address + PDU + selected trailer
 }
 ```
 
@@ -471,9 +479,12 @@ uart.setRxGapHandler(Serial::GapHandler{
     []() noexcept { link.notify_gap(); }});
 ```
 
-The maximum PDU is 253 bytes: one function byte plus up to 252 function-data
-bytes. Address and the two CRC bytes make the maximum RTU ADU exactly 256
-bytes. This v1 adapter uses a continuous UART burst as its physical boundary;
+With the default CRC16, the maximum PDU is 253 bytes: one function byte plus up
+to 252 function-data bytes. Address and two CRC bytes make the RTU ADU exactly
+256 bytes. The physical limit remains 256 for every policy; `NoCrc` recovers
+the two trailer bytes and exposes 254 function-data bytes. Alternate policies
+are private wire formats, not standard Modbus RTU. This v1 adapter uses a
+continuous UART burst as its physical boundary;
 it does not claim strict software t1.5/t3.5 timing. Read the full
 [Modbus usage guide](modbus/README.md) and canonical
 [Modbus architecture](modbus/ARCHITECTURE.md) before integration.
@@ -790,7 +801,14 @@ It enables C++20, publishes headers, adds the delegate include path, and
 compiles `Decoder.cpp` and `Encoder.cpp` exactly once. External directory
 layouts can set `COBS_DELEGATE_DIR` before including it.
 
-Modbus RTU is header-only and provides its own fragment:
+The independent CRC policy module is header-only:
+
+```qmake
+include(path/to/crc/crc.pri)
+```
+
+Modbus RTU is also header-only and provides its own fragment, which includes
+the CRC dependency automatically:
 
 ```qmake
 include(path/to/modbus/rtu/rtu.pri)
@@ -864,12 +882,14 @@ cross-target code generation, benchmarks, and real hardware evidence.
 | COBS qmake consumer | `sh cobs/tests/qmake_consumer/run.sh` | real downstream include/link/use path for Heap and Pool |
 | Cortex-M COBS layout | `sh cobs/tests/check_arm_layout.sh` | ARM object layout assertions |
 | COBS benchmarks | `sh cobs/tests/bench/run.sh` | codec and complete Endpoint hot paths |
+| CRC host suite | `sh crc/tests/run.sh` | known CRC8/16/32/64 models, independent random oracles, both methods, codecs, custom policy and `NoCrc` under sanitizers and O3 |
+| Cortex-M CRC emission | `sh crc/tests/check_arm_codegen.sh` | all CRC8/16/32/64 loops are helper-free on both CPU byte orders; unused tables emit zero bytes, selected tables emit one read-only object, codecs are branch/call-free, `NoCrc` folds away |
 | Shared scalar/API host oracle | `sh wire/tests/run.sh` | exhaustive scalar values, reader facade identity, COBS/Modbus public API parity, intentional protocol differences, sanitizers and O3/LTO |
 | GCC strict/LTO consumers | `MATRIX_TAG=<compiler> CXX=<g++> sh wire/tests/check_gcc_matrix.sh` | real COBS/Modbus consumers and API parity under strict alias/alignment/bounds warnings plus `-fshort-enums`/`-funsigned-char` scalar proof |
 | Cortex-M endian hot path | `sh wire/tests/check_arm_hotpath.sh` | little- and big-endian ARM builds prove compile-time selection: native order is direct, opposite order uses REV/REV16, and neither calls a helper |
 | Cortex-M codegen matrix | `sh wire/tests/check_arm_codegen_matrix.sh` | 96 scalar, 60 protocol and 30 COBS objects across M0/M0+/M3/M4/M7/M23/M33/M55, plus Bitwise/Table references, Os/O2/O3, endian and strict-alignment variants |
-| Modbus CRC layout/codegen | `sh modbus/rtu/tests/check_arm_crc_codegen.sh` | default Endpoint emits no table; Table emits one 512-byte read-only lookup; empty policies add no RAM |
-| Modbus RTU host suite | `sh modbus/rtu/tests/run.sh` | headers, compile-fail boundaries, independent CRC oracle, Bitwise/Table/custom-sum policies, all legal sizes, storage, ownership, endpoint and fuzz properties |
+| Modbus CRC layout/codegen | `sh modbus/rtu/tests/check_arm_crc_codegen.sh` | default Endpoint emits no table; Table emits one private 512-byte read-only lookup; empty policies add no RAM |
+| Modbus RTU host suite | `sh modbus/rtu/tests/run.sh` | headers, compile-fail boundaries, every CRC width/method, custom three-byte and hardware policies, `NoCrc`, derived geometry, storage, ownership, endpoint and fuzz properties |
 | Modbus qmake consumer | `sh modbus/rtu/tests/qmake_consumer/run.sh` | downstream header-only use with Heap, Pool and Table policy |
 | Modbus + UART fake HAL | `sh modbus/rtu/tests/run_uart_integration.sh` | short IDLE ADU, exact 256-byte TC ADU, gaps, recovery, and DMA TX borrow |
 | Cortex-M Modbus layout | `sh modbus/rtu/tests/check_arm_layout.sh` | ARM object layout and static RAM assertions |
@@ -890,6 +910,7 @@ Raw current hardware evidence:
 - [Modbus final paranoid `-Os` 115200/1M matrix](modbus/rtu/tests/hardware/h7s/results_paranoid_final_2026-09-02.jsonl);
 - [Modbus `-O2` silicon run](modbus/rtu/tests/hardware/h7s/results_paranoid_o2_2026-09-02.jsonl);
 - [Modbus `-O3` + LTO silicon run](modbus/rtu/tests/hardware/h7s/results_paranoid_o3_lto_2026-09-02.jsonl);
+- [Modbus post-extraction CRC library 115200/1M matrix](modbus/rtu/tests/hardware/h7s/results_crc_library_2026-09-05.jsonl);
 - [Modbus Bitwise/Table CRC A/B](modbus/rtu/tests/hardware/h7s/results_crc_policy_2026-09-05.jsonl);
 - [Modbus 3M UART-IDLE boundary probe](modbus/rtu/tests/hardware/h7s/results_high_baud_probe_2026-09-02.jsonl).
 
@@ -918,9 +939,11 @@ Read active documents in this order:
    recovery, cache/DMA rules, and code-generation evidence.
 8. [Refactor plan and decision history](doc/COBS_REFACTOR_PLAN.md) — locked
    architectural decisions and completed phases.
-9. [Modbus RTU usage](modbus/README.md) — public API, UART binding, storage,
+9. [CRC policy guide](crc/README.md) - built-in models, wire codecs, custom
+   hardware policies, table emission, and `NoCrc`.
+10. [Modbus RTU usage](modbus/README.md) — public API, UART binding, storage,
    diagnostics, tests, and the burst-framing limitation.
-10. [Modbus architecture](modbus/ARCHITECTURE.md) — RTU ownership invariants
+11. [Modbus architecture](modbus/ARCHITECTURE.md) — RTU ownership invariants
     and the separate future `modbus::tcp` boundary.
 
 Files under [`doc/old`](doc/old) are preserved historical designs and legacy

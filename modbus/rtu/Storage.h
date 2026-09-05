@@ -7,16 +7,16 @@
  * Memory policies for Modbus RTU ownership.
  *
  * RX stores the complete immutable ADU so Packet can expose adu(), pdu() and
- * data() as zero-copy subviews. TX capacity is expressed only in function
- * data bytes; address, function and CRC storage are service bytes owned by
- * the library and never reduce the advertised capacity.
+ * data() as zero-copy subviews. Storage owns only physical 256-byte ADU
+ * memory. It never knows which CRC policy or trailer width Endpoint selected.
+ * Format<CrcT::wire_size> converts between physical ADU capacity and useful
+ * data bytes.
  */
 
 #ifndef MODBUS_RTU_STORAGE_H_
 #define MODBUS_RTU_STORAGE_H_
 
-#include "Crc.h"
-#include "../Types.h"
+#include "RtuLimits.h"
 #include "../detail/BlockPool.h"
 
 #include <concepts>
@@ -28,37 +28,27 @@
 
 namespace modbus::rtu {
 
-inline constexpr std::size_t address_size = 1u;
-inline constexpr std::size_t function_size = 1u;
-inline constexpr std::size_t crc_size = modbus::rtu::crc::wire_size;
-inline constexpr std::size_t adu_prefix_size = address_size + function_size;
-inline constexpr std::size_t adu_overhead = adu_prefix_size + crc_size;
-inline constexpr std::size_t pdu_envelope_size = address_size + crc_size;
-inline constexpr std::size_t min_adu_size = adu_overhead;
-inline constexpr std::size_t max_adu_size =
-	address_size + modbus::max_pdu_size + crc_size;
-
-static_assert(min_adu_size == 4u && max_adu_size == 256u);
-
-template<class StorageT>
+template<class StorageT, class FormatT>
 class Packet;
 
 namespace detail {
 
-template<class StorageT>
+template<class StorageT, class FormatT>
 class Receiver;
 
 } // namespace detail
 
 struct TxBlock final {
 	std::byte* memory = nullptr;
-	std::size_t capacity = 0; // function-data bytes
+	std::size_t adu_capacity = 0; // complete physical ADU bytes
 };
 
 template<class StorageT>
 struct RxBlock final {
-	friend class Packet<StorageT>;
-	friend class detail::Receiver<StorageT>;
+	template<class, class>
+	friend class Packet;
+	template<class, class>
+	friend class detail::Receiver;
 
 private:
 	uint32_t refs = 1;
@@ -96,8 +86,6 @@ concept Storage = requires(
 	requires std::same_as<typename T::RxBlock, modbus::rtu::RxBlock<T>>;
 
 	{ T::max_adu_size } -> std::convertible_to<std::size_t>;
-	{ T::max_data_size } -> std::convertible_to<std::size_t>;
-
 	{ storage.acquire_rx(size) }
 		noexcept -> std::same_as<typename T::RxBlock*>;
 	{ storage.release_rx(rx) }
@@ -112,7 +100,6 @@ class Heap final {
 public:
 	using RxBlock = modbus::rtu::RxBlock<Heap>;
 	static constexpr std::size_t max_adu_size = modbus::rtu::max_adu_size;
-	static constexpr std::size_t max_data_size = modbus::max_data_size;
 
 	Heap() noexcept = default;
 	Heap(const Heap&) = delete;
@@ -140,10 +127,10 @@ public:
 
 	[[nodiscard]] TxBlock acquire_tx(const std::size_t requested) noexcept
 	{
-		if (requested > max_data_size) {
+		if (requested > max_adu_size) {
 			return {};
 		}
-		void* const memory = ::operator new(requested + adu_overhead, std::nothrow);
+		void* const memory = ::operator new(requested, std::nothrow);
 		return memory != nullptr
 			? TxBlock{static_cast<std::byte*>(memory), requested}
 			: TxBlock{};
@@ -160,7 +147,6 @@ class Pool final {
 public:
 	using RxBlock = modbus::rtu::RxBlock<Pool>;
 	static constexpr std::size_t max_adu_size = modbus::rtu::max_adu_size;
-	static constexpr std::size_t max_data_size = modbus::max_data_size;
 	static constexpr std::size_t rx_blocks = RxBlocks;
 	static constexpr std::size_t tx_blocks = TxBlocks;
 
@@ -201,12 +187,12 @@ public:
 
 	[[nodiscard]] TxBlock acquire_tx(const std::size_t requested) noexcept
 	{
-		if (requested > max_data_size) {
+		if (requested > max_adu_size) {
 			return {};
 		}
 		std::byte* const memory = m_tx.acquire();
 		return memory != nullptr
-			? TxBlock{memory, max_data_size}
+			? TxBlock{memory, max_adu_size}
 			: TxBlock{};
 	}
 

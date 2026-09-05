@@ -1157,9 +1157,10 @@ The following are not part of this refactor:
   little- and big-endian objects and locks native order to direct loads/stores,
   opposite order to `REV16`/`REV`, and both to call-free shapes.
 - Existing framing semantics did not change. COBS still stores and loads its
-  one/two-byte length explicitly little-endian. Modbus RTU now centralizes CRC
-  serialization in constexpr `crc::store/load`, always low byte then high byte.
-  User-selected payload serializers cannot affect either library-owned field.
+  one/two-byte length explicitly little-endian. The original Modbus CRC16
+  policy owns constexpr low-byte-first `store/load`; later custom policies may
+  declare another width and byte order. User-selected payload serializers
+  cannot affect either library-owned field.
 - The final portability audit expanded this to 96 scalar, 60 protocol and 30
   COBS ARM objects. It added exhaustive unaligned host scalar tests, GCC
   11/13/15 strict O3/LTO consumers, MSVC x64/x86 ABI snapshots, and a

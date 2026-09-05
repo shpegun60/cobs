@@ -132,14 +132,14 @@ inline `LDRB`/`STRB` sequences with no copy helper. The focused and full guards
 are [`check_arm_hotpath.sh`](../wire/tests/check_arm_hotpath.sh) and
 [`check_arm_codegen_matrix.sh`](../wire/tests/check_arm_codegen_matrix.sh).
 
-These methods affect function data only. The user cannot write or reorder the
-library-owned RTU envelope: address and function are one byte each, while the
-configured 16-bit check value is generated and serialized low byte first.
-`Message::size()` and `capacity()` count only function-data bytes.
+These methods affect function data only. The user cannot write address,
+function, or the selected integrity trailer through an append call. The CRC
+policy owns the trailer value, byte count, and byte order; `Message::size()`
+and `capacity()` continue to count function-data bytes only.
 
-## CRC calculation policy
+## CRC policy and compile-time RTU format
 
-`Endpoint` has one compile-time calculation policy:
+`Endpoint` has one compile-time CRC policy:
 
 ```cpp
 template<
@@ -149,14 +149,16 @@ template<
 class Endpoint;
 ```
 
-The default remains the smallest portable choice:
+The default remains standard Modbus RTU and the smallest portable choice:
 
 ```cpp
 modbus::rtu::Endpoint<> link;
-// Heap + table-free crc::Bitwise
+// Heap + table-free CRC-16/MODBUS
 ```
 
-The library ships exactly two calculators:
+`modbus::rtu::crc::Bitwise` and `modbus::rtu::crc::Table` are concise aliases
+for `::crc::Crc16Bitwise` and `::crc::Crc16Table` from the independent
+[`crc/Crc.h`](../crc/Crc.h) library:
 
 ```cpp
 using Memory = modbus::rtu::Pool<8, 2>;
@@ -168,32 +170,69 @@ using FastCrc = modbus::rtu::Endpoint<
     Memory, modbus::rtu::crc::Table>;
 ```
 
-Both built-ins implement CRC-16/MODBUS (`init=0xFFFF`, reflected polynomial
-`0xA001`) and produce identical values. `Table` uses one constexpr 256-entry
-`uint16_t` lookup table. Empty policy objects occupy no Endpoint RAM because
-they are stored with `[[no_unique_address]]`; layout tests prove that both
-built-ins have the exact same Endpoint size on x64 and Cortex-M.
+Both aliases implement CRC-16/MODBUS (`init=0xFFFF`, reflected polynomial
+`0xA001`) and produce identical two-byte little-endian trailers. Every lookup
+is a private static member of its exact table-policy class. Merely including
+the header, naming a table type, or selecting any bitwise policy emits no
+table; calling this CRC16 table implementation emits one immutable 512-byte
+object in program memory. Empty policies occupy no Endpoint RAM because they
+are stored with `[[no_unique_address]]`.
 
-A custom policy only has to satisfy this structural interface:
+The general library also supplies bitwise and table implementations of CRC8,
+CRC32, and CRC64, plus `NoCrc`. RTU derives all logical geometry from the
+selected policy at compile time while the physical Storage slab remains 256
+bytes:
+
+| Policy width | `Endpoint::crc_size` | function-data capacity | minimum ADU |
+|---:|---:|---:|---:|
+| `NoCrc` | 0 | 254 | 2 |
+| CRC8 | 1 | 253 | 3 |
+| CRC16 | 2 | 252 | 4 |
+| CRC32 | 4 | 250 | 6 |
+| CRC64 | 8 | 246 | 10 |
 
 ```cpp
-template<class T>
-concept Calculator = requires(
-    T& calculator,
-    std::span<const uint8_t> bytes)
-{
-    { calculator.calculate(bytes) }
-        noexcept -> std::same_as<uint16_t>;
+using Crc8Link = modbus::rtu::Endpoint<Memory, ::crc::Crc8Bitwise>;
+using Crc32Link = modbus::rtu::Endpoint<Memory, ::crc::Crc32Table>;
+using Crc64Link = modbus::rtu::Endpoint<Memory, ::crc::Crc64Bitwise>;
+```
+
+The relationship is represented once:
+
+```cpp
+using Format = modbus::rtu::Format<CrcT::wire_size>;
+
+static_assert(Endpoint::max_send_size ==
+              256 - 1 /* address */ - 1 /* function */ - CrcT::wire_size);
+```
+
+Policies with the same `wire_size` share the same `Format`, `Message`, and
+`Packet` types. Changing Bitwise to Table therefore does not duplicate those
+ownership paths. A different width intentionally produces a different wire
+format and different owner types.
+
+A custom policy satisfies this structural interface:
+
+```cpp
+struct Policy {
+    using value_type = /* equality-comparable result */;
+    static constexpr std::size_t wire_size = /* trailer bytes */;
+
+    value_type calculate(std::span<const uint8_t>) noexcept;
+    void store(uint8_t* destination, value_type) noexcept;
+    value_type load(const uint8_t* source) noexcept;
 };
 ```
 
-There is deliberately no semantic validation. The library does not recompute
-CRC-16/MODBUS beside the policy, inspect its polynomial, or compare it with a
-built-in. A custom policy may therefore implement a private 16-bit checksum,
-including a wrapping sum:
+`crc::Codec<Value, WireSize, WireOrder>` supplies endian-independent integer
+`store/load`, so most custom policies implement only `calculate()`:
+
+This is the intentional migration boundary from the older calculate-only
+policy: custom code must now declare its wire representation instead of RTU
+silently forcing every result into a two-byte little-endian slot.
 
 ```cpp
-struct Sum16 {
+struct Sum16 : crc::Codec<uint16_t, 2, std::endian::little> {
     uint16_t calculate(
         std::span<const uint8_t> bytes) noexcept
     {
@@ -209,34 +248,41 @@ using PrivateLink = modbus::rtu::Endpoint<Memory, Sum16>;
 PrivateLink private_link;
 ```
 
-That endpoint works normally when both peers use the same private checksum,
-but its frames are not standard Modbus RTU. The names `crc_errors` and
-`crc::verify` continue to mean “the received two-byte value does not match the
-selected calculator” when a nonstandard policy is installed.
+There is deliberately no semantic validation. The library does not recompute
+CRC-16/MODBUS beside the policy, inspect its polynomial, or compare it with a
+built-in. The wrapping sum above is used as-is. It works when both peers select
+the same private policy, but it is not standard Modbus RTU. `crc_errors` means
+only that the received policy-owned trailer did not match the selected policy.
 
-State is also allowed, so a policy can retain a peripheral handle:
+State is also allowed, including a wider peripheral result:
 
 ```cpp
-struct HardwareCrc {
+struct HardwareCrc32
+    : crc::Codec<uint32_t, 4, std::endian::little> {
+    explicit HardwareCrc32(CRC_HandleTypeDef& peripheral) noexcept
+        : handle(&peripheral) {}
+
     CRC_HandleTypeDef* handle;
 
-    uint16_t calculate(
+    uint32_t calculate(
         std::span<const uint8_t> bytes) noexcept
     {
         return calculate_with_hardware(*handle, bytes);
     }
 };
 
-using HardwareLink = modbus::rtu::Endpoint<Memory, HardwareCrc>;
-HardwareLink hardware_link{HardwareCrc{&hcrc}};
+using HardwareLink = modbus::rtu::Endpoint<Memory, HardwareCrc32>;
+HardwareLink hardware_link{HardwareCrc32{hcrc}};
 ```
 
-The same policy object is invoked for TX finalization and RX validation. There
-is no virtual call, delegate, function pointer, or runtime algorithm branch in
-`Endpoint`; a user policy itself may still choose an implementation by length:
+The exact injected object is invoked for both TX finalization and RX
+validation. There is no virtual call, delegate, function pointer, global
+calculator, or runtime policy branch in Endpoint. A policy may itself select
+an implementation by length:
 
 ```cpp
-struct AdaptiveCrc {
+struct AdaptiveCrc
+    : crc::Codec<uint16_t, 2, std::endian::little> {
     uint16_t calculate(
         std::span<const uint8_t> bytes) noexcept
     {
@@ -248,10 +294,24 @@ struct AdaptiveCrc {
 };
 ```
 
-A stateful policy adds only its own state plus any unavoidable object-alignment
-padding. RTU always excludes the received final two bytes from calculation,
-compares the returned `uint16_t`, and stores/loads those bytes low first,
-regardless of host endianness or selected algorithm.
+A stateful policy adds only its own state plus unavoidable alignment padding.
+RX excludes exactly `CrcT::wire_size` trailing bytes from calculation, calls
+that policy's `load()`, and compares its `value_type`; TX calls `calculate()`
+and that policy's `store()`. No fixed integer type, byte order, or byte count
+remains in RTU.
+
+To remove the trailer entirely:
+
+```cpp
+using UncheckedLink = modbus::rtu::Endpoint<Memory, crc::NoCrc>;
+static_assert(UncheckedLink::crc_size == 0);
+static_assert(UncheckedLink::max_send_size == 254);
+```
+
+`NoCrc` performs no integrity validation: every physically bounded candidate
+of at least address+function length is accepted. The two bytes recovered from
+the default CRC16 slot become useful function data. This is intentionally not
+standard Modbus RTU and both peers must select the same private format.
 
 Call both service methods from the same main-loop context:
 
@@ -292,14 +352,21 @@ using Fixed = modbus::rtu::Pool<8, 2>;
 modbus::rtu::Endpoint<Fixed> fixed_link;
 ```
 
-Pool counts are ownership quotas, not byte sizes. Every RTU pool block is
-sized for the fixed protocol limits:
+Pool counts are ownership quotas, not byte sizes. Every RTU pool block holds
+one complete physical 256-byte ADU independently of CRC policy. `Storage`
+therefore publishes only physical `max_adu_size`; it does not duplicate
+`CrcT::wire_size` or a logical payload limit. `Format<CrcT::wire_size>` turns
+the slab into the policy-specific views and capacities:
 
 ```text
-PDU             1 function + 0..252 data = at most 253 bytes
-RTU ADU         1 address + PDU + 2 CRC   = at most 256 bytes
-minimum ADU     address + function + CRC  = 4 bytes
+physical slab   address + function + data + selected trailer = 256 bytes
+default CRC16   1 address + 1 function + 0..252 data + 2 CRC
+NoCrc           1 address + 1 function + 0..254 data
 ```
+
+The internal `TxBlock::adu_capacity` is likewise a physical byte count. Public
+`Message::capacity()` subtracts the selected format's address, function, and
+trailer bytes at compile time, so applications see only usable function data.
 
 Retaining Packet copies consumes RX blocks. Holding unsent Messages or an
 active UART borrow consumes TX blocks. Exhaustion returns an empty owner and
@@ -348,9 +415,9 @@ with CRC. It does not implement Modbus t1.5/t3.5 timing.
 UART IDLE occurs after roughly one character, earlier than the Modbus t1.5
 invalid-frame threshold. Therefore this adapter requires a peer that emits an
 entire ADU as one uninterrupted UART burst and must not be advertised as
-general strict-timing RTU interoperability. A future timed framer belongs
-between UART events and `receive_adu()`; it must use timestamps tied to actual
-RX events rather than delayed main-loop time.
+general strict-timing RTU interoperability. Endpoint deliberately prescribes
+no replacement framing algorithm: any transport adapter may choose its own
+boundary contract, then pass only complete candidates to `receive_adu()`.
 
 ## qmake
 
@@ -360,11 +427,15 @@ include(path/to/modbus/rtu/rtu.pri)
 
 Set `MODBUS_DELEGATE_DIR` before including the fragment only if
 `tiny_delegate.hpp` is outside the repository's normal `libs/delegate` path.
-The RTU implementation is header-only.
+The RTU implementation is header-only. Its fragment includes
+[`crc/crc.pri`](../crc/crc.pri) automatically; standalone CRC consumers may
+include that fragment directly.
 
 ## Verification
 
 ```bash
+sh crc/tests/run.sh
+
 PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH" \
     sh modbus/rtu/tests/run.sh
 
@@ -375,6 +446,7 @@ PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH" \
     sh modbus/rtu/tests/run_uart_integration.sh
 
 sh modbus/rtu/tests/check_arm_layout.sh
+sh crc/tests/check_arm_codegen.sh
 sh modbus/rtu/tests/check_arm_crc_codegen.sh
 sh wire/tests/check_arm_hotpath.sh
 sh wire/tests/check_arm_codegen_matrix.sh
@@ -385,11 +457,17 @@ oracle and the exact commands/results, is documented in
 [rtu/tests/hardware/h7s/README.md](rtu/tests/hardware/h7s/README.md).
 
 The suites cover public-header isolation, compile-fail API boundaries, known
-and randomized CRC oracles, `Bitwise`/`Table` equality, a stateful fake-hardware
-calculator, a deliberately nonstandard wrapping-sum TX/RX round trip, every
-legal data length, 100,000 random ADU candidates, Heap/Pool conformance,
-Packet lifetime, TX retry identity, exact 256-byte frames, qmake consumption,
-and fake-HAL UART IDLE/TC/gap/DMA-borrow integration.
+and randomized independent CRC8/16/32/64 oracles, all bitwise/table pairs,
+explicit little/big-endian codecs, a stateful fake-hardware calculator,
+custom three-byte and wrapping-sum policies, `NoCrc`, policy-derived capacity,
+every legal default data length, 100,000 random ADU candidates, Heap/Pool
+conformance, Packet lifetime, TX retry identity, exact 256-byte frames, qmake
+consumption, and fake-HAL UART IDLE/TC/gap/DMA-borrow integration.
+
+The ARM code-generation guard builds all four selected table widths at
+`-Os/-O2/-O3`. It proves that merely naming every table type emits zero table
+bytes, while calling a selected table policy emits exactly one private
+read-only 256-entry object of the expected 256/512/1024/2048-byte size.
 
 The final paranoid real-silicon matrix passed all suites at 115200 and 1M
 baud. Its extended `-Os` 1M run echoed 7,319 exact ADUs / 632,449
@@ -402,14 +480,16 @@ attribute the split solely to ST-Link VCP or distinguish peer discontinuity
 from an over-eager IDLE boundary. The raw observation is retained without a
 stronger claim.
 
-The 2026-09-05 real-silicon A/B run tested both built-ins at 1M baud. Both
-passed vectors, corruption/recovery, backpressure, pool exhaustion, 5-second
-stress and 15-second stress with zero unexpected RTU/UART/storage failures.
-Over 15 seconds, `Bitwise` used 1.197% measured integrated CPU and averaged
-6,070 cycles in `receive_adu`; `Table` used 0.406% and averaged 1,128 cycles.
-The linked Table image cost 500 additional text bytes (`23,120` vs `22,620`)
-and changed neither data nor BSS. Raw evidence is in
-[results_crc_policy_2026-09-05.jsonl](rtu/tests/hardware/h7s/results_crc_policy_2026-09-05.jsonl).
+The final 2026-09-05 real-silicon A/B run repeated both built-ins from the
+protocol-independent CRC tree at 115200 and 1M. Both passed vectors,
+corruption/recovery, backpressure, pool exhaustion, 5-second stress and
+15-second stress with zero unexpected RTU/UART/storage failures. Over 15
+seconds, `Bitwise` used 1.192% measured integrated CPU and averaged 6,011
+cycles in `receive_adu`; `Table` used 0.419% and averaged 1,189 cycles. The
+linked Table image cost 500 additional text bytes (`23,228` vs `22,728`) and
+changed neither data nor BSS. All 23 records passed, and the runner restored
+the default Bitwise/115200 image. Raw evidence is in
+[results_crc_library_2026-09-05.jsonl](rtu/tests/hardware/h7s/results_crc_library_2026-09-05.jsonl).
 
 ## Lifetime and concurrency
 

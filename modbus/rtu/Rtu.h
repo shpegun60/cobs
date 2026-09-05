@@ -17,6 +17,7 @@
 
 #include "../Pdu.h"
 #include "Crc.h"
+#include "Format.h"
 #include "Stats.h"
 #include "Storage.h"
 #include "detail/Message.h"
@@ -40,22 +41,26 @@ template<class StorageT = Heap, class CrcT = modbus::rtu::crc::Bitwise>
 class Endpoint final {
 	static_assert(modbus::rtu::Storage<StorageT>,
 		"Endpoint storage must satisfy modbus::rtu::Storage");
-	static_assert(modbus::rtu::crc::Calculator<CrcT>,
-		"Endpoint CRC must satisfy modbus::rtu::crc::Calculator");
-	static_assert(StorageT::max_adu_size == modbus::rtu::max_adu_size &&
-	              StorageT::max_data_size == modbus::max_data_size,
-		"Modbus RTU storage must provide the complete fixed RTU geometry");
+	static_assert(::crc::Policy<CrcT>,
+		"Endpoint CRC must satisfy crc::Policy");
+	static_assert(StorageT::max_adu_size == modbus::rtu::max_adu_size,
+		"Modbus RTU storage must provide one complete 256-byte ADU");
+	static_assert(CrcT::wire_size <= modbus::rtu::max_adu_size - 2u,
+		"CRC wire_size leaves no room for RTU address and function");
 
 public:
 	using StorageType = StorageT;
 	using CrcType = CrcT;
-	using Message = modbus::rtu::Message<StorageT>;
-	using Packet = modbus::rtu::Packet<StorageT>;
+	using Format = modbus::rtu::Format<CrcT::wire_size>;
+	using Message = modbus::rtu::Message<StorageT, Format>;
+	using Packet = modbus::rtu::Packet<StorageT, Format>;
 
-	static constexpr std::size_t max_receive_size = modbus::max_data_size;
-	static constexpr std::size_t max_send_size = modbus::max_data_size;
-	static constexpr std::size_t max_frame_size = modbus::rtu::max_adu_size;
-	static constexpr std::size_t default_capacity_hint = 32u;
+	static constexpr std::size_t crc_size = Format::crc_size;
+	static constexpr std::size_t max_receive_size = Format::max_data_size;
+	static constexpr std::size_t max_send_size = Format::max_data_size;
+	static constexpr std::size_t max_frame_size = StorageT::max_adu_size;
+	static constexpr std::size_t default_capacity_hint =
+		max_send_size < 32u ? max_send_size : 32u;
 
 	using Sender = tiny::delegate<bool(std::span<const uint8_t>)>;
 	using BusyQuery = tiny::delegate<bool()>;
@@ -237,7 +242,7 @@ private:
 	};
 
 	[[no_unique_address]] StorageT m_storage{};
-	detail::Receiver<StorageT> m_receiver{m_storage};
+	detail::Receiver<StorageT, Format> m_receiver{m_storage};
 	Transport m_transport{};
 	TxBlock m_active_tx{};
 	modbus::rtu::Stats::Tx m_tx_stats{};

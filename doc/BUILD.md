@@ -137,6 +137,46 @@ also proves protocol bytes under `-fshort-enums -funsigned-char`. Both commands
 compile the COBS/Modbus API parity contract, including identical reader
 function identity and the deliberately different COBS-stream/RTU-ADU boundary.
 
+## CRC and Modbus RTU verification
+
+The protocol-independent CRC module and header-only RTU endpoint have separate
+host suites:
+
+```bash
+sh crc/tests/run.sh
+sh modbus/rtu/tests/run.sh
+```
+
+The CRC suite checks named CRC8/16/32/64 vectors, 20,000 independent random
+oracles for both Bitwise and Table implementations, little/big-endian and
+truncated integer codecs, stateful custom policies, and `NoCrc` under
+ASan+UBSan and `-O3 -DNDEBUG`. The RTU suite adds compile-fail contracts,
+policy-derived `0/1/2/3/4/8`-byte geometry, maximum 256-byte round trips,
+stateful fake-hardware injection, storage ownership, and fuzzing.
+
+The Cortex-M guards are:
+
+```bash
+sh crc/tests/check_arm_codegen.sh
+sh modbus/rtu/tests/check_arm_crc_codegen.sh
+sh modbus/rtu/tests/check_arm_layout.sh
+```
+
+They prove that all CRC8/16/32/64 Bitwise and Table calculation loops are
+helper-call-free, unused Table types emit no lookup object, and each selected
+Table specialization emits exactly one private read-only table of the expected
+size at `-Os/-O2/-O3` on both CPU byte orders. Every codec path is
+branch/call-free under default and strict alignment, default RTU emits no
+table, `NoCrc` folds away, and empty policies add no Endpoint RAM.
+
+The downstream qmake and fake-UART integrations are:
+
+```bash
+export PATH="/c/Qt/6.10.1/mingw_64/bin:/c/Qt/Tools/mingw1310_64/bin:$PATH"
+sh modbus/rtu/tests/qmake_consumer/run.sh
+sh modbus/rtu/tests/run_uart_integration.sh
+```
+
 ## UART regression matrix
 
 The current UART ownership, callback, recovery, and performance contracts are

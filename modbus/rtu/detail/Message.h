@@ -8,7 +8,7 @@
 #ifndef MODBUS_RTU_DETAIL_MESSAGE_H_
 #define MODBUS_RTU_DETAIL_MESSAGE_H_
 
-#include "../Crc.h"
+#include "../Format.h"
 #include "../Storage.h"
 #include "../../../wire/Scalar.h"
 
@@ -23,18 +23,18 @@ namespace modbus::rtu {
 template<class StorageT, class CrcT>
 class Endpoint;
 
-template<class StorageT>
+template<class StorageT, class FormatT>
 class Message final {
 	static_assert(modbus::rtu::Storage<StorageT>,
 		"Message storage must satisfy modbus::rtu::Storage");
-	static_assert(StorageT::max_adu_size == modbus::rtu::max_adu_size &&
-	              StorageT::max_data_size == modbus::max_data_size,
-		"Modbus RTU storage must provide the complete fixed RTU geometry");
+	static_assert(StorageT::max_adu_size == modbus::rtu::max_adu_size,
+		"Modbus RTU storage must provide one complete 256-byte ADU");
 	template<class, class>
 	friend class Endpoint;
 
 public:
-	static constexpr std::size_t max_payload_size = modbus::max_data_size;
+	using Format = FormatT;
+	static constexpr std::size_t max_payload_size = Format::max_data_size;
 
 	Message() noexcept = default;
 
@@ -47,10 +47,16 @@ public:
 		if (hint > max_payload_size) {
 			return;
 		}
-		m_block = storage.acquire_tx(hint);
-		if (m_block.memory != nullptr) {
+		const std::size_t requested = Format::adu_size_for_data(hint);
+		m_block = storage.acquire_tx(requested);
+		if (valid_block(m_block, requested)) {
 			write_header();
 			m_state = State::Building;
+		} else {
+			if (m_block.memory != nullptr) {
+				storage.release_tx(m_block);
+			}
+			m_block = {};
 		}
 	}
 
@@ -89,15 +95,18 @@ public:
 	}
 
 	[[nodiscard]] std::size_t size() const noexcept { return m_size; }
-	[[nodiscard]] std::size_t capacity() const noexcept { return m_block.capacity; }
+	[[nodiscard]] std::size_t capacity() const noexcept
+	{
+		return Format::data_capacity_for_adu(m_block.adu_capacity);
+	}
 	[[nodiscard]] uint8_t address() const noexcept { return m_address; }
 	[[nodiscard]] uint8_t function() const noexcept { return m_function; }
 
 	/*
 	 * The same scalar vocabulary as cobs::Message. These operations append only
 	 * function data; address/function are constructor metadata and finalize()
-	 * owns the low-byte-first CRC. Every failure leaves size, capacity and all
-	 * existing bytes unchanged.
+	 * owns the selected policy's trailer. Every failure leaves size, capacity
+	 * and all existing bytes unchanged.
 	 */
 	template<wire::Scalar T>
 	[[nodiscard]] bool append_native(const T& value) noexcept
@@ -158,19 +167,24 @@ public:
 		if (m_state != State::Building) {
 			return false;
 		}
-		if (required <= m_block.capacity) {
+		if (required <= capacity()) {
 			return true;
 		}
 		if (required > max_payload_size) {
 			return false;
 		}
 
-		const TxBlock fresh = m_storage->acquire_tx(
-			grow_target(m_block.capacity, required));
-		if (fresh.memory == nullptr) {
+		const std::size_t target = grow_target(capacity(), required);
+		const std::size_t requested = Format::adu_size_for_data(target);
+		const TxBlock fresh = m_storage->acquire_tx(requested);
+		if (!valid_block(fresh, requested)) {
+			if (fresh.memory != nullptr) {
+				m_storage->release_tx(fresh);
+			}
 			return false;
 		}
-		std::memcpy(fresh.memory, m_block.memory, adu_prefix_size + m_size);
+		std::memcpy(fresh.memory, m_block.memory,
+		            Format::adu_prefix_size + m_size);
 		m_storage->release_tx(m_block);
 		m_block = fresh;
 		return true;
@@ -184,9 +198,9 @@ private:
 		return m_storage == &storage;
 	}
 
-	template<modbus::rtu::crc::Calculator CrcT>
-	[[nodiscard]] std::span<const uint8_t> finalize(
-			CrcT& calculator) noexcept
+	template<::crc::Policy CrcT>
+		requires (CrcT::wire_size == Format::crc_size)
+	[[nodiscard]] std::span<const uint8_t> finalize(CrcT& policy) noexcept
 	{
 		if (m_block.memory == nullptr) {
 			return {};
@@ -195,11 +209,11 @@ private:
 		if (m_state == State::Finalized) {
 			return {bytes, m_wire};
 		}
-		const std::size_t without_crc = adu_prefix_size + m_size;
-		const uint16_t checksum = modbus::rtu::crc::calculate(
-			std::span<const uint8_t>{bytes, without_crc}, calculator);
-		modbus::rtu::crc::store(bytes + without_crc, checksum);
-		m_wire = without_crc + modbus::rtu::crc::wire_size;
+		const std::size_t without_crc = Format::adu_prefix_size + m_size;
+		const typename CrcT::value_type checksum = policy.calculate(
+			std::span<const uint8_t>{bytes, without_crc});
+		policy.store(bytes + without_crc, checksum);
+		m_wire = without_crc + Format::crc_size;
 		m_state = State::Finalized;
 		return {bytes, m_wire};
 	}
@@ -223,6 +237,15 @@ private:
 			(delta > headroom ? headroom : delta);
 		const std::size_t target = required > grown ? required : grown;
 		return target > max_payload_size ? max_payload_size : target;
+	}
+
+	[[nodiscard]] static constexpr bool valid_block(
+			const TxBlock block,
+			const std::size_t requested) noexcept
+	{
+		return block.memory != nullptr &&
+		       block.adu_capacity >= requested &&
+		       block.adu_capacity <= StorageT::max_adu_size;
 	}
 
 	[[nodiscard]] bool make_room(const std::size_t count) noexcept
@@ -277,7 +300,7 @@ private:
 	void write_header() noexcept
 	{
 		raw()[0] = m_address;
-		raw()[address_size] = m_function;
+		raw()[Format::address_size] = m_function;
 	}
 
 	[[nodiscard]] uint8_t* raw() const noexcept
@@ -287,7 +310,7 @@ private:
 
 	[[nodiscard]] uint8_t* data_ptr() const noexcept
 	{
-		return raw() + adu_prefix_size;
+		return raw() + Format::adu_prefix_size;
 	}
 
 	void release() noexcept

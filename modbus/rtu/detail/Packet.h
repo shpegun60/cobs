@@ -8,6 +8,7 @@
 #ifndef MODBUS_RTU_DETAIL_PACKET_H_
 #define MODBUS_RTU_DETAIL_PACKET_H_
 
+#include "../Format.h"
 #include "../Storage.h"
 
 #include <cstddef>
@@ -16,13 +17,14 @@
 
 namespace modbus::rtu {
 
-template<class StorageT>
+template<class StorageT, class FormatT>
 class Packet final {
-	template<class>
+	template<class, class>
 	friend class detail::Receiver;
 
 public:
 	using Block = typename StorageT::RxBlock;
+	using Format = FormatT;
 
 	Packet() noexcept = default;
 	~Packet() { release(); }
@@ -85,8 +87,10 @@ public:
 	[[nodiscard]] std::span<const uint8_t> data() const noexcept
 	{
 		return m_block != nullptr
-			? std::span<const uint8_t>{m_block->payload() + adu_prefix_size,
-				static_cast<std::size_t>(m_block->adu_size) - adu_overhead}
+			? std::span<const uint8_t>{
+				m_block->payload() + Format::adu_prefix_size,
+				static_cast<std::size_t>(m_block->adu_size) -
+					Format::adu_overhead}
 			: std::span<const uint8_t>{};
 	}
 
@@ -95,8 +99,10 @@ public:
 	[[nodiscard]] std::span<const uint8_t> pdu() const noexcept
 	{
 		return m_block != nullptr
-			? std::span<const uint8_t>{m_block->payload() + address_size,
-				static_cast<std::size_t>(m_block->adu_size) - pdu_envelope_size}
+			? std::span<const uint8_t>{
+				m_block->payload() + Format::address_size,
+				static_cast<std::size_t>(m_block->adu_size) -
+					Format::pdu_envelope_size}
 			: std::span<const uint8_t>{};
 	}
 

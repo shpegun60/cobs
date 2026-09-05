@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include "modbus/rtu/Format.h"
 #include "modbus/rtu/Storage.h"
 #include "Test.h"
 
@@ -18,7 +19,6 @@ namespace {
 struct MissingTx {
 	using RxBlock = modbus::rtu::RxBlock<MissingTx>;
 	static constexpr std::size_t max_adu_size = 256u;
-	static constexpr std::size_t max_data_size = 252u;
 	RxBlock* acquire_rx(std::size_t) noexcept;
 	void release_rx(RxBlock*) noexcept;
 };
@@ -26,7 +26,6 @@ struct MissingTx {
 struct ThrowingRx {
 	using RxBlock = modbus::rtu::RxBlock<ThrowingRx>;
 	static constexpr std::size_t max_adu_size = 256u;
-	static constexpr std::size_t max_data_size = 252u;
 	RxBlock* acquire_rx(std::size_t);
 	void release_rx(RxBlock*) noexcept;
 	modbus::rtu::TxBlock acquire_tx(std::size_t) noexcept;
@@ -37,12 +36,14 @@ static_assert(modbus::rtu::Storage<modbus::rtu::Heap>);
 static_assert(modbus::rtu::Storage<modbus::rtu::Pool<2, 1>>);
 static_assert(!modbus::rtu::Storage<MissingTx>);
 static_assert(!modbus::rtu::Storage<ThrowingRx>);
-static_assert(modbus::rtu::address_size == 1u);
-static_assert(modbus::rtu::function_size == 1u);
-static_assert(modbus::rtu::crc_size == modbus::rtu::crc::wire_size);
-static_assert(modbus::rtu::adu_prefix_size == 2u);
-static_assert(modbus::rtu::pdu_envelope_size == 3u);
-static_assert(modbus::rtu::adu_overhead == 4u);
+using DefaultFormat = modbus::rtu::DefaultFormat;
+static_assert(DefaultFormat::address_size == 1u);
+static_assert(DefaultFormat::function_size == 1u);
+static_assert(DefaultFormat::crc_size ==
+	modbus::rtu::crc::Bitwise::wire_size);
+static_assert(DefaultFormat::adu_prefix_size == 2u);
+static_assert(DefaultFormat::pdu_envelope_size == 3u);
+static_assert(DefaultFormat::adu_overhead == 4u);
 
 template<class Storage>
 void contract(const char* const name)
@@ -59,21 +60,20 @@ void contract(const char* const name)
 	storage.release_rx(nullptr);
 
 	constexpr std::array<std::size_t, 4> requests{
-		0u, 1u, 32u, modbus::max_data_size};
+		1u, 2u, 34u, modbus::rtu::max_adu_size};
 	for (const std::size_t request : requests) {
 		const modbus::rtu::TxBlock tx = storage.acquire_tx(request);
-		check(tx.memory != nullptr && tx.capacity >= request &&
-		      tx.capacity <= modbus::max_data_size,
-		      "TX reports a valid function-data capacity");
+		check(tx.memory != nullptr && tx.adu_capacity >= request &&
+		      tx.adu_capacity <= modbus::rtu::max_adu_size,
+		      "TX reports a valid complete-ADU capacity");
 		if (tx.memory != nullptr) {
-			const std::size_t bytes = tx.capacity + modbus::rtu::adu_overhead;
-			for (std::size_t i = 0; i < bytes; ++i) {
+			for (std::size_t i = 0; i < tx.adu_capacity; ++i) {
 				tx.memory[i] = static_cast<std::byte>(i);
 			}
 		}
 		storage.release_tx(tx);
 	}
-	check(storage.acquire_tx(modbus::max_data_size + 1u).memory == nullptr,
+	check(storage.acquire_tx(modbus::rtu::max_adu_size + 1u).memory == nullptr,
 	      "oversize TX allocation is refused");
 }
 
@@ -110,9 +110,8 @@ int main()
 	group("Layout");
 	check(std::is_trivially_copyable_v<modbus::rtu::TxBlock>,
 	      "TX ownership descriptor is a trivial pointer-capacity pair");
-	check(modbus::rtu::Pool<1, 1>::max_adu_size == 256u &&
-	      modbus::rtu::Pool<1, 1>::max_data_size == 252u,
-	      "storage republishes fixed RTU geometry");
+	check(modbus::rtu::Pool<1, 1>::max_adu_size == 256u,
+	      "storage republishes only the physical RTU ADU limit");
 
 	return finish();
 }

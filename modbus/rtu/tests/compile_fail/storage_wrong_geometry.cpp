@@ -8,7 +8,6 @@
 struct WrongGeometry final {
 	using RxBlock = modbus::rtu::RxBlock<WrongGeometry>;
 	static constexpr std::size_t max_adu_size = 255u;
-	static constexpr std::size_t max_data_size = 251u;
 
 	RxBlock* acquire_rx(std::size_t) noexcept;
 	void release_rx(RxBlock*) noexcept;

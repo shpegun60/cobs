@@ -11,8 +11,10 @@
 
 namespace modbus {
 
-// The application-protocol limit shared by RTU and TCP. A PDU is one
-// function byte followed by zero to 252 function-data bytes.
+// Standard Modbus application-protocol limits shared by RTU and TCP. The
+// default RTU CRC16 format preserves them. An explicitly nonstandard RTU CRC
+// policy may expose a different effective limit inside its fixed 256-byte ADU.
+// A standard PDU is one function byte plus zero to 252 data bytes.
 inline constexpr std::size_t max_pdu_size = 253u;
 inline constexpr std::size_t max_data_size = max_pdu_size - 1u;
 

@@ -42,7 +42,8 @@ struct SumState final {
 	std::size_t last_size = 0u;
 };
 
-struct WrappingSum final {
+struct WrappingSum final : ::crc::Codec<
+	uint16_t, 2u, std::endian::little> {
 	explicit WrappingSum(SumState& value) noexcept : state(&value) {}
 	WrappingSum() = delete;
 

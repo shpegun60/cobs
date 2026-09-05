@@ -2,8 +2,8 @@
 # Author: shpegun60
 # SPDX-License-Identifier: MIT
 
-# Exact Cortex-M7 proof that Endpoint<> does not instantiate the lookup table,
-# while Endpoint<Heap, crc::Table> owns one immutable 512-byte flash table.
+# Exact Cortex-M7 proof that Endpoint<> does not instantiate any lookup table,
+# while Endpoint<Heap, crc::Table> instantiates one private 512-byte class table.
 
 set -e
 
@@ -59,19 +59,19 @@ for optimization in -Os -O2 -O3; do
 	"$ARM_NM" -S --size-sort "$table_object" > "$table_symbols"
 	"$ARM_OBJDUMP" -dr "$table_object" > "$table_assembly"
 
-	if grep -F '_ZN6modbus3rtu3crc6detail5tableE' \
+	if grep -E 'Engine.*lookup_E$' \
 			"$default_symbols" >/dev/null; then
 		echo "FAIL  Endpoint<> emitted the CRC lookup table at $optimization"
 		exit 1
 	fi
-	if ! grep -E '00000200 [VvRr] _ZN6modbus3rtu3crc6detail5tableE$' \
+	if ! grep -E '00000200 [VvRr] _ZN3crc6detail6Engine.*lookup_E$' \
 			"$table_symbols" >/dev/null; then
 		echo "FAIL  crc::Table did not emit exactly one 512-byte immutable table"
 		cat "$table_symbols"
 		exit 1
 	fi
 	if ! "$ARM_OBJDUMP" -t "$table_object" |
-			grep -E '[[:space:]]O[[:space:]]+\.rodata\.[^[:space:]]+[[:space:]]+00000200[[:space:]]+_ZN6modbus3rtu3crc6detail5tableE$' \
+			grep -E '[[:space:]]O[[:space:]]+\.rodata\.[^[:space:]]+[[:space:]]+00000200[[:space:]]+_ZN3crc6detail6Engine.*lookup_E$' \
 			>/dev/null; then
 		echo "FAIL  crc::Table lookup is not one 512-byte read-only object"
 		exit 1

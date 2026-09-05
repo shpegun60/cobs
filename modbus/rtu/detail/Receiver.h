@@ -8,7 +8,7 @@
 #ifndef MODBUS_RTU_DETAIL_RECEIVER_H_
 #define MODBUS_RTU_DETAIL_RECEIVER_H_
 
-#include "../Crc.h"
+#include "../Format.h"
 #include "../Stats.h"
 #include "Packet.h"
 
@@ -19,17 +19,17 @@
 
 namespace modbus::rtu::detail {
 
-template<class StorageT>
+template<class StorageT, class FormatT>
 class Receiver final {
 	static_assert(modbus::rtu::Storage<StorageT>,
 		"Receiver storage must satisfy modbus::rtu::Storage");
-	static_assert(StorageT::max_adu_size == modbus::rtu::max_adu_size &&
-	              StorageT::max_data_size == modbus::max_data_size,
-		"Modbus RTU storage must provide the complete fixed RTU geometry");
+	static_assert(StorageT::max_adu_size == modbus::rtu::max_adu_size,
+		"Modbus RTU storage must provide one complete 256-byte ADU");
 
 public:
 	using Block = typename StorageT::RxBlock;
-	using Packet = modbus::rtu::Packet<StorageT>;
+	using Format = FormatT;
+	using Packet = modbus::rtu::Packet<StorageT, Format>;
 
 	explicit Receiver(StorageT& storage) noexcept : m_storage(storage) {}
 	Receiver(const Receiver&) = delete;
@@ -37,21 +37,22 @@ public:
 
 	~Receiver() { clear_ready(); }
 
-	template<modbus::rtu::crc::Calculator CrcT>
+	template<::crc::Policy CrcT>
+		requires (CrcT::wire_size == Format::crc_size)
 	void receive_adu(
-			CrcT& calculator,
+			CrcT& policy,
 			const std::span<const uint8_t> candidate) noexcept
 	{
 		++m_stats.candidates;
-		if (candidate.size() < min_adu_size) {
+		if (candidate.size() < Format::min_adu_size) {
 			++m_stats.too_short;
 			return;
 		}
-		if (candidate.size() > max_adu_size) {
+		if (candidate.size() > StorageT::max_adu_size) {
 			++m_stats.oversize;
 			return;
 		}
-		if (!modbus::rtu::crc::verify(candidate, calculator)) {
+		if (!::crc::verify(candidate, policy)) {
 			++m_stats.crc_errors;
 			return;
 		}
@@ -64,7 +65,7 @@ public:
 		block->owner = &m_storage;
 		block->adu_size = static_cast<uint16_t>(candidate.size());
 		block->address = candidate[0];
-		block->function = candidate[address_size];
+		block->function = candidate[Format::address_size];
 		std::memcpy(block->writable_adu(candidate.size()).data(),
 		            candidate.data(), candidate.size());
 		enqueue(block);

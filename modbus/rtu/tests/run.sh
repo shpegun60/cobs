@@ -47,6 +47,7 @@ build_release() {
 
 build test_pdu      "$HERE/test_pdu.cpp"
 build test_crc      "$HERE/test_crc.cpp"
+build test_crc_geometry "$HERE/test_crc_geometry.cpp"
 build test_storage  "$HERE/test_storage.cpp"
 build test_packet   "$HERE/test_packet.cpp"
 build test_message  "$HERE/test_message.cpp"
@@ -58,6 +59,7 @@ build_release test_fuzz_o3 "$HERE/test_fuzz.cpp"
 
 "$OUT/test_pdu.exe"
 "$OUT/test_crc.exe"
+"$OUT/test_crc_geometry.exe"
 "$OUT/test_storage.exe"
 "$OUT/test_packet.exe"
 "$OUT/test_message.exe"

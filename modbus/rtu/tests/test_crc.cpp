@@ -18,7 +18,10 @@ using namespace modbus_test;
 
 namespace {
 
-struct AdaptiveCrc final {
+struct AdaptiveCrc final : ::crc::Codec<uint16_t, 2u, std::endian::little> {
+	AdaptiveCrc(unsigned& bitwise, unsigned& table) noexcept
+		: bitwise_calls(&bitwise), table_calls(&table) {}
+
 	unsigned* bitwise_calls = nullptr;
 	unsigned* table_calls = nullptr;
 
@@ -34,7 +37,9 @@ struct AdaptiveCrc final {
 	}
 };
 
-struct FakeHardware final {
+struct FakeHardware final : ::crc::Codec<uint16_t, 2u, std::endian::little> {
+	explicit FakeHardware(unsigned& count) noexcept : calls(&count) {}
+
 	unsigned* calls = nullptr;
 
 	[[nodiscard]] uint16_t calculate(
@@ -47,19 +52,27 @@ struct FakeHardware final {
 
 struct MissingCalculate final {};
 struct ThrowingCalculate final {
+	using value_type = uint16_t;
+	static constexpr std::size_t wire_size = 2u;
 	uint16_t calculate(std::span<const uint8_t>);
+	void store(uint8_t*, uint16_t) noexcept;
+	uint16_t load(const uint8_t*) noexcept;
 };
 struct WrongResult final {
+	using value_type = uint16_t;
+	static constexpr std::size_t wire_size = 2u;
 	uint32_t calculate(std::span<const uint8_t>) noexcept;
+	void store(uint8_t*, uint16_t) noexcept;
+	uint16_t load(const uint8_t*) noexcept;
 };
 
-static_assert(modbus::rtu::crc::Calculator<modbus::rtu::crc::Bitwise>);
-static_assert(modbus::rtu::crc::Calculator<modbus::rtu::crc::Table>);
-static_assert(modbus::rtu::crc::Calculator<AdaptiveCrc>);
-static_assert(modbus::rtu::crc::Calculator<FakeHardware>);
-static_assert(!modbus::rtu::crc::Calculator<MissingCalculate>);
-static_assert(!modbus::rtu::crc::Calculator<ThrowingCalculate>);
-static_assert(!modbus::rtu::crc::Calculator<WrongResult>);
+static_assert(modbus::rtu::crc::Policy<modbus::rtu::crc::Bitwise>);
+static_assert(modbus::rtu::crc::Policy<modbus::rtu::crc::Table>);
+static_assert(modbus::rtu::crc::Policy<AdaptiveCrc>);
+static_assert(modbus::rtu::crc::Policy<FakeHardware>);
+static_assert(!modbus::rtu::crc::Policy<MissingCalculate>);
+static_assert(!modbus::rtu::crc::Policy<ThrowingCalculate>);
+static_assert(!modbus::rtu::crc::Policy<WrongResult>);
 static_assert(std::is_empty_v<modbus::rtu::crc::Bitwise>);
 static_assert(std::is_empty_v<modbus::rtu::crc::Table>);
 
@@ -97,13 +110,14 @@ int main()
 	static_assert(known == 0xCDC5u);
 	static_assert(known_bitwise == known && known_table == known);
 	constexpr auto compile_time_wire_crc = [] {
-		std::array<uint8_t, modbus::rtu::crc::wire_size> bytes{};
-		modbus::rtu::crc::store(bytes.data(), 0xCDC5u);
+		std::array<uint8_t, modbus::rtu::crc::Bitwise::wire_size> bytes{};
+		modbus::rtu::crc::Bitwise::store(bytes.data(), 0xCDC5u);
 		return bytes;
 	}();
 	static_assert(compile_time_wire_crc[0] == 0xC5u &&
 	              compile_time_wire_crc[1] == 0xCDu);
-	static_assert(modbus::rtu::crc::load(compile_time_wire_crc.data()) == 0xCDC5u);
+	static_assert(modbus::rtu::crc::Bitwise::load(
+		compile_time_wire_crc.data()) == 0xCDC5u);
 	check(known == 0xCDC5u, "01 03 00 00 00 0A produces wire CRC C5 CD");
 	const auto known_adu = make_adu(0x01u, 0x03u,
 		std::span<const uint8_t>{request}.subspan(2u));
@@ -166,9 +180,9 @@ int main()
 	group("CustomPolicies");
 	unsigned bitwise_calls = 0u;
 	unsigned table_calls = 0u;
-	AdaptiveCrc adaptive{&bitwise_calls, &table_calls};
+	AdaptiveCrc adaptive{bitwise_calls, table_calls};
 	unsigned hardware_calls = 0u;
-	FakeHardware hardware{&hardware_calls};
+	FakeHardware hardware{hardware_calls};
 	std::array<uint8_t, 31u> short_input{};
 	std::array<uint8_t, 32u> long_input{};
 	for (std::size_t index = 0u; index < long_input.size(); ++index) {
