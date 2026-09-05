@@ -100,8 +100,10 @@ than 8/16/32/64 (CRC-24, CRC-15/CAN, CRC-7). A CRC-24 polynomial passed to
 `Crc32` compiles and computes something that is not CRC-24.
 
 The register type is constrained by `crc::Value` to exactly `uint8_t`,
-`uint16_t`, `uint32_t` and `uint64_t`. `bool`, the char types and
-platform-sized integers are rejected at the `Codec` and engine boundary.
+`uint16_t`, `uint32_t` and `uint64_t`. `bool` and distinct character types
+such as `char16_t` are rejected. Typedefs retain type identity: `unsigned char`,
+`unsigned long` or `size_t` are accepted where they alias an allowed type.
+This is a type boundary, not a check of how the caller spelled the type.
 
 ## Policy contract
 
@@ -109,7 +111,7 @@ A protocol accepts any type satisfying `crc::Policy`:
 
 ```cpp
 struct Policy {
-    using value_type = /* any equality-comparable result type */;
+    using value_type = /* equality-comparable result, nothrow conversion to bool */;
     static constexpr std::size_t wire_size = /* compile-time byte count */;
 
     value_type calculate(std::span<const uint8_t>) noexcept;
@@ -163,10 +165,18 @@ struct HardwareCrc32 : crc::Codec<uint32_t, 4, std::endian::little> {
 };
 ```
 
-Empty built-ins cost no object storage when held with `[[no_unique_address]]`.
-A stateful policy costs only its declared state. There are no virtual calls,
-function pointers, global mutable state, runtime method branches, allocations,
-or exceptions in the API.
+Calculation is synchronous: its input is borrowed only until return and may
+have byte alignment (not necessarily peripheral-word alignment). A hardware
+adapter must handle the span's alignment/placement, complete any hardware
+operation before returning, and keep its peripheral handle valid. It must not
+retain the input for asynchronous DMA after the call.
+
+Empty built-ins are eligible for `[[no_unique_address]]`; actual compression
+is an ABI/compiler choice. A stateful object adds its state and any alignment
+padding. See the [measured layouts](../doc/SHARED_POLICIES_VALIDATION.md).
+Built-in calculations use no virtual calls, function pointers, mutable global
+state, runtime algorithm dispatch, allocations or exceptions. A custom policy
+is responsible for its own implementation and nonthrowing contract.
 
 ## Build and verification
 
@@ -207,9 +217,12 @@ translation unit that names all table types but executes Bitwise or `NoCrc`
 emits zero lookup symbols; the complete `NoCrc` verify path folds to a constant
 `true` with no memory access, call, or conditional branch.
 
-Modbus RTU is currently the only consumer. COBS remains independent for now;
-the CRC policy module was deliberately extracted so a later COBS integrity
-format can use it without depending on Modbus.
+Both COBS and Modbus RTU use these policies without depending on each other:
+`cobs::Endpoint<Memory, cobs::Format<Crc>>` and
+`modbus::rtu::Endpoint<Memory, modbus::rtu::Format<Crc, MaxAdu>>`.
+Both default to CRC16 Bitwise; a custom stateful policy is injected as
+`Link{MyCrc{handle}}` and the same object serves RX and TX. See the shared
+[storage contract](../doc/STORAGE.md) and [COBS wire format](../doc/PROTOCOL.md).
 
 For a wider CPU check, `check_arm_matrix.py` queries the installed GNU Arm
 compiler's full CPU list and builds every named target: all nine policies,

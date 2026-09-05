@@ -51,9 +51,11 @@ void check(const bool ok, const std::string& what)
 constexpr std::size_t kMaxDecoded = 64;
 constexpr std::size_t kTxBlocks = 2; // recommended quota: build one while one flies
 
-using TxPool = cobs::Pool<1, kTxBlocks, cobs::Format<kMaxDecoded>>;
-using HeapPool = cobs::Heap<cobs::Format<kMaxDecoded>>;
-using Message = cobs::Message<TxPool>;
+using SmallFormat = cobs::Format<crc::NoCrc, kMaxDecoded>;
+using SmallEndpoint = cobs::Endpoint<wire::Pool<1, kTxBlocks>, SmallFormat>;
+using TxPool = SmallEndpoint::Storage;
+using HeapPool = cobs::Endpoint<wire::Heap, SmallFormat>::Storage;
+using Message = SmallEndpoint::Message;
 
 // A message filled with `n` recognisable bytes, plus the bytes themselves for
 // the oracle to check against.
@@ -217,91 +219,61 @@ void testMoveSemantics()
  * through the allocator, which is exactly right — a container that reallocates
  * is measured by how often it does so, not by its internal pointers.
  */
-class SpyStorage final {
-public:
-	using Format = cobs::Format<8, 4096>;
-	using RxBlock = cobs::RxBlock<SpyStorage>;
-	[[nodiscard]] RxBlock* acquire_rx(std::size_t) noexcept { return nullptr; }
-	void release_rx(RxBlock*) noexcept {}
-
-	[[nodiscard]] cobs::TxBlock acquire_tx(const std::size_t requested) noexcept
-	{
-		if (requested > Format::max_send_size || refuse_next) {
-			return {};
-		}
-		void* const memory = ::operator new(Format::tx_storage_size_for_capacity(requested), std::nothrow);
-		if (memory == nullptr) {
-			return {};
-		}
-		++allocations;
-		last_request = requested;
-		return {static_cast<std::byte*>(memory), requested};
-	}
-
-	void release_tx(const cobs::TxBlock block) noexcept
-	{
-		if (block.memory != nullptr) {
-			++frees;
-			last_freed_capacity = block.capacity;
-		}
-		::operator delete(static_cast<void*>(block.memory));
-	}
-
-	std::size_t allocations = 0;
-	std::size_t frees = 0;
-	std::size_t last_request = 0;
-	std::size_t last_freed_capacity = 0;
-	mutable bool refuse_next = false;
+struct SpyMemory final {
+ template<class Geometry>
+ class For final {
+ public:
+  std::byte* acquire_rx(std::size_t) noexcept { return nullptr; }
+  void release_rx(std::byte*) noexcept {}
+  wire::TxBlock acquire_tx(const std::size_t requested) noexcept {
+   if (requested > Geometry::tx_block_bytes || refuse_next) { return {}; }
+   void* const memory = ::operator new(requested, std::nothrow);
+   if (memory == nullptr) { return {}; }
+   ++allocations;
+   last_request = requested;
+   return {static_cast<std::byte*>(memory), requested};
+  }
+  void release_tx(const wire::TxBlock block) noexcept {
+   if (block.memory != nullptr) { ++frees; last_freed_grant = block.granted; }
+   ::operator delete(static_cast<void*>(block.memory));
+  }
+  std::size_t allocations = 0, frees = 0, last_request = 0, last_freed_grant = 0;
+  mutable bool refuse_next = false;
+ };
 };
+using SpyFormat = cobs::Format<crc::NoCrc, 8, 4096>;
+using SpyEndpoint = cobs::Endpoint<SpyMemory, SpyFormat>;
+using SpyStorage = SpyEndpoint::Storage;
+using SpyMessage = SpyEndpoint::Message;
 
-/*
- * A policy that over-allocates the way a segregated allocator would: neither
- * exact like the heap one nor "the whole limit" like the single-slab pool, but
- * somewhere in between. The two shipped policies only exercise the extremes,
- * and a container that had quietly assumed capacity == requested would pass
- * both of them.
- */
-class SizeClassStorage final {
-public:
-	using Format = cobs::Format<8, 4096>;
-	using RxBlock = cobs::RxBlock<SizeClassStorage>;
-	[[nodiscard]] RxBlock* acquire_rx(std::size_t) noexcept { return nullptr; }
-	void release_rx(RxBlock*) noexcept {}
-
-	// Its own rule, obeying nothing but the contract: 2n + 1, capped.
-	[[nodiscard]] static constexpr std::size_t class_for(const std::size_t n) noexcept
-	{
-		const std::size_t twice = n * 2u + 1u;
-		return (twice > Format::max_send_size) ? Format::max_send_size : twice;
-	}
-
-	[[nodiscard]] cobs::TxBlock acquire_tx(const std::size_t requested) noexcept
-	{
-		if (requested > Format::max_send_size) {
-			return {};
-		}
-		const std::size_t capacity = class_for(requested);
-		void* const memory = ::operator new(Format::tx_storage_size_for_capacity(capacity), std::nothrow);
-		if (memory == nullptr) {
-			return {};
-		}
-		++allocations;
-		return {static_cast<std::byte*>(memory), capacity};
-	}
-
-	void release_tx(const cobs::TxBlock block) noexcept
-	{
-		if (block.memory != nullptr) {
-			++frees;
-			last_freed_capacity = block.capacity;
-		}
-		::operator delete(static_cast<void*>(block.memory));
-	}
-
-	std::size_t allocations = 0;
-	std::size_t frees = 0;
-	std::size_t last_freed_capacity = 0;
+/* Size classes are PHYSICAL bytes; the storage knows no protocol Format. */
+struct SizeClassMemory final {
+ template<class Geometry>
+ class For final {
+ public:
+  std::byte* acquire_rx(std::size_t) noexcept { return nullptr; }
+  void release_rx(std::byte*) noexcept {}
+  static constexpr std::size_t class_for(const std::size_t n) noexcept {
+   const std::size_t twice = n * 2u + 1u;
+   return twice > Geometry::tx_block_bytes ? Geometry::tx_block_bytes : twice;
+  }
+  wire::TxBlock acquire_tx(const std::size_t requested) noexcept {
+   if (requested > Geometry::tx_block_bytes) { return {}; }
+   const std::size_t granted = class_for(requested);
+   void* const memory = ::operator new(granted, std::nothrow);
+   if (memory == nullptr) { return {}; }
+   ++allocations;
+   return {static_cast<std::byte*>(memory), granted};
+  }
+  void release_tx(const wire::TxBlock block) noexcept {
+   if (block.memory != nullptr) { ++frees; last_freed_grant = block.granted; }
+   ::operator delete(static_cast<void*>(block.memory));
+  }
+  std::size_t allocations = 0, frees = 0, last_freed_grant = 0;
+ };
 };
+using SizeClassEndpoint = cobs::Endpoint<SizeClassMemory, SpyFormat>;
+using SizeClassStorage = SizeClassEndpoint::Storage;
 
 // The container must work off the REPORTED capacity, never off what it asked
 // for. This is the case between the two extremes the shipped policies cover.
@@ -309,31 +281,31 @@ void testIntermediateOverallocation()
 {
 	SizeClassStorage pool;
 	{
-		cobs::Message<SizeClassStorage> m{pool, 7};
-		check(m.capacity() == 15, "a policy may grant more than was requested (7 -> 15)");
+		SizeClassEndpoint::Message m{pool, 7};
+		check(m.capacity() == 19, "7 payload bytes request 11 physical bytes, grant 23, capacity 19");
 		check(m.size() == 0, "without putting anything in the message");
 
-		// Fifteen bytes must fit with no reallocation, even though only seven
+		// Nineteen bytes must fit with no reallocation, even though only seven
 		// were ever asked for.
-		const std::vector<uint8_t> body(15, 0x2A);
+		const std::vector<uint8_t> body(19, 0x2A);
 		check(m.append_bytes(std::span<const uint8_t>{body}), "the whole grant is usable");
 		check(pool.allocations == 1, "with no reallocation");
 		check(m.size() == body.size(), "and uses the whole reported geometry");
 	}
-	check(pool.frees == 1 && pool.last_freed_capacity == 15,
+	check(pool.frees == 1 && pool.last_freed_grant == 23,
 	      "the block goes back with the capacity the policy reported, not the 7 asked for");
 
 	{	// A growth must also ask through the policy's rule, and record what
 		// came back rather than what it wanted.
 		SizeClassStorage grow;
-		cobs::Message<SizeClassStorage> m{grow, 4};
-		check(m.capacity() == 9, "4 -> 9");
+		SizeClassEndpoint::Message m{grow, 4};
+		check(m.capacity() == 13, "4 payload bytes request 8 physical bytes, grant 17, capacity 13");
 		const std::vector<uint8_t> body(20, 0x3B);
 		check(m.append_bytes(std::span<const uint8_t>{body}), "20 bytes need a growth");
-		// target = max(20, 9 + 4) = 20; the policy answers 41.
-		check(m.capacity() == 41, "the container asked for 20 and was granted 41");
+		// target = 20 payload; physical request 24, grant 49, payload capacity 45.
+		check(m.capacity() == 45, "the container asked for 24 physical bytes and was granted 49");
 		check(grow.allocations == 2 && grow.frees == 1, "in exactly one reallocation");
-		check(grow.last_freed_capacity == 9, "the old block returned with ITS capacity");
+		check(grow.last_freed_grant == 17, "the old block returned with ITS capacity");
 		check(m.size() == body.size(), "and the logical payload survived the move");
 	}
 }
@@ -342,12 +314,12 @@ void testCreation()
 {
 	{	// The hint is a capacity hint, never an initial size.
 		HeapPool heap;
-		cobs::Message<HeapPool> unhinted{heap};
+		cobs::Message<HeapPool, SmallFormat::Layout> unhinted{heap};
 		check(static_cast<bool>(unhinted), "an unhinted message is valid");
 		check(unhinted.size() == 0 && unhinted.capacity() == 0,
 		      "heap: no hint means no capacity yet, and never any size");
 
-		cobs::Message<HeapPool> hinted{heap, 40};
+		cobs::Message<HeapPool, SmallFormat::Layout> hinted{heap, 40};
 		check(hinted.size() == 0, "a hint does not put bytes in the message");
 		check(hinted.capacity() == 40, "heap: the hint is honoured exactly");
 	}
@@ -363,7 +335,7 @@ void testCreation()
 	{	// A hint past the protocol limit is refused rather than clamped: the
 		// caller asked for something this instance cannot carry.
 		HeapPool heap;
-		cobs::Message<HeapPool> over{heap, kMaxDecoded + 1};
+		cobs::Message<HeapPool, SmallFormat::Layout> over{heap, kMaxDecoded + 1};
 		check(!over, "a hint beyond tx_max_size yields an empty message");
 	}
 }
@@ -371,7 +343,7 @@ void testCreation()
 void testGrowthSequence()
 {
 	SpyStorage spy;
-	cobs::Message<SpyStorage> m{spy};
+	SpyMessage m{spy};
 	check(m.capacity() == 0 && spy.allocations == 1,
 	      "the initial block is one allocation, of no capacity");
 
@@ -391,7 +363,7 @@ void testGrowthSequence()
 	// Every growth is one allocation and one release; nothing accumulates.
 	check(spy.frees == spy.allocations - 1,
 	      "each growth released exactly the block it replaced");
-	check(spy.last_freed_capacity == 9,
+	check(spy.last_freed_grant == SpyFormat::tx_storage_size_for_capacity(9),
 	      "and released it with ITS capacity, not the new one");
 
 	check(m.size() == 10, "and every append survived the reallocations");
@@ -400,14 +372,14 @@ void testGrowthSequence()
 void testLargeJumpIsOneAllocation()
 {
 	SpyStorage spy;
-	cobs::Message<SpyStorage> m{spy, 64};
+	SpyMessage m{spy, 64};
 	check(m.capacity() == 64 && spy.allocations == 1, "starting from a 64-byte hint");
 
 	const std::vector<uint8_t> body(500, 0x5A);
 	check(m.append_bytes(std::span<const uint8_t>{body}), "a 500-byte append succeeds");
 	check(m.capacity() == 500,
 	      "asking for exactly what is required, not walking 96 -> 144 -> 216");
-	check(spy.allocations == 2 && spy.last_request == 500,
+	check(spy.allocations == 2 && spy.last_request == SpyFormat::tx_storage_size_for_capacity(500),
 	      "in a single allocation");
 	check(m.size() == body.size(), "and the complete payload is retained");
 }
@@ -415,7 +387,7 @@ void testLargeJumpIsOneAllocation()
 void testNoGrowthWhenItFits()
 {
 	SpyStorage spy;
-	cobs::Message<SpyStorage> m{spy, 256};
+	SpyMessage m{spy, 256};
 	const std::size_t after_create = spy.allocations;
 
 	bool ok = true;
@@ -443,7 +415,7 @@ void testNoGrowthWhenItFits()
 void testFailedGrowthChangesNothing()
 {
 	SpyStorage spy;
-	cobs::Message<SpyStorage> m{spy, 8};
+	SpyMessage m{spy, 8};
 	(void)fill(m, 8, 0x70);
 	check(m.size() == 8 && m.capacity() == 8, "eight bytes in an eight-byte capacity");
 
@@ -468,7 +440,7 @@ void testFailedGrowthChangesNothing()
 void testReserve()
 {
 	SpyStorage spy;
-	cobs::Message<SpyStorage> m{spy};
+	SpyMessage m{spy};
 	check(m.reserve(0), "reserving nothing on an empty message succeeds");
 	check(spy.allocations == 1, "without allocating");
 
@@ -479,7 +451,7 @@ void testReserve()
 	check(m.reserve(50), "a smaller reserve is a no-op");
 	check(m.capacity() == 100 && spy.allocations == 2, "and does not shrink or reallocate");
 
-	check(m.reserve(SpyStorage::Format::max_send_size + 1) == false,
+	check(m.reserve(SpyFormat::max_send_size + 1) == false,
 	      "reserving past tx_max_size is refused");
 	check(m.capacity() == 100, "leaving the capacity alone");
 }
@@ -490,7 +462,7 @@ enum class Op : uint16_t { Ping = 0x0102, Pong = 0x0304 };
 
 void testSerializers()
 {
-	using Engine = cobs::Endpoint<SpyStorage>;
+	using Engine = SpyEndpoint;
 	Engine endpoint;
 	CaptureTransport transport;
 	check(bindTransport(endpoint, transport), "the serializer coordinator binds");
@@ -549,7 +521,7 @@ void testSerializers()
 
 void testOrderedSerializers()
 {
-	using Engine = cobs::Endpoint<SpyStorage>;
+	using Engine = SpyEndpoint;
 	Engine endpoint;
 	CaptureTransport transport;
 	check(bindTransport(endpoint, transport), "the ordered serializer coordinator binds");
@@ -586,7 +558,7 @@ void testOrderedSerializers()
 
 void testSerializerFailuresLeaveTheMessageUsable()
 {
-	using Engine = cobs::Endpoint<SpyStorage>;
+	using Engine = SpyEndpoint;
 	Engine endpoint;
 	CaptureTransport transport;
 	check(bindTransport(endpoint, transport), "the failure-recovery coordinator binds");
@@ -620,16 +592,16 @@ void testSerializerFailuresLeaveTheMessageUsable()
 void testOversizeIsRefusedNotClamped()
 {
 	SpyStorage spy;
-	cobs::Message<SpyStorage> m{spy};
-	const std::vector<uint8_t> huge(SpyStorage::Format::max_send_size + 1, 0x33);
+	SpyMessage m{spy};
+	const std::vector<uint8_t> huge(SpyFormat::max_send_size + 1, 0x33);
 	check(m.append_bytes(std::span<const uint8_t>{huge}) == false,
 	      "a payload past tx_max_size is refused");
 	check(m.size() == 0 && spy.allocations == 1, "with nothing appended and nothing allocated");
 
-	const std::vector<uint8_t> exact(SpyStorage::Format::max_send_size, 0x44);
+	const std::vector<uint8_t> exact(SpyFormat::max_send_size, 0x44);
 	check(m.append_bytes(std::span<const uint8_t>{exact}),
 	      "while exactly tx_max_size is accepted");
-	check(m.size() == SpyStorage::Format::max_send_size && m.capacity() == SpyStorage::Format::max_send_size,
+	check(m.size() == SpyFormat::max_send_size && m.capacity() == SpyFormat::max_send_size,
 	      "filling the message to its limit");
 	check(m.append_native<uint8_t>(0) == false, "after which nothing more fits");
 }
@@ -638,7 +610,7 @@ void testOversizeIsRefusedNotClamped()
 
 void testCoordinatorEncoding()
 {
-	using Engine = cobs::Endpoint<TxPool>;
+	using Engine = SmallEndpoint;
 	Engine endpoint;
 	CaptureTransport transport;
 	check(bindTransport(endpoint, transport), "the real coordinator binds for encoding tests");
@@ -693,7 +665,7 @@ void testCoordinatorEncoding()
 // format.
 void testCoordinatorEncodingAcrossGrowthHistories()
 {
-	using Engine = cobs::Endpoint<SpyStorage>;
+	using Engine = SpyEndpoint;
 	Engine endpoint;
 	CaptureTransport transport;
 	check(bindTransport(endpoint, transport), "the coordinator binds for growth histories");
@@ -766,7 +738,7 @@ template<class M, class T>
 concept CanAppendLeSpan = requires(M& m, std::span<const T> s) { m.append_le(s); };
 
 template<class M>
-concept HasPublicEncode = requires(M& m) { m.encode(); };
+concept HasPublicEncode = requires(M& m, crc::NoCrc& crc) { m.encode(crc); };
 
 template<class M>
 concept HasPublicEncodedState = requires(const M& m) { m.encoded(); };
@@ -791,7 +763,7 @@ void testCoordinatorOnlyOperations()
 
 void testTypeConstraints()
 {
-	using M = cobs::Message<TxPool>;
+	using M = Message;
 
 	// Accepted: the types that mean something on a wire.
 	static_assert(CanAppendNative<M, uint8_t>);
@@ -885,7 +857,7 @@ void testDefaultHintAvoidsTheLadder()
 {
 	const auto buildByteAtATime = [](SpyStorage& spy, const std::size_t hint,
 	                                 const std::size_t payload) {
-		cobs::Message<SpyStorage> m{spy, hint};
+		SpyMessage m{spy, hint};
 		for (std::size_t i = 0; i < payload; ++i) {
 			if (!m.append_native(static_cast<uint8_t>(i))) { return false; }
 		}
@@ -920,36 +892,16 @@ void testDefaultHintAvoidsTheLadder()
 // A wide-format policy (limits above 255) so both header widths are exercised
 // by the same test bodies. SpyStorage is already wide; this one is narrow and
 // heap-exact, for contrast.
-class NarrowHeap final {
-public:
-	using Format = cobs::Format<255>;
-	using RxBlock = cobs::RxBlock<NarrowHeap>;
-
-	[[nodiscard]] RxBlock* acquire_rx(std::size_t) noexcept { return nullptr; }
-	void release_rx(RxBlock*) noexcept {}
-
-	[[nodiscard]] cobs::TxBlock acquire_tx(const std::size_t requested) noexcept
-	{
-		if (requested > Format::max_send_size) { return {}; }
-		void* const memory =
-			::operator new(Format::tx_storage_size_for_capacity(requested), std::nothrow);
-		if (memory == nullptr) { return {}; }
-		return {static_cast<std::byte*>(memory), requested};
-	}
-	void release_tx(const cobs::TxBlock block) noexcept
-	{
-		::operator delete(static_cast<void*>(block.memory));
-	}
-};
+using NarrowEndpoint = cobs::Endpoint<wire::Heap, cobs::Format<crc::NoCrc, 255>>;
 
 void testLengthPrefixIsHiddenAndCorrect()
 {
-	static_assert(cobs::Message<NarrowHeap>::length_size == 1, "255/255 fits one byte");
-	static_assert(cobs::Message<SpyStorage>::length_size == 2, "4096 needs two");
+	static_assert(NarrowEndpoint::Message::length_size == 1, "255/255 fits one byte");
+	static_assert(SpyMessage::length_size == 2, "4096 needs two");
 	check(true, "the two header widths are both under test");
 
 	{	// The prefix is invisible to the container API.
-		using Engine = cobs::Endpoint<NarrowHeap>;
+		using Engine = NarrowEndpoint;
 		Engine endpoint;
 		CaptureTransport transport;
 		check(bindTransport(endpoint, transport), "the one-byte-format coordinator binds");
@@ -963,7 +915,7 @@ void testLengthPrefixIsHiddenAndCorrect()
 	}
 	{	// Same for the two-byte format, including a length above 255 that a
 		// one-byte header could not express.
-		using Engine = cobs::Endpoint<SpyStorage>;
+		using Engine = SpyEndpoint;
 		Engine endpoint;
 		CaptureTransport transport;
 		check(bindTransport(endpoint, transport), "the two-byte-format coordinator binds");
@@ -984,7 +936,7 @@ void testLengthPrefixIsHiddenAndCorrect()
 
 void testMaximumFormatFrame()
 {
-	using Engine = cobs::Endpoint<cobs::Heap<cobs::Format<65535>>>;
+	using Engine = cobs::Endpoint<wire::Heap, cobs::Format<crc::NoCrc, 65535>>;
 	Engine endpoint;
 	CaptureTransport transport;
 	check(bindTransport(endpoint, transport), "the maximum-format coordinator binds");
@@ -1046,12 +998,12 @@ void testHeaderShiftsTheCobsBoundaries()
 		          " payloads placing header+body on a COBS block boundary");
 	};
 
-	cobs::Endpoint<SpyStorage> wide;
+	SpyEndpoint wide;
 	CaptureTransport wide_transport;
 	check(bindTransport(wide, wide_transport), "the wide boundary coordinator binds");
 	run(wide, wide_transport, "two-byte header", 2);
 
-	cobs::Endpoint<NarrowHeap> narrow;
+	NarrowEndpoint narrow;
 	CaptureTransport narrow_transport;
 	check(bindTransport(narrow, narrow_transport), "the narrow boundary coordinator binds");
 	run(narrow, narrow_transport, "one-byte header", 1);

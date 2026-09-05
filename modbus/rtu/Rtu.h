@@ -6,6 +6,14 @@
 /*
  * Modbus RTU endpoint.
  *
+ *     modbus::rtu::Endpoint<Memory, Format>
+ *
+ * Memory is a wire::Storage specification (wire::Heap, wire::Pool<Rx, Tx>, or
+ * a user-written one) — the same type a cobs::Endpoint accepts, because
+ * storage knows nothing about either protocol. Format names the integrity
+ * policy and the physical ADU ceiling; the endpoint derives its block
+ * geometry from the Format's Layout and binds the memory to it.
+ *
  * Ownership and transport semantics deliberately mirror cobs::Endpoint.
  * The RX boundary is different: receive_adu() accepts exactly one physical
  * UART burst candidate, not arbitrary stream chunks. The candidate is
@@ -16,13 +24,14 @@
 #define MODBUS_RTU_H_
 
 #include "../Pdu.h"
-#include "Crc.h"
+#include "../../crc/Crc.h"
+#include "../../wire/Storage.h"
 #include "Format.h"
 #include "Stats.h"
-#include "Storage.h"
 #include "detail/Message.h"
 #include "detail/Packet.h"
 #include "detail/Receiver.h"
+#include "detail/RxBlock.h"
 
 #include "tiny_delegate.hpp"
 
@@ -37,28 +46,44 @@ namespace modbus::rtu {
 
 using SendResult = modbus::SendResult;
 
-template<class StorageT = Heap, class CrcT = modbus::rtu::crc::Bitwise>
+template<class MemoryT = wire::Heap, class FormatT = modbus::rtu::Format<>>
 class Endpoint final {
-	static_assert(modbus::rtu::Storage<StorageT>,
-		"Endpoint storage must satisfy modbus::rtu::Storage");
-	static_assert(::crc::Policy<CrcT>,
-		"Endpoint CRC must satisfy crc::Policy");
-	static_assert(StorageT::max_adu_size == modbus::rtu::max_adu_size,
-		"Modbus RTU storage must provide one complete 256-byte ADU");
-	static_assert(CrcT::wire_size <= modbus::rtu::max_adu_size - 2u,
-		"CRC wire_size leaves no room for RTU address and function");
+public:
+	using Memory = MemoryT;
+	using Format = FormatT;
+	using Crc = typename Format::Crc;
+	using Layout = typename Format::Layout;
+
+	/*
+	 * The physical block geometry this endpoint binds its memory to
+	 * (detail/RxBlock.h): a wire::BlockGeometry keyed on the numbers alone,
+	 * so every Format with the same Layout — Crc16Bitwise and Crc16Table,
+	 * say — binds the same storage type and shares Packet, Message and
+	 * Receiver.
+	 */
+	using Geometry = detail::GeometryFor<Layout>;
+
+	static_assert(wire::Storage<MemoryT, Geometry>,
+		"Endpoint storage must satisfy the wire::Storage contract");
+
+	using Storage = typename MemoryT::template For<Geometry>;
+
+private:
+	// Layout-only stand-in for the storage-typed RX block; see cobs/Cobs.h.
+	using Block = modbus::rtu::RxBlock<Storage>;
+	using Shape = modbus::rtu::RxBlock<detail::AnyStorage>;
+	static_assert(sizeof(Block) == sizeof(Shape) && alignof(Block) == alignof(Shape),
+		"the RX block header must have the layout the geometry was sized from");
 
 public:
-	using StorageType = StorageT;
-	using CrcType = CrcT;
-	using Format = modbus::rtu::Format<CrcT::wire_size>;
-	using Message = modbus::rtu::Message<StorageT, Format>;
-	using Packet = modbus::rtu::Packet<StorageT, Format>;
 
-	static constexpr std::size_t crc_size = Format::crc_size;
-	static constexpr std::size_t max_receive_size = Format::max_data_size;
-	static constexpr std::size_t max_send_size = Format::max_data_size;
-	static constexpr std::size_t max_frame_size = StorageT::max_adu_size;
+	using Message = modbus::rtu::Message<Storage, Layout>;
+	using Packet = modbus::rtu::Packet<Storage, Layout>;
+
+	static constexpr std::size_t crc_size = Layout::crc_size;
+	static constexpr std::size_t max_receive_size = Layout::max_data_size;
+	static constexpr std::size_t max_send_size = Layout::max_data_size;
+	static constexpr std::size_t max_frame_size = Layout::max_adu_size;
 	static constexpr std::size_t default_capacity_hint =
 		max_send_size < 32u ? max_send_size : 32u;
 
@@ -66,35 +91,35 @@ public:
 	using BusyQuery = tiny::delegate<bool()>;
 
 	Endpoint() noexcept(
-			std::is_nothrow_default_constructible_v<StorageT> &&
-			std::is_nothrow_default_constructible_v<CrcT>)
-		requires std::default_initializable<StorageT> &&
-		         std::default_initializable<CrcT>
+			std::is_nothrow_default_constructible_v<Storage> &&
+			std::is_nothrow_default_constructible_v<Crc>)
+		requires std::default_initializable<Storage> &&
+		         std::default_initializable<Crc>
 		= default;
 
-	explicit Endpoint(CrcT crc) noexcept(
-			std::is_nothrow_default_constructible_v<StorageT> &&
-			std::is_nothrow_move_constructible_v<CrcT>)
-		requires std::default_initializable<StorageT> &&
-		         std::constructible_from<CrcT, CrcT&&>
+	explicit Endpoint(Crc crc) noexcept(
+			std::is_nothrow_default_constructible_v<Storage> &&
+			std::is_nothrow_move_constructible_v<Crc>)
+		requires std::default_initializable<Storage> &&
+		         std::constructible_from<Crc, Crc&&>
 		: m_crc(std::move(crc)) {}
 
 	template<class... Args>
 	explicit Endpoint(std::in_place_t, Args&&... args) noexcept(
-			std::is_nothrow_constructible_v<StorageT, Args&&...> &&
-			std::is_nothrow_default_constructible_v<CrcT>)
-		requires std::constructible_from<StorageT, Args&&...> &&
-		         std::default_initializable<CrcT>
+			std::is_nothrow_constructible_v<Storage, Args&&...> &&
+			std::is_nothrow_default_constructible_v<Crc>)
+		requires std::constructible_from<Storage, Args&&...> &&
+		         std::default_initializable<Crc>
 		: m_storage(std::forward<Args>(args)...) {}
 
 	template<class... Args>
-	Endpoint(CrcT crc,
+	Endpoint(Crc crc,
 	         std::in_place_t,
 	         Args&&... args) noexcept(
-			std::is_nothrow_constructible_v<StorageT, Args&&...> &&
-			std::is_nothrow_move_constructible_v<CrcT>)
-		requires std::constructible_from<StorageT, Args&&...> &&
-		         std::constructible_from<CrcT, CrcT&&>
+			std::is_nothrow_constructible_v<Storage, Args&&...> &&
+			std::is_nothrow_move_constructible_v<Crc>)
+		requires std::constructible_from<Storage, Args&&...> &&
+		         std::constructible_from<Crc, Crc&&>
 		: m_storage(std::forward<Args>(args)...),
 		  m_crc(std::move(crc)) {}
 
@@ -202,7 +227,7 @@ public:
 		return {m_receiver.stats(), m_tx_stats};
 	}
 
-	[[nodiscard]] const StorageT& storage() const noexcept { return m_storage; }
+	[[nodiscard]] const Storage& storage() const noexcept { return m_storage; }
 
 private:
 	class Transport final {
@@ -241,13 +266,13 @@ private:
 		BusyQuery m_busy{};
 	};
 
-	[[no_unique_address]] StorageT m_storage{};
-	detail::Receiver<StorageT, Format> m_receiver{m_storage};
+	[[no_unique_address]] Storage m_storage{};
+	detail::Receiver<Storage, Layout> m_receiver{m_storage};
 	Transport m_transport{};
-	TxBlock m_active_tx{};
+	wire::TxBlock m_active_tx{};
 	modbus::rtu::Stats::Tx m_tx_stats{};
 	// Keep policy last: a pointer-sized state fits existing Cortex-M tail padding.
-	[[no_unique_address]] CrcT m_crc{};
+	[[no_unique_address]] Crc m_crc{};
 };
 
 } // namespace modbus::rtu

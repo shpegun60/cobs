@@ -1,0 +1,10 @@
+﻿{
+    "completed":  true,
+    "restored_and_verified":  true,
+    "stlink_serial":  "002A001F3033510135393935",
+    "backup_bytes":  65536,
+    "backup_sha256":  "a5903024dba85fab5121150ca8ad13482f97384aa450aab67413881991fb9456",
+    "results_sha256":  "2eb2bb06ef5753651425ed294e1a6f599d839edd20060a4f9be6d2a8a3a60d5a",
+    "session":  "C:\\Users\\admin\\Documents\\my_workspace\\Qt\\COBS\\cobs\\tests\\out\\performance-20260905-182347",
+    "finished_utc":  "2026-09-05T16:37:29.9161501Z"
+}

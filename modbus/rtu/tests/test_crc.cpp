@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "modbus/rtu/Crc.h"
+#include "crc/Crc.h"
 #include "Test.h"
 
 #include <array>
@@ -30,10 +30,10 @@ struct AdaptiveCrc final : ::crc::Codec<uint16_t, 2u, std::endian::little> {
 	{
 		if (bytes.size() < 32u) {
 			++*bitwise_calls;
-			return modbus::rtu::crc::Bitwise{}.calculate(bytes);
+			return ::crc::Crc16Bitwise{}.calculate(bytes);
 		}
 		++*table_calls;
-		return modbus::rtu::crc::Table{}.calculate(bytes);
+		return ::crc::Crc16Table{}.calculate(bytes);
 	}
 };
 
@@ -46,7 +46,7 @@ struct FakeHardware final : ::crc::Codec<uint16_t, 2u, std::endian::little> {
 			const std::span<const uint8_t> bytes) noexcept
 	{
 		++*calls;
-		return modbus::rtu::crc::Bitwise{}.calculate(bytes);
+		return ::crc::Crc16Bitwise{}.calculate(bytes);
 	}
 };
 
@@ -66,15 +66,15 @@ struct WrongResult final {
 	uint16_t load(const uint8_t*) noexcept;
 };
 
-static_assert(modbus::rtu::crc::Policy<modbus::rtu::crc::Bitwise>);
-static_assert(modbus::rtu::crc::Policy<modbus::rtu::crc::Table>);
-static_assert(modbus::rtu::crc::Policy<AdaptiveCrc>);
-static_assert(modbus::rtu::crc::Policy<FakeHardware>);
-static_assert(!modbus::rtu::crc::Policy<MissingCalculate>);
-static_assert(!modbus::rtu::crc::Policy<ThrowingCalculate>);
-static_assert(!modbus::rtu::crc::Policy<WrongResult>);
-static_assert(std::is_empty_v<modbus::rtu::crc::Bitwise>);
-static_assert(std::is_empty_v<modbus::rtu::crc::Table>);
+static_assert(::crc::Policy<::crc::Crc16Bitwise>);
+static_assert(::crc::Policy<::crc::Crc16Table>);
+static_assert(::crc::Policy<AdaptiveCrc>);
+static_assert(::crc::Policy<FakeHardware>);
+static_assert(!::crc::Policy<MissingCalculate>);
+static_assert(!::crc::Policy<ThrowingCalculate>);
+static_assert(!::crc::Policy<WrongResult>);
+static_assert(std::is_empty_v<::crc::Crc16Bitwise>);
+static_assert(std::is_empty_v<::crc::Crc16Table>);
 
 // Independent 16-entry nibble oracle. It shares neither the eight-step
 // bitwise loop nor the built-in Table policy's 256-entry lookup geometry.
@@ -102,21 +102,21 @@ int main()
 {
 	group("KnownVector");
 	constexpr std::array<uint8_t, 6> request{0x01u, 0x03u, 0x00u, 0x00u, 0x00u, 0x0Au};
-	constexpr uint16_t known = modbus::rtu::crc::calculate(request);
+	constexpr uint16_t known = ::crc::calculate<::crc::Crc16Bitwise>(request);
 	constexpr uint16_t known_bitwise =
-		modbus::rtu::crc::calculate<modbus::rtu::crc::Bitwise>(request);
+		::crc::calculate<::crc::Crc16Bitwise>(request);
 	constexpr uint16_t known_table =
-		modbus::rtu::crc::calculate<modbus::rtu::crc::Table>(request);
+		::crc::calculate<::crc::Crc16Table>(request);
 	static_assert(known == 0xCDC5u);
 	static_assert(known_bitwise == known && known_table == known);
 	constexpr auto compile_time_wire_crc = [] {
-		std::array<uint8_t, modbus::rtu::crc::Bitwise::wire_size> bytes{};
-		modbus::rtu::crc::Bitwise::store(bytes.data(), 0xCDC5u);
+		std::array<uint8_t, ::crc::Crc16Bitwise::wire_size> bytes{};
+		::crc::Crc16Bitwise::store(bytes.data(), 0xCDC5u);
 		return bytes;
 	}();
 	static_assert(compile_time_wire_crc[0] == 0xC5u &&
 	              compile_time_wire_crc[1] == 0xCDu);
-	static_assert(modbus::rtu::crc::Bitwise::load(
+	static_assert(::crc::Crc16Bitwise::load(
 		compile_time_wire_crc.data()) == 0xCDC5u);
 	check(known == 0xCDC5u, "01 03 00 00 00 0A produces wire CRC C5 CD");
 	const auto known_adu = make_adu(0x01u, 0x03u,
@@ -124,19 +124,19 @@ int main()
 	check(known_adu[known_adu.size() - 2u] == 0xC5u &&
 	      known_adu[known_adu.size() - 1u] == 0xCDu,
 	      "CRC is serialized low byte first");
-	check(modbus::rtu::crc::verify(known_adu), "known complete ADU verifies");
-	check(modbus::rtu::crc::verify<modbus::rtu::crc::Table>(known_adu),
+	check(::crc::verify<::crc::Crc16Bitwise>(known_adu), "known complete ADU verifies");
+	check(::crc::verify<::crc::Crc16Table>(known_adu),
 	      "table implementation verifies the same complete ADU");
-	check(!modbus::rtu::crc::verify({}), "an absent CRC never verifies");
+	check(!::crc::verify<::crc::Crc16Bitwise>({}), "an absent CRC never verifies");
 
 	group("Corruption");
 	for (std::size_t byte = 0; byte < known_adu.size(); ++byte) {
 		for (unsigned bit = 0; bit < 8u; ++bit) {
 			auto damaged = known_adu;
 			damaged[byte] ^= static_cast<uint8_t>(1u << bit);
-			check(!modbus::rtu::crc::verify(damaged),
+			check(!::crc::verify<::crc::Crc16Bitwise>(damaged),
 			      "every single-bit corruption is rejected");
-			check(!modbus::rtu::crc::verify<modbus::rtu::crc::Table>(damaged),
+			check(!::crc::verify<::crc::Crc16Table>(damaged),
 			      "table CRC rejects every single-bit corruption");
 		}
 	}
@@ -154,9 +154,9 @@ int main()
 		}
 		const uint16_t expected = reference_crc(bytes);
 		all_match = all_match &&
-			modbus::rtu::crc::calculate(bytes) == expected &&
-			modbus::rtu::crc::calculate<modbus::rtu::crc::Bitwise>(bytes) == expected &&
-			modbus::rtu::crc::calculate<modbus::rtu::crc::Table>(bytes) == expected;
+			::crc::calculate<::crc::Crc16Bitwise>(bytes) == expected &&
+			::crc::calculate<::crc::Crc16Bitwise>(bytes) == expected &&
+			::crc::calculate<::crc::Crc16Table>(bytes) == expected;
 	}
 	check(all_match,
 	      "default, Bitwise and Table match an independent oracle on 20,000 inputs");
@@ -170,8 +170,8 @@ int main()
 			pair[1] = static_cast<uint8_t>(second);
 			const uint16_t expected = reference_crc(pair);
 			every_pair_matches = every_pair_matches &&
-				modbus::rtu::crc::calculate(pair) == expected &&
-				modbus::rtu::crc::calculate<modbus::rtu::crc::Table>(pair) == expected;
+				::crc::calculate<::crc::Crc16Bitwise>(pair) == expected &&
+				::crc::calculate<::crc::Crc16Table>(pair) == expected;
 		}
 	}
 	check(every_pair_matches,
@@ -191,14 +191,14 @@ int main()
 			short_input[index] = long_input[index];
 		}
 	}
-	check(modbus::rtu::crc::calculate(short_input, adaptive) ==
-	          modbus::rtu::crc::calculate(short_input) &&
-	      modbus::rtu::crc::calculate(long_input, adaptive) ==
-	          modbus::rtu::crc::calculate(long_input) &&
+	check(::crc::calculate(short_input, adaptive) ==
+	          ::crc::calculate<::crc::Crc16Bitwise>(short_input) &&
+	      ::crc::calculate(long_input, adaptive) ==
+	          ::crc::calculate<::crc::Crc16Bitwise>(long_input) &&
 	      bitwise_calls == 1u && table_calls == 1u,
 	      "adaptive policy may select an implementation by length without changing CRC");
-	check(modbus::rtu::crc::calculate(long_input, hardware) ==
-	          modbus::rtu::crc::calculate(long_input) &&
+	check(::crc::calculate(long_input, hardware) ==
+	          ::crc::calculate<::crc::Crc16Bitwise>(long_input) &&
 	      hardware_calls == 1u,
 	      "stateful fake-hardware policy uses its handle and preserves CRC semantics");
 

@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+import hashlib
 import json
 import random
 import struct
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -22,12 +24,15 @@ except ImportError:
 
 
 MAGIC = bytes((0xC7, 0x43, 0x42, 0x53))
-MAX_PAYLOAD = 1024
+MAX_PAYLOAD = 253
+CRC_MODE = "bitwise"
+CRC_SIZE = 2
+LENGTH_SIZE = 1
 RX_BLOCKS = 8
 TX_BLOCKS = 2
 UART_CHUNK_SIZE = 128
 UART_CHUNK_COUNT = 8
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 CMD_HELLO = 1
 CMD_STATS = 2
@@ -55,6 +60,7 @@ STATS_FIELDS = (
     "cobs_oversize",
     "cobs_length_mismatch",
     "cobs_resyncs",
+    "cobs_crc_errors",
     "cobs_frames_sent",
     "cobs_send_refused_busy",
     "cobs_send_failed",
@@ -135,23 +141,44 @@ def wire_from_raw(raw: bytes) -> bytes:
     return cobs_encode(raw) + b"\x00"
 
 
-def engine_frame(body: bytes) -> bytes:
-    if len(body) > MAX_PAYLOAD:
+def checksum(body: bytes) -> bytes:
+    if CRC_SIZE == 0:
+        return b""
+    value = 0xFFFF
+    for byte in body:
+        value ^= byte
+        for _ in range(8):
+            value = (value >> 1) ^ (0xA001 if value & 1 else 0)
+    return value.to_bytes(2, "little")
+
+
+def length_header(body_size: int) -> bytes:
+    return body_size.to_bytes(LENGTH_SIZE, "little")
+
+
+def engine_frame(payload: bytes) -> bytes:
+    if len(payload) > MAX_PAYLOAD:
         raise ValueError("body exceeds hardware format")
-    return wire_from_raw(struct.pack("<H", len(body)) + body)
+    body = payload + checksum(payload)
+    return wire_from_raw(length_header(len(body)) + body)
 
 
 def decode_engine(encoded: bytes) -> bytes:
     raw = cobs_decode(encoded)
-    if len(raw) < 2:
+    if len(raw) < LENGTH_SIZE:
         raise ValueError("engine length header absent")
-    declared = struct.unpack_from("<H", raw)[0]
-    body = raw[2:]
+    declared = int.from_bytes(raw[:LENGTH_SIZE], "little")
+    body = raw[LENGTH_SIZE:]
     if declared != len(body):
         raise ValueError(f"engine length mismatch: {declared} != {len(body)}")
-    if declared > MAX_PAYLOAD:
+    if declared > MAX_PAYLOAD + CRC_SIZE:
         raise ValueError("board returned oversized body")
-    return body
+    if len(body) < CRC_SIZE:
+        raise ValueError("board returned a truncated checksum")
+    payload = body[:len(body) - CRC_SIZE]
+    if checksum(payload) != body[len(payload):]:
+        raise ValueError("board returned an invalid checksum")
+    return payload
 
 
 def reference_self_check() -> None:
@@ -173,10 +200,20 @@ def reference_self_check() -> None:
             if cobs_decode(cobs_encode(raw)) != raw:
                 raise AssertionError(f"PC COBS oracle failed {name}/{size}")
 
-    if engine_frame(b"") != bytes.fromhex("01010100"):
-        raise AssertionError("PC engine oracle failed the empty-body vector")
-    if engine_frame(b"\x11") != bytes.fromhex("0201021100"):
-        raise AssertionError("PC engine oracle failed the one-byte vector")
+    if checksum(b"AB") != (bytes.fromhex("B1D1") if CRC_SIZE else b""):
+        raise AssertionError("PC checksum oracle failed AB vector")
+    if CRC_SIZE == 0 and LENGTH_SIZE == 2:
+        if engine_frame(b"") != bytes.fromhex("01010100"):
+            raise AssertionError("PC legacy empty-body vector")
+        if engine_frame(b"\x11") != bytes.fromhex("0201021100"):
+            raise AssertionError("PC legacy one-byte vector")
+    if CRC_SIZE == 2 and LENGTH_SIZE == 1:
+        if engine_frame(b"AB") != bytes.fromhex("06044142B1D100"):
+            raise AssertionError("PC default CRC16 vector")
+    for size in (0, 1, MAX_PAYLOAD):
+        payload = pattern("random", size, 123)
+        if decode_engine(engine_frame(payload)[:-1]) != payload:
+            raise AssertionError("PC engine round trip")
 
     for malformed in (b"", b"\x00", b"\x03\x11", b"\x02\x00"):
         try:
@@ -265,25 +302,26 @@ class HardwareLink:
 
     def hello(self) -> dict[str, int]:
         payload = self.control(CMD_HELLO)
-        if len(payload) != 40:
+        if len(payload) != 44:
             raise AssertionError(f"bad HELLO size: {len(payload)}")
         names = (
             "version", "baud", "core_clock", "max_receive", "max_send",
             "length_size", "uart_chunk_size", "uart_chunk_count",
-            "rx_blocks", "tx_blocks",
+            "rx_blocks", "tx_blocks", "crc_size",
         )
-        hello = dict(zip(names, struct.unpack("<10I", payload), strict=True))
+        hello = dict(zip(names, struct.unpack("<11I", payload), strict=True))
         if hello != {
             "version": PROTOCOL_VERSION,
             "baud": self.port.baudrate,
             "core_clock": 600_000_000,
-            "max_receive": 1024,
-            "max_send": 1024,
-            "length_size": 2,
+            "max_receive": MAX_PAYLOAD,
+            "max_send": MAX_PAYLOAD,
+            "length_size": LENGTH_SIZE,
             "uart_chunk_size": UART_CHUNK_SIZE,
             "uart_chunk_count": UART_CHUNK_COUNT,
             "rx_blocks": RX_BLOCKS,
             "tx_blocks": TX_BLOCKS,
+            "crc_size": CRC_SIZE,
         }:
             raise AssertionError(f"unexpected board geometry: {hello}")
         return hello
@@ -303,7 +341,7 @@ class HardwareLink:
         time.sleep(0.05)
 
     def stats(self) -> dict:
-        payload = self.control(CMD_STATS)
+        payload = self.control(CMD_STATS, 0) + self.control(CMD_STATS, 1)
         scalar_bytes = 4 * len(STATS_FIELDS)
         expected = scalar_bytes + 16 * len(COUNTER_NAMES)
         if len(payload) != expected:
@@ -403,7 +441,7 @@ def healthy_failures(stats: dict) -> None:
         "response_failures", "selftest_failures",
         "uart_rx_overrun", "uart_rx_errors", "uart_tx_errors", "uart_restarts",
         "cobs_frames_lost", "cobs_allocation_failure", "cobs_malformed",
-        "cobs_oversize", "cobs_length_mismatch", "cobs_resyncs",
+        "cobs_oversize", "cobs_length_mismatch", "cobs_resyncs", "cobs_crc_errors",
         "cobs_send_refused_busy", "cobs_send_failed",
         "rx_exhausted", "rx_rejected", "tx_exhausted", "tx_rejected",
     )
@@ -418,6 +456,8 @@ def suite_vectors(link: HardwareLink) -> dict:
     payload_bytes = 0
     started = time.monotonic()
     for size in sizes:
+        if size > MAX_PAYLOAD:
+            continue
         selected = ("zero",) if size == 0 else names
         for index, name in enumerate(selected):
             body = pattern(name, size, 0xC0B50000 ^ size ^ index)
@@ -438,15 +478,19 @@ def suite_vectors(link: HardwareLink) -> dict:
 
 def suite_faults(link: HardwareLink) -> dict:
     link.reset_metrics()
-    invalid = (
+    invalid = [
         b"\x00",                                      # bare delimiter/no-op
         b"\x01\x00",                                # no decoded header
         b"\x03\x11\x00",                           # zero while block owes data
-        wire_from_raw(struct.pack("<H", 2) + b"\xAA"),
-        wire_from_raw(struct.pack("<H", 1) + b"\xAA\xBB"),
-        wire_from_raw(struct.pack("<H", 0) + b"\xAA"),
-        wire_from_raw(struct.pack("<H", 1025)),
-    )
+        wire_from_raw(length_header(2) + b"\xAA"),
+        wire_from_raw(length_header(1) + b"\xAA\xBB"),
+        wire_from_raw(length_header(0) + b"\xAA"),
+    ]
+    oversize = MAX_PAYLOAD + CRC_SIZE < (1 << (LENGTH_SIZE * 8)) - 1
+    if oversize:
+        invalid.append(wire_from_raw(length_header(MAX_PAYLOAD + CRC_SIZE + 1)))
+    if CRC_SIZE:
+        invalid.append(wire_from_raw(length_header(4) + b"AB\xB0\xD1"))
     for index, raw in enumerate(invalid):
         link.write_raw(raw)
         link.port.flush()
@@ -462,10 +506,11 @@ def suite_faults(link: HardwareLink) -> dict:
     )
     expected = {
         "cobs_malformed": 1,
-        "cobs_oversize": 1,
+        "cobs_oversize": int(oversize),
         "cobs_length_mismatch": 4,
-        "cobs_frames_lost": 6,
+        "cobs_frames_lost": len(invalid) - 1,
         "cobs_resyncs": 2,
+        "cobs_crc_errors": int(CRC_SIZE != 0),
     }
     wrong = {name: (stats[name], value) for name, value in expected.items()
              if stats[name] != value}
@@ -640,6 +685,7 @@ def stress_body(sequence: int, size: int) -> bytes:
 def suite_stress(link: HardwareLink, seconds: float, window: int) -> dict:
     link.reset_metrics()
     sizes = (32, 64, 127, 128, 253, 254, 255, 256, 511, 512, 1024)
+    sizes = tuple(sorted({n for n in sizes if n <= MAX_PAYLOAD} | {MAX_PAYLOAD}))
     pending: deque[bytes] = deque()
     sequence = 0
     payload_bytes = 0
@@ -709,9 +755,25 @@ def print_result(result: dict) -> None:
 def append_result(path: str | None, baud: int, result: dict) -> None:
     if not path:
         return
+    repo = Path(__file__).resolve().parents[4]
+    sources = [Path(__file__).resolve(), Path(__file__).with_name("cobs_bench.cpp"),
+               Path(__file__).with_name("build.sh")]
+    for directory in ("cobs", "crc", "wire", "uart"):
+        sources.extend((repo / directory).glob("*.h"))
+        sources.extend((repo / directory / "detail").glob("*.h"))
+    sources.extend((repo / "cobs").glob("*.cpp"))
+    elf = repo / "stm32_cube_test/h7s_cobs_test/out/cobs-hardware/cobs_hardware_bench.elf"
     record = {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "baud": baud,
+        "crc": CRC_MODE,
+        "max_payload": MAX_PAYLOAD,
+        "length_size": LENGTH_SIZE,
+        "source_base_commit": subprocess.check_output(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip(),
+        "source_sha256": {str(p.relative_to(repo)).replace("\\", "/"):
+                          hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},
+        "elf_sha256": hashlib.sha256(elf.read_bytes()).hexdigest(),
         **result,
     }
     with Path(path).open("a", encoding="utf-8") as output:
@@ -719,9 +781,12 @@ def append_result(path: str | None, baud: int, result: dict) -> None:
 
 
 def main() -> None:
+    global MAX_PAYLOAD, CRC_MODE, CRC_SIZE, LENGTH_SIZE
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("port")
     parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument("--crc", choices=("none", "bitwise", "table"), default="bitwise")
+    parser.add_argument("--max-payload", type=int)
     parser.add_argument(
         "--suite",
         choices=("smoke", "vectors", "faults", "selftest", "pool", "gap",
@@ -732,6 +797,12 @@ def main() -> None:
     parser.add_argument("--window", type=int, default=4)
     parser.add_argument("--output", help="append one compact JSON object per suite")
     args = parser.parse_args()
+    CRC_MODE = args.crc
+    CRC_SIZE = 0 if args.crc == "none" else 2
+    MAX_PAYLOAD = args.max_payload if args.max_payload is not None else 255 - CRC_SIZE
+    LENGTH_SIZE = 1 if MAX_PAYLOAD + CRC_SIZE <= 255 else 2
+    if not 192 <= MAX_PAYLOAD <= 65535 - CRC_SIZE:
+        parser.error("hardware payload ceiling must be 192..65535-crc_size")
     if args.seconds <= 0:
         parser.error("--seconds must be positive")
     if not 1 <= args.window <= 7:

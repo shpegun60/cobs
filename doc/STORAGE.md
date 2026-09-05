@@ -3,538 +3,258 @@ Author: shpegun60
 SPDX-License-Identifier: MIT
 -->
 
-# COBS storage contract
+# Shared storage contract
 
-This document is the canonical extension guide for memory strategies used by
-`cobs::Endpoint`. It defines both the C++20 syntax checked by the
-`cobs::Storage` concept and the runtime obligations that a concept cannot
-express.
+This is the canonical extension guide for both COBS and Modbus RTU.
+Include `wire/Storage.h` to write storage; include `Cobs.h` or
+`modbus/rtu/Rtu.h` to use an endpoint. No protocol-specific storage aliases
+or forwarding headers are provided.
 
-Applications selecting `Heap` or `Pool` normally include only `Cobs.h`.
-Authors of a custom strategy include `Storage.h`.
-
-## 1. Boundary and non-goals
-
-Storage answers one question: where RX and TX memory comes from and how it is
-returned. It does not own:
-
-- COBS encoding or decoding;
-- the engine length field or protocol limits;
-- RX state, ready-queue behavior, or packet reference transitions;
-- message growth policy;
-- transport delegates or DMA completion;
-- application retry/drop/queue policy.
-
-There are no virtual functions or runtime storage dispatch. `StorageT` is the
-single template argument of `cobs::Endpoint<StorageT>`.
-
-One storage type serves RX and TX because it may share placement or runtime
-configuration. The direction-specific resources and quotas remain independent.
-
-## 2. Exact checked concept
-
-The production concept is:
+## Configuration and ownership
 
 ```cpp
-template<class T>
-concept Storage = requires(
-    T& storage,
-    const std::size_t size,
-    typename T::RxBlock* rx,
-    cobs::TxBlock tx)
-{
-    typename T::Format;
-    typename T::RxBlock;
-    requires std::same_as<typename T::RxBlock, cobs::RxBlock<T>>;
+using Memory = wire::Pool<8, 2>;
+using Cobs = cobs::Endpoint<Memory, cobs::Format<>>;
+using Rtu = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<>>;
+```
 
-    { T::Format::max_receive_size } -> std::convertible_to<std::size_t>;
-    { T::Format::max_send_size } -> std::convertible_to<std::size_t>;
+The first argument is a **memory specification**, not a pre-sized allocator.
+It provides `template<class Geometry> class For`. Each endpoint computes its
+own Geometry and constructs `Memory::For<Geometry>` in place. That concrete
+type is available as `Endpoint::Storage`; the specification as
+`Endpoint::Memory`. Two endpoints own separate instances, even if those
+instances have the same type. Sharing an external arena is an explicit
+custom-storage decision.
 
-    { storage.acquire_rx(size) }
-        noexcept -> std::same_as<typename T::RxBlock*>;
+Storage knows nothing about Format, CRC, packet fields, parsing, queues,
+growth, or transport. It supplies raw bytes and takes them back. Only the
+protocol constructs its own RX metadata and stamps the typed owner pointer.
+Only Packet manages references. There is no virtual dispatch or per-packet
+type-erased deleter.
 
-    { storage.release_rx(rx) }
-        noexcept -> std::same_as<void>;
+## Three compile-time geometry values
 
-    { storage.acquire_tx(size) }
-        noexcept -> std::same_as<cobs::TxBlock>;
+| Value | Meaning |
+|---|---|
+| `Geometry::rx_block_bytes` | Alignment-rounded upper bound on the largest RX request; safe minimum slot stride |
+| `Geometry::tx_block_bytes` | Largest physical TX request the protocol can issue |
+| `Geometry::alignment` | Minimum alignment of every returned RX pointer |
 
-    { storage.release_tx(tx) }
-        noexcept -> std::same_as<void>;
+These are positive integral constant expressions; alignment is a power of
+two and RX bytes are a multiple of alignment. `wire::Geometry<G>` checks
+these properties, rejecting runtime sizes and unrounded RX rows.
+
+There is no minimum: each request already supplies the exact size needed
+now. Protocol minimum frame lengths belong to receiver validation.
+
+Geometry is a `wire::BlockGeometry<RxBytes, TxBytes, Alignment>` keyed only
+on those numbers. It is not nested in the algorithm-specific Endpoint type.
+Format's Layout contains only structural values. Switching CRC16 Bitwise to
+Table with unchanged limits preserves Layout, Geometry, concrete Storage,
+Packet and Message types within each protocol.
+
+```cpp
+using G = Cobs::Geometry;
+static_assert(G::rx_block_bytes <= MY_RX_BYTES);
+static_assert(G::tx_block_bytes <= MY_TX_BYTES);
+```
+
+A smaller custom storage is also legal: it can reject large requests with
+null/empty results. These assertions express an application's guarantee of
+capacity, not an unconditional library requirement.
+
+## Four operations, physical bytes only
+
+```cpp
+std::byte*    acquire_rx(std::size_t bytes) noexcept;
+void          release_rx(std::byte* memory) noexcept;
+wire::TxBlock acquire_tx(std::size_t bytes) noexcept;
+void          release_tx(wire::TxBlock block) noexcept;
+```
+
+The descriptor is exactly:
+
+```cpp
+struct TxBlock {
+    std::byte* memory = nullptr;
+    std::size_t granted = 0;
 };
 ```
 
-A conforming type therefore names one `Format`, uses exactly the typed
-`cobs::RxBlock<T>`, and exposes four `noexcept` operations with exact return
-types.
+`granted` is the physical writable allocation size, **not** useful payload
+capacity, current message size, or wire-frame length.
 
-The concept checks syntax only. It cannot prove allocation size, distinctness,
-quota independence, matching release, or safe exhaustion. Those are part of
-the behavioral contract and the shared conformance test.
+RX success returns at least `bytes` aligned writable contiguous bytes, or
+null on refusal. There is no RX capacity return; lying about available bytes
+is a memory-safety bug. Each real RX request includes the protocol's private
+block header and body. Heap requests remain exact even though the Geometry
+maximum is rounded for static slots.
 
-The endpoint constructors are unconditionally `noexcept`. A custom storage
-constructor must also be `noexcept` in practice; throwing from it terminates
-the process.
+TX success returns a nonnull pointer and `granted >= bytes`, or `{}`.
+A size class may grant more than `Geometry::tx_block_bytes`: Geometry limits
+requests, not grants. Endpoint never enlarges a protocol's useful capacity
+because storage happens to return more memory.
 
-## 3. Format owns protocol geometry
+The exact descriptor travels unchanged:
 
-Every strategy names exactly one:
-
-```cpp
-using Format = cobs::Format<MaxReceiveBody, MaxSendBody>;
+```text
+Storage -> Message -> Endpoint active TX -> same Storage instance
 ```
 
-`Format` owns:
+A Message defensively rejects a nonempty undersized grant, returns that
+descriptor, and preserves its previous size, capacity and bytes. Useful
+capacity is calculated independently and clamped to the Format limit.
+COBS caches its exact inverse geometry once per allocation/growth; it does
+not divide or search on each append. RTU subtracts its envelope from a
+ceiling-clamped grant.
 
-- `max_receive_size`;
-- `max_send_size`;
-- `length_size` and `LengthType`;
-- little-endian length load/store;
-- header-inclusive TX size and offset calculations.
+Growth acquires first, copies only existing payload, then releases the old
+block. COBS payload offsets can differ between capacities. Finalized messages
+do not grow or recompute CRC when a transport start is retried.
 
-Storage must not duplicate those constants or recompute header width. Heap,
-pool, external SRAM, and test storage that name the same `Format` speak the
-same protocol.
+## Behavioral obligations
 
-Useful geometry:
+A concept checks syntax, not these runtime guarantees:
+
+- live RX/TX allocations do not overlap and remain valid until released;
+- release returns to the originating instance, with the original descriptor;
+- null/empty release is harmless;
+- allocation failure uses null/empty, never an exception;
+- release is allocation-free and all four operations are noexcept;
+- storage does not inspect or modify live protocol metadata;
+- if independent RX/TX quotas are promised, exhaustion in one cannot starve
+  the other; the built-in Pool provides that guarantee;
+- a strategy claiming invalid-release checking rejects foreign/double release
+  before touching the free list or unrelated memory.
+
+`wire::ByteStorage<S>` checks the four exact signatures.
+`wire::Storage<Memory, G>` checks Geometry and the bound `Memory::For<G>`.
+
+Endpoint constructors have conditional noexcept based on Storage/CRC
+construction. A throwing constructor is not mislabeled noexcept; hot-path
+acquire/release/calculate/codec operations must still be nonthrowing.
+
+## Correct slot alignment
+
+Do not merely align the start of an array whose independently chosen row
+size is not a multiple of alignment. Carry alignment in the element type:
 
 ```cpp
-Format::decoded_size_for_payload(payload_size);
-Format::tx_storage_size_for_capacity(capacity);
-Format::raw_offset_for_capacity(capacity);
-```
-
-The two public limits are body capacities. Physical allocations include
-headers and, for TX, worst-case COBS expansion plus the delimiter.
-
-## 4. Ownership descriptors
-
-### 4.1 TX: `cobs::TxBlock`
-
-```cpp
-struct TxBlock final {
-    std::byte*  memory   = nullptr;
-    std::size_t capacity = 0;
+template<class G>
+struct Slots {
+    static_assert(MY_RX_BYTES >= G::rx_block_bytes);
+    struct alignas(G::alignment) RxSlot {
+        std::byte bytes[MY_RX_BYTES];
+    };
+    RxSlot rx[RX_COUNT];
+    std::byte tx[TX_COUNT][MY_TX_BYTES];
 };
 ```
 
-`capacity` is granted application-payload capacity. It is not:
+The compiler rounds sizeof(RxSlot) so **every** slot is aligned. An array
+using exactly `G::rx_block_bytes` as row size is also safe when its beginning
+is aligned, because that number is already rounded. TX protocol alignment is
+one; a DMA transport may impose stronger alignment and placement.
 
-- the raw allocation byte count;
-- the current message size;
-- the decoded-frame size;
-- the encoded wire size;
-- necessarily the original request.
+Packet buffers are CPU-owned. UART DMA still writes its own cache-aligned
+chunks; COBS decodes into packet storage and RTU copies a validated candidate.
+A custom packet allocator does not make UART DMA write into those packets.
+TX bytes borrowed directly by DMA must satisfy that transport's requirements.
 
-The descriptor moves as one unit:
+## Built-in memory specifications
 
-```text
-Storage -> Message -> Endpoint active TX -> Storage
-```
+`wire::Heap` is stateless. Its bound For uses nothrow global allocation,
+grants exactly requested physical bytes, has no quota/occupancy counters and
+rejects requests above Geometry. It supports only alignment guaranteed by
+ordinary operator new; stronger alignment needs a custom strategy or Pool.
 
-The exact descriptor returned for a successful acquisition is passed back to
-`release_tx()`. A segregated allocator may use `capacity` to recover its size
-class without searching. A strategy such as `Heap` may ignore it.
+`wire::Pool<RxBlocks, TxBlocks>` owns two independent fixed-block pools.
+Both quotas must be nonzero and stay explicit. Each TX acquisition grants
+the whole `G::tx_block_bytes` slab. RX slabs use the rounded Geometry size.
+Its underlying free-list slot may contain additional padding for pointer
+alignment; use sizeof(Endpoint::Storage) or sizeof(Endpoint) for a RAM budget,
+not merely the sum of requested bytes.
 
-### 4.2 RX: `cobs::RxBlock<StorageT>`
+Pool exposes const `rx_available()`, `tx_available()`, `rx_stats()`,
+`tx_stats()` through `endpoint.storage()`. Checks for foreign/duplicate
+release remain enabled under NDEBUG. The opt-out macro is
+`WIRE_POOL_CHECKS=0`, consistently defined in every translation unit.
 
-An RX allocation is one contiguous region:
+RX quotas count building, queued and retained packets. Copies of a Packet
+extend its block's lifetime without allocating another block. TX quotas count
+live Messages plus the one active transport borrow. Exhaustion is normal
+backpressure and must be handled by the application.
 
-```text
-| constructed cobs::RxBlock<StorageT> | requested payload bytes |
-^                                      ^
-returned pointer                       payload location
-```
+## Complete custom specification example
 
-The payload begins exactly `sizeof(RxBlock)` bytes after the object.
-Header and payload cannot be separate allocations.
-
-The private fields are owned by the receiver/packet vertical:
-
-- `refs`: intrusive reference count, initialized by block construction;
-- `size`: published payload size;
-- `next_ready`: intrusive queue link;
-- `owner`: typed pointer to the endpoint's storage instance.
-
-Storage constructs and destroys the block but never writes these fields.
-In particular, `detail::Receiver` sets `owner` after acquisition. Requiring
-storage to do it would be an invisible fifth operation outside the concept.
-
-## 5. RX operation contract
-
-### 5.1 `acquire_rx(requested_size)`
-
-For `requested_size <= Format::max_receive_size`, the operation either:
-
-- returns null to report exhaustion/failure; or
-- returns a pointer to a live, properly aligned, constructed
-  `cobs::RxBlock<ThisStorage>` followed by at least `requested_size` writable
-  payload bytes.
-
-Each simultaneously live successful acquisition is distinct and non-
-overlapping. The region remains exclusively available to the caller until
-release.
-
-The endpoint takes storage at its word. It does not receive an RX capacity and
-does not probe the allocation. If the strategy cannot provide the whole
-requested region, it returns null.
-
-A request beyond `max_receive_size` must fail rather than silently clamp.
-The receiver normally rejects such a frame before calling storage, but the
-strategy boundary remains defensive.
-
-### 5.2 `release_rx(block)`
-
-For a valid live pointer previously returned by that same instance:
-
-1. destroy the `RxBlock` object;
-2. return the complete contiguous region to the correct resource.
-
-Null is a no-op.
-
-A validating strategy must reject a foreign or already-released pointer
-before invoking the destructor. If an invalid release is detected, leaking
-that block is safer than corrupting a free list or destroying an unrelated
-object.
-
-## 6. TX operation contract
-
-### 6.1 `acquire_tx(requested_capacity)`
-
-For an accepted request, return a non-empty `TxBlock` satisfying:
-
-```text
-requested_capacity <= block.capacity <= Format::max_send_size
-block.memory points to at least
-    Format::tx_storage_size_for_capacity(block.capacity)
-bytes of writable storage
-```
-
-The physical-size formula is:
-
-```text
-cobs::codec::max_wire_size(Format::length_size + block.capacity)
-```
-
-It is header-inclusive. Sizing only for
-`max_wire_size(block.capacity)` is one or two decoded bytes too small.
-
-Request zero is valid. It still needs a real allocation large enough for the
-length field, COBS overhead, and delimiter so the canonical empty engine frame
-can be sent.
-
-A request above `Format::max_send_size` returns the empty descriptor
-`{nullptr, 0}`. Storage does not clamp it.
-
-The grant may depend on strategy:
-
-```text
-Heap, exact             request 100 -> capacity 100
-Pool, one slab          request 100 -> capacity max_send_size
-segregated size classes request 100 -> capacity 128
-```
-
-The message owns the growth rule. Storage chooses only the capacity of the
-single block that answers one request.
-
-### 6.2 `release_tx(block)`
-
-For a live descriptor previously returned by the same instance, release the
-whole allocation corresponding to that exact descriptor. `{}` is a no-op.
-
-The strategy must not reinterpret `capacity` as logical message length or wire
-length. It is the payload-capacity grant originally reported for the block.
-
-## 7. Shared behavioral obligations
-
-Beyond the four signatures:
-
-1. Successful live blocks remain valid until their matching release.
-2. Simultaneously live blocks do not overlap.
-3. Null/empty release is harmless.
-4. Exhaustion is represented by null/empty acquisition, never an exception.
-5. RX and TX quotas are independent. Holding every RX block must not prevent
-   a TX acquisition that would otherwise succeed, and vice versa.
-6. Acquire/release churn returns capacity; no successful block silently leaks.
-7. Storage never mutates receiver-owned `RxBlock` metadata.
-8. Release goes back to the exact storage instance that acquired the block.
-9. Operations are `noexcept` and do not depend on exception propagation.
-10. A detected invalid release never corrupts storage.
-
-The generic engine does not ask for block counts, occupancy, allocation
-statistics, a raw block size, or a payload span. Those may be strategy-specific
-observers, but they are not part of `cobs::Storage`.
-
-## 8. Built-in strategies
-
-### 8.1 `cobs::Heap<WireFormat>`
-
-Default:
+This wrapper is deliberately protocol-blind. Replace its internal Heap with
+your own arena without changing the four operations or the endpoint APIs.
 
 ```cpp
-using DefaultFormat = cobs::Format<>; // Format<255, 255>
-using DefaultStorage = cobs::Heap<>;
-cobs::Endpoint<> endpoint;
-```
+#include "wire/Storage.h"
+#include "cobs/Cobs.h"
+#include "modbus/rtu/Rtu.h"
 
-The 255-byte default is the largest symmetric format that keeps the decoded
-length field to one byte. Larger links opt into an explicit `Format`.
+struct Requests { std::size_t rx = 0, tx = 0; };
 
-Properties:
+struct ObservedMemory {
+    template<class G>
+    class For {
+        wire::Heap::For<G> heap_;
+        Requests& requests_;
+    public:
+        explicit For(Requests& r) noexcept : requests_(r) {}
 
-- stateless and stored at no size cost where `[[no_unique_address]]` applies;
-- RX allocation is exactly `sizeof(RxBlock) + requested_size`;
-- TX allocation is exactly the format's physical size for the request;
-- TX reports exactly the requested payload capacity;
-- uses nothrow global allocation and explicit null failure;
-- has no built-in quota or occupancy counters.
-
-Choose Heap for desktop use, tests, or systems where dynamic allocation is an
-accepted policy.
-
-### 8.2 `cobs::Pool<RxBlocks, TxBlocks, WireFormat>`
-
-Example:
-
-```cpp
-using Wire = cobs::Format<1024, 64>;
-using Memory = cobs::Pool<8, 2, Wire>;
-cobs::Endpoint<Memory> endpoint;
-```
-
-`WireFormat` defaults to `cobs::Format<>`, but the RX and TX block counts stay
-explicit because they determine both static RAM use and backpressure:
-
-```cpp
-cobs::Endpoint<cobs::Pool<8, 2>> endpoint; // Format<255, 255>
-```
-
-Properties:
-
-- owns separate fixed RX and TX block pools;
-- O(1) acquire;
-- deterministic capacity and no heap;
-- every RX slab holds `sizeof(RxBlock) + max_receive_size`;
-- every TX slab holds
-  `Format::tx_storage_size_for_capacity(max_send_size)`;
-- every accepted TX request reports `max_send_size`;
-- exposes `rx_available()`, `tx_available()`, `rx_stats()`, and `tx_stats()`;
-- counts pool exhaustion and rejected releases;
-- keeps invalid/double-free checks enabled independently of `NDEBUG` unless
-  explicitly compiled with `COBS_POOL_CHECKS=0`.
-
-`RxBlocks` and `TxBlocks` must each be at least one; `detail::BlockPool`
-rejects a zero-block configuration at compile time.
-
-### 8.3 Sizing Pool
-
-RX count is the maximum number of blocks concurrently:
-
-- being decoded;
-- waiting in the ready queue;
-- retained by application `Packet` handles.
-
-Copies of one packet do not consume new blocks, but they extend that block's
-lifetime.
-
-TX count is the maximum number of blocks concurrently:
-
-- held by non-empty application `Message` objects;
-- held as the endpoint's one active TX block.
-
-If a pending queue remains full while a transfer is active, budget
-`pending_depth + 1`. If sending removes the queue head and it is not replenished
-until completion, the active block is that former head and no extra block is
-needed.
-
-An empty `make_message()` result is normal pool back-pressure and must be
-handled.
-
-## 9. Minimal custom strategy
-
-This complete example deliberately provides exactly the checked surface. It
-uses dynamic memory only to make the geometry visible; a real arena strategy
-would replace the two allocation mechanisms without changing its public
-contract.
-
-```cpp
-#include "Storage.h"
-
-#include <cstddef>
-#include <memory>
-#include <new>
-
-class ExampleStorage final {
-public:
-    using Format = cobs::Format<128, 64>;
-    using RxBlock = cobs::RxBlock<ExampleStorage>;
-
-    ExampleStorage() noexcept = default;
-    ExampleStorage(const ExampleStorage&) = delete;
-    ExampleStorage& operator=(const ExampleStorage&) = delete;
-
-    [[nodiscard]] RxBlock* acquire_rx(std::size_t requested) noexcept
-    {
-        if (requested > Format::max_receive_size) {
-            return nullptr;
+        std::byte* acquire_rx(std::size_t bytes) noexcept {
+            ++requests_.rx;
+            return heap_.acquire_rx(bytes);
         }
+        void release_rx(std::byte* p) noexcept { heap_.release_rx(p); }
 
-        void* const memory =
-            ::operator new(sizeof(RxBlock) + requested, std::nothrow);
-        if (memory == nullptr) {
-            return nullptr;
+        wire::TxBlock acquire_tx(std::size_t bytes) noexcept {
+            ++requests_.tx;
+            return heap_.acquire_tx(bytes);
         }
-        return std::construct_at(static_cast<RxBlock*>(memory));
-    }
-
-    void release_rx(RxBlock* block) noexcept
-    {
-        if (block == nullptr) {
-            return;
+        void release_tx(wire::TxBlock block) noexcept {
+            heap_.release_tx(block);
         }
-        std::destroy_at(block);
-        ::operator delete(static_cast<void*>(block));
-    }
-
-    [[nodiscard]] cobs::TxBlock acquire_tx(std::size_t requested) noexcept
-    {
-        if (requested > Format::max_send_size) {
-            return {};
-        }
-
-        void* const memory = ::operator new(
-            Format::tx_storage_size_for_capacity(requested),
-            std::nothrow);
-        if (memory == nullptr) {
-            return {};
-        }
-        return {static_cast<std::byte*>(memory), requested};
-    }
-
-    void release_tx(cobs::TxBlock block) noexcept
-    {
-        ::operator delete(static_cast<void*>(block.memory));
-    }
+    };
 };
 
-static_assert(cobs::Storage<ExampleStorage>);
+using Cobs = cobs::Endpoint<ObservedMemory>;
+using Rtu = modbus::rtu::Endpoint<ObservedMemory>;
+static_assert(wire::Storage<ObservedMemory, Cobs::Geometry>);
+static_assert(wire::Storage<ObservedMemory, Rtu::Geometry>);
+
+Requests cobs_requests, rtu_requests;
+Cobs cobs_link{std::in_place, cobs_requests};
+Rtu rtu_link{std::in_place, rtu_requests};
 ```
 
-Do not set `RxBlock::owner` or other private fields. The receiver does that.
-Do not expose a second copy of the limits. `Format` does that.
+For a custom CRC and runtime memory arguments, both endpoints also accept
+`Link{MyCrc{handle}, std::in_place, arena_arguments...}`.
+Storage itself need not be copyable or movable.
 
-Storage needing runtime configuration is constructed inside the endpoint:
+## Lifetime and execution
 
-```cpp
-cobs::Endpoint<ExternalArenaStorage> endpoint{
-    std::in_place,
-    rx_region,
-    rx_region_size,
-    tx_region,
-    tx_region_size
-};
-```
+Endpoint must outlive all issued Messages and Packets and every active
+transport borrow. It cannot be copied or moved. A foreign Message is refused
+even by another endpoint with the same type. Destroying an unsent Message
+releases its allocation; Sent empties it and poll releases after busy=false.
 
-There is no endpoint constructor accepting a ready-made storage object. This
-allows non-copyable/non-movable strategies and keeps one ownership route.
+Built-in storage, endpoint state and packet reference counts are not atomic.
+Keep mutation/copy/release in one externally serialized execution domain.
+A thread-safe allocator alone does not make Packet or Endpoint thread-safe.
 
-## 10. External and DMA-visible memory
+## Conformance evidence
 
-The endpoint owning storage by value does not require the endpoint object
-itself to reside in DMA-visible RAM. A custom strategy may store pointers or
-spans to external regions.
+Run `sh wire/tests/run.sh`. It covers raw BlockPool and storage behavior
+under checked/sanitized and NDEBUG builds, real COBS/RTU geometries, alignment
+of every acquired RX slot, independent quotas and release checking.
 
-Only the TX bytes read directly by DMA must satisfy that transport's placement,
-alignment, cache, and lifetime requirements. RX blocks are written by the COBS
-decoder on the CPU after bytes arrive from the transport's own RX buffers.
-
-Those hardware rules are strategy/transport integration requirements, not
-extra fields in `cobs::Storage`. The storage grant must nevertheless remain
-valid for the entire active transport borrow.
-
-## 11. Endpoint and block lifetimes
-
-`Endpoint` owns its storage object. Therefore:
-
-- it is neither copyable nor movable;
-- it must outlive all messages and packets created from it;
-- a packet's last release calls that exact embedded storage instance;
-- a message from one endpoint cannot be sent through another endpoint of the
-  same type;
-- an endpoint must not be destroyed while its TX block is still borrowed.
-
-Destroying an unsent `Message` releases its block. A successful send empties
-the message without releasing; `Endpoint::poll()` releases after the busy
-delegate reports false. Destroying a `Packet` releases only its reference; the
-last reference releases the block.
-
-## 12. Execution-domain requirements
-
-The concept promises no thread or ISR safety. Built-in storage and ownership
-metadata have no locks, and packet references are plain integers.
-
-By default:
-
-- serialize endpoint calls externally;
-- keep packet copy/move/reset operations in one execution domain;
-- reclaim transmitted storage through `poll()` in normal context;
-- do not call storage concurrently unless the particular strategy adds and
-  documents stronger guarantees.
-
-A thread-safe custom allocator alone does not make `Endpoint` or `Packet`
-thread-safe.
-
-## 13. Conformance checklist
-
-Before using a custom strategy:
-
-### Compile-time
-
-- [ ] Include only `Storage.h` for the extension surface.
-- [ ] Name exactly one `Format`.
-- [ ] Use `using RxBlock = cobs::RxBlock<ThisType>`.
-- [ ] Implement all four operations with exact signatures and `noexcept`.
-- [ ] `static_assert(cobs::Storage<ThisType>)` passes.
-- [ ] Constructor used by `Endpoint` is `noexcept`.
-
-The repository also compiles `compile_fail/storage_missing_tx.cpp` expecting
-the top-level Endpoint contract diagnostic. It complements the positive
-`static_assert` and prevents a partially implemented strategy from failing
-only deep inside receiver/message templates.
-
-### RX behavior
-
-- [ ] Requests from zero through `max_receive_size` either fully succeed or
-      return null.
-- [ ] A successful region is aligned, constructed, contiguous, and large
-      enough for header plus requested payload.
-- [ ] Live acquisitions are distinct and non-overlapping.
-- [ ] Release destroys the object and restores capacity.
-- [ ] Null release is harmless.
-- [ ] Storage never touches private receiver metadata.
-
-### TX behavior
-
-- [ ] Request zero returns real usable storage when capacity is available.
-- [ ] Successful grant obeys
-      `requested <= capacity <= max_send_size`.
-- [ ] Physical bytes cover
-      `Format::tx_storage_size_for_capacity(capacity)`.
-- [ ] Over-limit request returns `{}`.
-- [ ] Exact `TxBlock` descriptor is accepted on release.
-- [ ] Empty release is harmless.
-
-### System behavior
-
-- [ ] RX exhaustion does not starve TX.
-- [ ] TX exhaustion does not corrupt or consume RX capacity.
-- [ ] Repeated acquire/release churn does not leak.
-- [ ] Foreign/double release is rejected before destructive cleanup if the
-      strategy claims validation.
-- [ ] Endpoint, packets, messages, and any external region obey the lifetime
-      contract.
-- [ ] The shared storage suite and both `NDEBUG` runs pass.
-
-The repository's `cobs/tests/test_storage.cpp` is the executable behavioral
-specification. Strategy-specific tests belong beside it rather than inside the
-generic engine.
+`wire/tests/test_protocol_storage.cpp` passes the same custom specification
+through both public endpoints. It checks excess grants beyond the maximum,
+undersized grants at construction and growth, strong failure, payload moves,
+retained packet references, transport borrowing and exact descriptor return.
+Adapt the generic contract body in `wire/tests/test_storage.cpp` to your
+storage and run it with each required Endpoint::Geometry.

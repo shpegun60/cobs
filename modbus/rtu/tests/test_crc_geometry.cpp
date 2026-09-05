@@ -36,11 +36,12 @@ public:
 
 template<
 	class PolicyT,
-	class StorageT = modbus::rtu::Pool<2, 1>>
+	class StorageT = wire::Pool<2, 1>,
+	std::size_t MaxAdu = modbus::rtu::standard_adu_size>
 void round_trip(const char* const name)
 {
-	using Endpoint = modbus::rtu::Endpoint<StorageT, PolicyT>;
-	using Format = typename Endpoint::Format;
+	using Endpoint = modbus::rtu::Endpoint<StorageT, modbus::rtu::Format<PolicyT, MaxAdu>>;
+	using Layout = typename Endpoint::Layout;
 
 	group(name);
 	Endpoint endpoint;
@@ -62,7 +63,7 @@ void round_trip(const char* const name)
 	check(endpoint.send(message) == modbus::SendResult::Sent &&
 	      capture.frame.size() == Endpoint::max_frame_size &&
 	      ::crc::verify<PolicyT>(capture.frame),
-	      "maximum payload becomes one valid exact 256-byte ADU");
+	      "maximum payload becomes one valid ADU at the configured ceiling");
 
 	endpoint.receive_adu(capture.frame);
 	auto packet = endpoint.pop_packet();
@@ -75,9 +76,9 @@ void round_trip(const char* const name)
 
 	check(Endpoint::crc_size == PolicyT::wire_size &&
 	      Endpoint::max_send_size ==
-	          modbus::rtu::max_adu_size - 2u - PolicyT::wire_size &&
-	      Format::adu_size_for_data(Endpoint::max_send_size) ==
-	          modbus::rtu::max_adu_size,
+	          MaxAdu - 2u - PolicyT::wire_size &&
+	      Layout::adu_size_for_data(Endpoint::max_send_size) ==
+	          MaxAdu,
 	      "Endpoint geometry is a compile-time function of policy wire_size");
 
 	capture.borrowed = false;
@@ -120,53 +121,59 @@ struct FakeHardware32 final : ::crc::Codec<
 	const void* handle;
 };
 
-class SpyStorage final {
-public:
-	using RxBlock = modbus::rtu::RxBlock<SpyStorage>;
-	static constexpr std::size_t max_adu_size = modbus::rtu::max_adu_size;
+/*
+ * A storage specification, like wire::Heap and wire::Pool: the endpoint
+ * binds For<Geometry> with the geometry it derived from its Format. This one
+ * records the physical TX request so the test can see the Layout's conversion
+ * from a data hint to bytes.
+ */
+struct SpyStorage final {
+	template<class Geometry>
+	class For final {
+	public:
+		[[nodiscard]] std::byte* acquire_rx(std::size_t) noexcept { return nullptr; }
+		void release_rx(std::byte*) noexcept {}
 
-	[[nodiscard]] RxBlock* acquire_rx(std::size_t) noexcept { return nullptr; }
-	void release_rx(RxBlock*) noexcept {}
-
-	[[nodiscard]] modbus::rtu::TxBlock acquire_tx(
-			const std::size_t requested) noexcept
-	{
-		m_last_request = requested;
-		if (m_in_use || requested > m_memory.size()) {
-			return {};
+		[[nodiscard]] wire::TxBlock acquire_tx(
+				const std::size_t requested) noexcept
+		{
+			m_last_request = requested;
+			if (m_in_use || requested > m_memory.size()) {
+				return {};
+			}
+			m_in_use = true;
+			return {m_memory.data(), requested};
 		}
-		m_in_use = true;
-		return {m_memory.data(), requested};
-	}
 
-	void release_tx(const modbus::rtu::TxBlock block) noexcept
-	{
-		if (block.memory == m_memory.data()) {
-			m_in_use = false;
+		void release_tx(const wire::TxBlock block) noexcept
+		{
+			if (block.memory == m_memory.data()) {
+				m_in_use = false;
+			}
 		}
-	}
 
-	[[nodiscard]] std::size_t last_request() const noexcept
-	{
-		return m_last_request;
-	}
+		[[nodiscard]] std::size_t last_request() const noexcept
+		{
+			return m_last_request;
+		}
 
-private:
-	std::array<std::byte, max_adu_size> m_memory{};
-	std::size_t m_last_request = 0u;
-	bool m_in_use = false;
+	private:
+		std::array<std::byte, Geometry::tx_block_bytes> m_memory{};
+		std::size_t m_last_request = 0u;
+		bool m_in_use = false;
+	};
 };
 
-static_assert(modbus::rtu::Storage<SpyStorage>);
+static_assert(wire::Storage<SpyStorage, modbus::rtu::Endpoint<>::Geometry>);
 
-static_assert(modbus::rtu::Format<::crc::NoCrc::wire_size>::crc_size == 0u);
-static_assert(modbus::rtu::Format<::crc::NoCrc::wire_size>::min_adu_size == 2u);
-static_assert(modbus::rtu::Format<::crc::NoCrc::wire_size>::max_data_size == 254u);
-static_assert(modbus::rtu::Format<::crc::Crc8Bitwise::wire_size>::max_data_size == 253u);
-static_assert(modbus::rtu::Format<::crc::Crc16Bitwise::wire_size>::max_data_size == 252u);
-static_assert(modbus::rtu::Format<Sum24::wire_size>::max_data_size == 251u);
-static_assert(modbus::rtu::Format<::crc::Crc32Bitwise::wire_size>::max_data_size == 250u);
-static_assert(modbus::rtu::Format<::crc::Crc64Bitwise::wire_size>::max_data_size == 246u);
+static_assert(modbus::rtu::Layout<::crc::NoCrc::wire_size>::crc_size == 0u);
+static_assert(modbus::rtu::Layout<::crc::NoCrc::wire_size>::min_adu_size == 2u);
+static_assert(modbus::rtu::Layout<::crc::NoCrc::wire_size>::max_data_size == 254u);
+static_assert(modbus::rtu::Layout<::crc::Crc8Bitwise::wire_size>::max_data_size == 253u);
+static_assert(modbus::rtu::Layout<::crc::Crc16Bitwise::wire_size>::max_data_size == 252u);
+static_assert(modbus::rtu::Layout<Sum24::wire_size>::max_data_size == 251u);
+static_assert(modbus::rtu::Layout<::crc::Crc32Bitwise::wire_size>::max_data_size == 250u);
+static_assert(modbus::rtu::Layout<::crc::Crc64Bitwise::wire_size>::max_data_size == 246u);
 
 } // namespace
 
@@ -182,11 +189,18 @@ int main()
 	round_trip<::crc::Crc64Bitwise>("CRC64BitwiseGeometry");
 	round_trip<::crc::Crc64Table>("CRC64TableGeometry");
 	round_trip<::crc::NoCrc>("NoCrcGeometry");
-	round_trip<::crc::NoCrc, modbus::rtu::Heap>("NoCrcHeapGeometry");
+	round_trip<::crc::NoCrc, wire::Heap>("NoCrcHeapGeometry");
+	round_trip<::crc::Crc16Bitwise, wire::Heap, 64u>("Local64ByteCeiling");
+	round_trip<::crc::Crc16Table, wire::Pool<2, 1>, 1024u>("Private1024ByteAdu");
+	round_trip<::crc::Crc64Table, wire::Heap, 65535u>("LargestRepresentableAdu");
+	round_trip<::crc::NoCrc, wire::Heap, 2u>("NoCrcMinimumAdu");
+	round_trip<::crc::Crc8Bitwise, wire::Heap, 3u>("Crc8MinimumAdu");
+	round_trip<::crc::Crc16Bitwise, wire::Heap, 4u>("Crc16MinimumAdu");
+	round_trip<::crc::Crc32Bitwise, wire::Heap, 6u>("Crc32MinimumAdu");
+	round_trip<::crc::Crc64Bitwise, wire::Heap, 10u>("Crc64MinimumAdu");
 
 	group("StatefulHardwarePolicy");
-	using HardwareEndpoint = modbus::rtu::Endpoint<
-		modbus::rtu::Pool<1, 1>, FakeHardware32>;
+	using HardwareEndpoint = modbus::rtu::Endpoint<wire::Pool<1, 1>, modbus::rtu::Format<FakeHardware32>>;
 	static_assert(!std::is_default_constructible_v<HardwareEndpoint>);
 	HardwareState hardware_state;
 	const uint32_t peripheral_token = 0x12345678u;
@@ -217,8 +231,7 @@ int main()
 	hardware.poll();
 
 	group("NoCrcSemantics");
-	using NoCrcEndpoint = modbus::rtu::Endpoint<
-		modbus::rtu::Pool<2, 1>, ::crc::NoCrc>;
+	using NoCrcEndpoint = modbus::rtu::Endpoint<wire::Pool<2, 1>, modbus::rtu::Format<::crc::NoCrc>>;
 	NoCrcEndpoint no_crc;
 	const std::array<uint8_t, 2u> minimum{0x01u, 0x03u};
 	no_crc.receive_adu(minimum);
@@ -234,24 +247,32 @@ int main()
 	      "NoCrc intentionally performs no integrity validation");
 
 	group("StorageIndependence");
-	using Pool = modbus::rtu::Pool<2, 1>;
+	using Pool = wire::Pool<2, 1>;
 	using DefaultEndpoint = modbus::rtu::Endpoint<Pool>;
-	using NoCrcLink = modbus::rtu::Endpoint<Pool, ::crc::NoCrc>;
-	using Crc64Link = modbus::rtu::Endpoint<Pool, ::crc::Crc64Table>;
+	using NoCrcLink = modbus::rtu::Endpoint<Pool, modbus::rtu::Format<::crc::NoCrc>>;
+	using Crc64Link = modbus::rtu::Endpoint<Pool, modbus::rtu::Format<::crc::Crc64Table>>;
 	check(sizeof(NoCrcLink) == sizeof(DefaultEndpoint) &&
 	      sizeof(Crc64Link) == sizeof(DefaultEndpoint) &&
-	      std::is_same_v<typename NoCrcLink::StorageType,
-	                     typename Crc64Link::StorageType>,
-	      "empty CRC policies reuse the exact same Pool type and add no object RAM");
+	      std::is_same_v<typename NoCrcLink::Storage,
+	                     typename Crc64Link::Storage> &&
+	      std::is_same_v<typename NoCrcLink::Geometry,
+	                     typename Crc64Link::Geometry>,
+	      "empty CRC policies reuse the exact same bound Pool type and add no object RAM");
+	using TableLink = modbus::rtu::Endpoint<Pool, modbus::rtu::Format<::crc::Crc16Table>>;
+	check(std::is_same_v<typename DefaultEndpoint::Layout, typename TableLink::Layout> &&
+	      std::is_same_v<typename DefaultEndpoint::Message, typename TableLink::Message> &&
+	      std::is_same_v<typename DefaultEndpoint::Packet, typename TableLink::Packet> &&
+	      !std::is_same_v<typename DefaultEndpoint::Format, typename TableLink::Format>,
+	      "Bitwise and Table differ only in Format; Layout, Message and Packet are one instantiation");
 
 	group("PolicyToStorageBoundary");
-	modbus::rtu::Endpoint<SpyStorage, ::crc::NoCrc> no_crc_spy;
+	modbus::rtu::Endpoint<SpyStorage, modbus::rtu::Format<::crc::NoCrc>> no_crc_spy;
 	auto no_crc_message = no_crc_spy.make_message(1u, 3u, 10u);
 	check(no_crc_message && no_crc_message.capacity() == 10u &&
 	      no_crc_spy.storage().last_request() == 12u,
 	      "NoCrc converts a 10-byte data hint into a 12-byte physical request");
 	no_crc_message = {};
-	modbus::rtu::Endpoint<SpyStorage, ::crc::Crc64Bitwise> crc64_spy;
+	modbus::rtu::Endpoint<SpyStorage, modbus::rtu::Format<::crc::Crc64Bitwise>> crc64_spy;
 	auto crc64_message = crc64_spy.make_message(1u, 3u, 10u);
 	check(crc64_message && crc64_message.capacity() == 10u &&
 	      crc64_spy.storage().last_request() == 20u,

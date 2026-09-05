@@ -12,9 +12,9 @@ CXX="${CXX:-g++}"
 WARN="-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror"
 
 ROOT_HEADERS="Types.h Pdu.h"
-RTU_HEADERS="Crc.h RtuLimits.h Format.h Stats.h Storage.h Rtu.h"
+RTU_HEADERS="RtuLimits.h Format.h Stats.h Rtu.h"
 count=0
-for header in wire/Scalar.h wire/Read.h; do
+for header in wire/Scalar.h wire/Read.h wire/Storage.h; do
 	printf '#include "%s"\n' "$header" |
 		"$CXX" -std=gnu++20 $WARN -I"$PROJ" -fsyntax-only -x c++ -
 	count=$((count + 1))

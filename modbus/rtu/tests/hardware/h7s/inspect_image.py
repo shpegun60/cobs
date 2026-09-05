@@ -75,7 +75,11 @@ def main() -> None:
             str(path.relative_to(REPO)).replace("\\", "/"): sha256(path)
             for path in (REPO / "crc/Crc.h", REPO / "modbus/rtu/Rtu.h",
                          Path(__file__).with_name("modbus_bench.cpp"),
-                         Path(__file__).with_name("build.sh"))
+                         Path(__file__).with_name("build.sh"),
+                         *(REPO / "modbus/rtu").glob("*.h"),
+                         *(REPO / "modbus/rtu/detail").glob("*.h"),
+                         *(REPO / "wire").glob("*.h"),
+                         *(REPO / "wire/detail").glob("*.h"))
         },
         "binary_sha256": sha256(binary),
         "binary_bytes": binary.stat().st_size,

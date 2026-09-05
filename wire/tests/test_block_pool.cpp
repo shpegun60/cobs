@@ -4,18 +4,18 @@
  */
 
 /*
- * Host verification for cobs::detail::BlockPool, the raw memory primitive
- * both allocator policies are built on. No packets, no decoder, no policy —
+ * Host verification for wire::detail::BlockPool, the raw memory primitive
+ * wire::Pool is built on. No packets, no decoder, no protocol —
  * if something here goes red, the culprit is the block pool and nothing else.
  *
- * The policies themselves are tested in test_allocators.cpp, against the
+ * The strategies themselves are tested in test_storage.cpp, against the
  * contract rather than against their internals.
  *
- * The pool's own validation (COBS_POOL_CHECKS) is on in this build, so a
+ * The pool's own validation (WIRE_POOL_CHECKS) is on in this build, so a
  * double free or a foreign pointer is observable as a rejection rather than as
  * a corrupted free list that surfaces three tests later.
  */
-#include "detail/BlockPool.h"
+#include "wire/detail/BlockPool.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -52,7 +52,7 @@ void testRawPoolHandlesTinyBlocks()
 	// that cannot physically hold a pointer. (An ENGINE frame is larger still,
 	// since it carries a length header; this pool knows nothing about either,
 	// which is the point of testing it at sizes no protocol would use.)
-	using Tiny = cobs::detail::BlockPool<2, 4, 1>;
+	using Tiny = wire::detail::BlockPool<2, 4, 1>;
 	Tiny pool;
 
 	check(Tiny::block_size == 2, "the client-visible block size is what was asked for");
@@ -84,7 +84,7 @@ void testRawPoolHandlesTinyBlocks()
 // run on memory the pool is about to refuse.
 void testCleanupRunsOnlyAfterValidation()
 {
-	using Small = cobs::detail::BlockPool<32, 2, 1>;
+	using Small = wire::detail::BlockPool<32, 2, 1>;
 	Small pool;
 	Small other;
 

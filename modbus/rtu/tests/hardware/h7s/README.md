@@ -5,6 +5,17 @@ SPDX-License-Identifier: MIT
 
 # NUCLEO-H7S3L8 Modbus RTU + UART hardware verification
 
+Current shared-storage validation: [127 records](results_shared_storage_2026-09-05.jsonl)
+cover all nine policies at 115200 and 1M, with exact image/source identities,
+functional/fault/pool tests, CRC samples, stress and paced traffic.
+The [current report](../../../../../doc/SHARED_POLICIES_VALIDATION.md) contains
+the new results; `python -B wire/tests/verify_hardware_migration.py` checks
+their identities and derived metrics against this working tree.
+
+The records and measurements described below predate shared storage and
+configurable MaxAdu. They are retained as historical evidence; current
+configuration is `Endpoint<wire::Pool<Rx,Tx>, modbus::rtu::Format<Crc,MaxAdu>>`.
+
 Status: audited on real silicon after the protocol-independent CRC extraction,
 including CRC-policy A/B, 2026-09-05.
 

@@ -18,12 +18,20 @@
 
 namespace {
 
-using CobsEndpoint = cobs::Endpoint<cobs::Pool<2u, 2u>>;
-using RtuEndpoint = modbus::rtu::Endpoint<modbus::rtu::Pool<2u, 2u>>;
-using RtuTableEndpoint = modbus::rtu::Endpoint<
-	modbus::rtu::Pool<2u, 2u>, modbus::rtu::crc::Table>;
-using RtuNoCrcEndpoint = modbus::rtu::Endpoint<
-	modbus::rtu::Pool<2u, 2u>, ::crc::NoCrc>;
+using CobsEndpoint = cobs::Endpoint<wire::Pool<2u, 2u>>;
+using CobsTableEndpoint = cobs::Endpoint<wire::Pool<2u, 2u>, cobs::Format<::crc::Crc16Table>>;
+static_assert(std::same_as<CobsEndpoint::Layout, CobsTableEndpoint::Layout>);
+static_assert(std::same_as<CobsEndpoint::Geometry, CobsTableEndpoint::Geometry>);
+static_assert(std::same_as<CobsEndpoint::Storage, CobsTableEndpoint::Storage>);
+static_assert(std::same_as<CobsEndpoint::Message, CobsTableEndpoint::Message>);
+static_assert(std::same_as<CobsEndpoint::Packet, CobsTableEndpoint::Packet>);
+static_assert(!std::same_as<CobsEndpoint::Format, CobsTableEndpoint::Format>);
+static_assert(CobsEndpoint::max_send_size == 253u);
+static_assert(std::same_as<CobsEndpoint::Crc, ::crc::Crc16Bitwise>);
+static_assert(sizeof(CobsEndpoint) == sizeof(CobsTableEndpoint));
+using RtuEndpoint = modbus::rtu::Endpoint<wire::Pool<2u, 2u>>;
+using RtuTableEndpoint = modbus::rtu::Endpoint<wire::Pool<2u, 2u>, modbus::rtu::Format<::crc::Crc16Table>>;
+using RtuNoCrcEndpoint = modbus::rtu::Endpoint<wire::Pool<2u, 2u>, modbus::rtu::Format<::crc::NoCrc>>;
 
 template<class Packet>
 concept SharedPacket =
@@ -120,17 +128,21 @@ static_assert(SharedMessage<typename RtuEndpoint::Message>);
 static_assert(SharedMessage<typename RtuTableEndpoint::Message>);
 static_assert(SharedMessage<typename RtuNoCrcEndpoint::Message>);
 static_assert(SharedEndpoint<CobsEndpoint>);
+static_assert(SharedEndpoint<CobsTableEndpoint>);
 static_assert(SharedEndpoint<RtuEndpoint>);
 static_assert(SharedEndpoint<RtuTableEndpoint>);
 static_assert(SharedEndpoint<RtuNoCrcEndpoint>);
 static_assert(std::same_as<RtuEndpoint::Message, RtuTableEndpoint::Message>);
 static_assert(std::same_as<RtuEndpoint::Packet, RtuTableEndpoint::Packet>);
-static_assert(std::same_as<RtuEndpoint::Format, RtuTableEndpoint::Format>);
+static_assert(std::same_as<RtuEndpoint::Layout, RtuTableEndpoint::Layout>);
+static_assert(std::same_as<RtuEndpoint::Storage, RtuTableEndpoint::Storage>);
+static_assert(std::same_as<RtuEndpoint::Geometry, RtuTableEndpoint::Geometry>);
+static_assert(!std::same_as<RtuEndpoint::Format, RtuTableEndpoint::Format>);
 static_assert(sizeof(RtuEndpoint::Message) == sizeof(RtuTableEndpoint::Message));
 static_assert(sizeof(RtuEndpoint::Packet) == sizeof(RtuTableEndpoint::Packet));
-static_assert(std::same_as<RtuEndpoint::CrcType, modbus::rtu::crc::Bitwise>);
-static_assert(std::same_as<RtuTableEndpoint::CrcType, modbus::rtu::crc::Table>);
-static_assert(std::same_as<RtuNoCrcEndpoint::CrcType, ::crc::NoCrc>);
+static_assert(std::same_as<RtuEndpoint::Crc, ::crc::Crc16Bitwise>);
+static_assert(std::same_as<RtuTableEndpoint::Crc, ::crc::Crc16Table>);
+static_assert(std::same_as<RtuNoCrcEndpoint::Crc, ::crc::NoCrc>);
 static_assert(RtuEndpoint::max_send_size == 252u);
 static_assert(RtuNoCrcEndpoint::max_send_size == 254u);
 

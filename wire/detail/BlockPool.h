@@ -4,15 +4,16 @@
  */
 
 /*
- * cobs::detail::BlockPool — fixed blocks in static storage, and nothing
+ * wire::detail::BlockPool — fixed blocks in static storage, and nothing
  * else. No heap, no virtuals, no mutex, O(1) acquire. Checked release is
- * O(BlockCount); see COBS_POOL_CHECKS below.
+ * O(BlockCount); see WIRE_POOL_CHECKS below.
  *
- * INTERNAL. This is an implementation primitive, not a settled contract for
- * user-supplied storage: it lives in detail/ so that nobody discovers it,
- * builds on it, and turns yesterday's idea into an international treaty. The
- * public shape of custom memory is decided once both real use cases exist
- * (RX packets and TX wire blocks), not before.
+ * This is the primitive under wire::Pool, shared by every protocol in the
+ * repository. It knows nothing about packets, frames or which protocol owns
+ * the bytes: a block is BlockSize bytes at RequestedAlignment, handed out and
+ * taken back. It stays in detail/ because its API is what wire::Pool needs,
+ * not a settled contract for third parties; a storage author who wants a
+ * free-list pool of their own copies the idea, or asks for it to be promoted.
  *
  * Two sizes, deliberately distinct:
  *
@@ -20,15 +21,17 @@
  *   storage_size  what the pool actually spends per block
  *
  * They differ because a FREE block stores the free-list link inside itself.
- * A two-byte TX block cannot hold an eight-byte pointer, so the pool widens
- * its own storage and raises its own alignment to fit one. That is the pool's
+ * A two-byte block cannot hold an eight-byte pointer, so the pool widens its
+ * own storage and raises its own alignment to fit one. That is the pool's
  * bookkeeping, not the client's data: a caller asking for byte-aligned
  * two-byte blocks is not wrong, it just has no say in how the free list is
- * threaded.
+ * threaded. The same rounding is what keeps every slot of the array aligned:
+ * sizeof(Block) is a multiple of the alignment, so slot i starts at a legal
+ * address whatever BlockSize was.
  */
 
-#ifndef COBS_DETAIL_BLOCK_POOL_H_
-#define COBS_DETAIL_BLOCK_POOL_H_
+#ifndef WIRE_DETAIL_BLOCK_POOL_H_
+#define WIRE_DETAIL_BLOCK_POOL_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -49,17 +52,18 @@
  *
  * The cost is a walk of the free list on release — O(blocks), where blocks
  * is typically 2 to 8, on a path that is never in an ISR. Anyone who has
- * measured it and wants the bytes back sets COBS_POOL_CHECKS=0 on purpose.
+ * measured it and wants the bytes back sets WIRE_POOL_CHECKS=0 on purpose,
+ * identically in every translation unit that instantiates the same pool.
  */
-#ifndef COBS_POOL_CHECKS
-#	define COBS_POOL_CHECKS 1
+#ifndef WIRE_POOL_CHECKS
+#	define WIRE_POOL_CHECKS 1
 #endif
 
-namespace cobs::detail {
+namespace wire::detail {
 
 // Outside the template on purpose: the numbers do not depend on the geometry,
 // so two pools of different shapes report the same TYPE. Nested, every
-// instantiation would have its own incompatible Stats and a policy owning an
+// instantiation would have its own incompatible Stats and a storage owning an
 // RX and a TX pool could not expose both through one signature.
 struct PoolStats {
 	uint32_t in_use     = 0;
@@ -144,7 +148,7 @@ public:
 		if (ptr == nullptr) {
 			return false; // a harmless no-op, not an abuse: not counted
 		}
-#if COBS_POOL_CHECKS
+#if WIRE_POOL_CHECKS
 		// Validate the raw address before converting it to the more-aligned
 		// Block pointer type. A foreign caller is allowed to hand us a
 		// misaligned byte pointer; rejecting it must not rely on first forming
@@ -155,7 +159,7 @@ public:
 		}
 #endif
 		Block* const b = block_of(ptr);
-#if COBS_POOL_CHECKS
+#if WIRE_POOL_CHECKS
 		if (is_free(b)) {
 			++m_stats.rejected;
 			return false;
@@ -201,7 +205,7 @@ private:
 		return static_cast<Block*>(static_cast<void*>(ptr));
 	}
 
-#if COBS_POOL_CHECKS
+#if WIRE_POOL_CHECKS
 	// Inside this pool, and exactly on a block boundary — a pointer into the
 	// middle of a block is as wrong as one from somewhere else.
 	//
@@ -222,7 +226,7 @@ private:
 	}
 
 	// O(n) on purpose: this catches a double free in every configuration where
-	// checks are enabled. Defining COBS_POOL_CHECKS=0 is the explicit opt-out.
+	// checks are enabled. Defining WIRE_POOL_CHECKS=0 is the explicit opt-out.
 	bool is_free(const Block* const b) const noexcept
 	{
 		for (const Block* f = m_free; f != nullptr; f = next_of(f)) {
@@ -239,6 +243,6 @@ private:
 	Stats  m_stats{};
 };
 
-} // namespace cobs::detail
+} // namespace wire::detail
 
-#endif /* COBS_DETAIL_BLOCK_POOL_H_ */
+#endif /* WIRE_DETAIL_BLOCK_POOL_H_ */

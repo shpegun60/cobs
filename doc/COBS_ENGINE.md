@@ -3,6 +3,11 @@ Author: shpegun60
 SPDX-License-Identifier: MIT
 -->
 
+> Historical v1 design and proofs. For the current `Endpoint<Memory, Format>`
+> API, shared raw-byte storage and CRC-bearing v2 wire format, use
+> [ARCHITECTURE.md](ARCHITECTURE.md), [STORAGE.md](STORAGE.md) and
+> [PROTOCOL.md](PROTOCOL.md). The pure-codec overlap proof below still applies.
+
 # COBS Engine — detailed design record
 
 > Current documentation is split by boundary: `ARCHITECTURE.md` is the

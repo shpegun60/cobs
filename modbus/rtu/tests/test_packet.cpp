@@ -18,7 +18,7 @@ using namespace modbus_test;
 
 int main()
 {
-	using Endpoint = modbus::rtu::Endpoint<modbus::rtu::Pool<3, 1>>;
+	using Endpoint = modbus::rtu::Endpoint<wire::Pool<3, 1>>;
 	using Packet = Endpoint::Packet;
 	static_assert(sizeof(Packet) == sizeof(void*));
 	static_assert(std::is_copy_constructible_v<Packet>);
@@ -39,7 +39,7 @@ int main()
 	check(packet.pdu().size() == data.size() + 1u && packet.pdu()[0] == 0x43u &&
 	      equal(packet.pdu().subspan(1u), data),
 	      "pdu() exposes function plus data");
-	check(equal(packet.adu(), wire) && modbus::rtu::crc::verify(packet.adu()),
+	check(equal(packet.adu(), wire) && ::crc::verify<::crc::Crc16Bitwise>(packet.adu()),
 	      "adu() exposes the complete immutable wire frame");
 
 	group("SharedOwnership");

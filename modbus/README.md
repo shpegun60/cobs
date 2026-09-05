@@ -21,7 +21,7 @@ Its different streaming/MBAP framing contract is recorded in
 #include "Uart.h"
 
 using Serial = Uart<256, 4>;
-using Link = modbus::rtu::Endpoint<modbus::rtu::Pool<8, 2>>;
+using Link = modbus::rtu::Endpoint<wire::Pool<8, 2>>;
 
 static Serial uart;
 static Link link;
@@ -46,8 +46,9 @@ const bool bound = link.bind(
 ```
 
 `receive_adu()` deliberately means one complete physical UART receive burst,
-not arbitrary stream chunking. Use `Uart<256, N>` so a legal maximum RTU ADU
-cannot be split merely by filling the DMA chunk.
+not arbitrary stream chunking. For the default MaxAdu use `Uart<256, N>` so filling a DMA chunk does not
+split a legal maximum ADU. Other ceilings require a suitably sized transport
+or a complete-candidate adapter; CRC cannot substitute for framing.
 
 ## Receive packets
 
@@ -139,38 +140,28 @@ and `capacity()` continue to count function-data bytes only.
 
 ## CRC policy and compile-time RTU format
 
-`Endpoint` has one compile-time CRC policy:
-
-```cpp
-template<
-    class StorageT = modbus::rtu::Heap,
-    class CrcT = modbus::rtu::crc::Bitwise
->
-class Endpoint;
-```
-
-The default remains standard Modbus RTU and the smallest portable choice:
+`Endpoint<Memory, Format>` shares the same configuration shape as COBS.
+The default is Heap with standard CRC-16/MODBUS and a 256-byte physical ADU:
 
 ```cpp
 modbus::rtu::Endpoint<> link;
-// Heap + table-free CRC-16/MODBUS
-```
-
-`modbus::rtu::crc::Bitwise` and `modbus::rtu::crc::Table` are concise aliases
-for `::crc::Crc16Bitwise` and `::crc::Crc16Table` from the independent
-[`crc/Crc.h`](../crc/Crc.h) library:
-
-```cpp
-using Memory = modbus::rtu::Pool<8, 2>;
-
+using Memory = wire::Pool<8, 2>;
 using SmallFlash = modbus::rtu::Endpoint<
-    Memory, modbus::rtu::crc::Bitwise>;
-
+    Memory, modbus::rtu::Format<crc::Crc16Bitwise>>;
 using FastCrc = modbus::rtu::Endpoint<
-    Memory, modbus::rtu::crc::Table>;
+    Memory, modbus::rtu::Format<crc::Crc16Table>>;
+using Smaller = modbus::rtu::Endpoint<
+    Memory, modbus::rtu::Format<crc::Crc16Bitwise, 64>>;
+using Larger = modbus::rtu::Endpoint<
+    Memory, modbus::rtu::Format<crc::Crc32Table, 1024>>;
 ```
 
-Both aliases implement CRC-16/MODBUS (`init=0xFFFF`, reflected polynomial
+A smaller MaxAdu is a local receive/send capacity, not a different protocol.
+An actual frame above 256 bytes, or non-Modbus checksum semantics, is a private
+RTU-like exchange. MaxAdu must be at least 2 + CRC width and at most 65535.
+The library guards subtraction before deriving useful capacity.
+
+The two built-in CRC16 policies implement CRC-16/MODBUS (`init=0xFFFF`, reflected polynomial
 `0xA001`) and produce identical two-byte little-endian trailers. Every lookup
 is a private static member of its exact table-policy class. Merely including
 the header, naming a table type, or selecting any bitwise policy emits no
@@ -180,8 +171,7 @@ are stored with `[[no_unique_address]]`.
 
 The general library also supplies bitwise and table implementations of CRC8,
 CRC32, and CRC64, plus `NoCrc`. RTU derives all logical geometry from the
-selected policy at compile time while the physical Storage slab remains 256
-bytes:
+selected policy and MaxAdu at compile time. For the default 256-byte ceiling:
 
 | Policy width | `Endpoint::crc_size` | function-data capacity | minimum ADU |
 |---:|---:|---:|---:|
@@ -192,22 +182,23 @@ bytes:
 | CRC64 | 8 | 246 | 10 |
 
 ```cpp
-using Crc8Link = modbus::rtu::Endpoint<Memory, ::crc::Crc8Bitwise>;
-using Crc32Link = modbus::rtu::Endpoint<Memory, ::crc::Crc32Table>;
-using Crc64Link = modbus::rtu::Endpoint<Memory, ::crc::Crc64Bitwise>;
+using Crc8Link = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<::crc::Crc8Bitwise>>;
+using Crc32Link = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<::crc::Crc32Table>>;
+using Crc64Link = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<::crc::Crc64Bitwise>>;
 ```
 
 The relationship is represented once:
 
 ```cpp
-using Format = modbus::rtu::Format<CrcT::wire_size>;
+using Format = modbus::rtu::Format<CrcT, MaxAdu>;
+using Layout = typename Format::Layout;
 
 static_assert(Endpoint::max_send_size ==
-              256 - 1 /* address */ - 1 /* function */ - CrcT::wire_size);
+              MaxAdu - 1 /* address */ - 1 /* function */ - CrcT::wire_size);
 ```
 
-Policies with the same `wire_size` share the same `Format`, `Message`, and
-`Packet` types. Changing Bitwise to Table therefore does not duplicate those
+Policies with the same `wire_size` and MaxAdu share `Layout`, Geometry,
+concrete Storage, Message and Packet types; the Format types intentionally differ. Changing Bitwise to Table therefore does not duplicate those
 ownership paths. A different width intentionally produces a different wire
 format and different owner types.
 
@@ -244,7 +235,7 @@ struct Sum16 : crc::Codec<uint16_t, 2, std::endian::little> {
     }
 };
 
-using PrivateLink = modbus::rtu::Endpoint<Memory, Sum16>;
+using PrivateLink = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<Sum16>>;
 PrivateLink private_link;
 ```
 
@@ -271,7 +262,7 @@ struct HardwareCrc32
     }
 };
 
-using HardwareLink = modbus::rtu::Endpoint<Memory, HardwareCrc32>;
+using HardwareLink = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<HardwareCrc32>>;
 HardwareLink hardware_link{HardwareCrc32{hcrc}};
 ```
 
@@ -287,9 +278,9 @@ struct AdaptiveCrc
         std::span<const uint8_t> bytes) noexcept
     {
         if (bytes.size() < 32) {
-            return modbus::rtu::crc::Bitwise{}.calculate(bytes);
+            return ::crc::Crc16Bitwise{}.calculate(bytes);
         }
-        return modbus::rtu::crc::Table{}.calculate(bytes);
+        return ::crc::Crc16Table{}.calculate(bytes);
     }
 };
 ```
@@ -303,7 +294,7 @@ remains in RTU.
 To remove the trailer entirely:
 
 ```cpp
-using UncheckedLink = modbus::rtu::Endpoint<Memory, crc::NoCrc>;
+using UncheckedLink = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<crc::NoCrc>>;
 static_assert(UncheckedLink::crc_size == 0);
 static_assert(UncheckedLink::max_send_size == 254);
 ```
@@ -348,35 +339,30 @@ forwarding call nor duplicated endian logic.
 modbus::rtu::Endpoint<> heap_link;
 
 // Eight simultaneously owned RX packets and two TX messages/borrows.
-using Fixed = modbus::rtu::Pool<8, 2>;
+using Fixed = wire::Pool<8, 2>;
 modbus::rtu::Endpoint<Fixed> fixed_link;
 ```
 
-Pool counts are ownership quotas, not byte sizes. Every RTU pool block holds
-one complete physical 256-byte ADU independently of CRC policy. `Storage`
-therefore publishes only physical `max_adu_size`; it does not duplicate
-`CrcT::wire_size` or a logical payload limit. `Format<CrcT::wire_size>` turns
-the slab into the policy-specific views and capacities:
+Pool counts are ownership quotas, not byte sizes. The same `wire::Pool<8, 2>`
+specification goes into COBS and RTU unchanged; each endpoint binds its own
+`Memory::For<Geometry>`. Geometry is three compile-time constants for the
+maximum physical RX/TX requests and minimum RX alignment. Storage never sees
+Format, CRC, packet metadata, or useful-payload units.
 
-```text
-physical slab   address + function + data + selected trailer = 256 bytes
-default CRC16   1 address + 1 function + 0..252 data + 2 CRC
-NoCrc           1 address + 1 function + 0..254 data
-```
+RTU asks RX for exactly its private header plus the complete validated ADU.
+Its largest TX request is Format::max_adu_size. A Pool grants its entire slab,
+while Heap grants exact requested bytes. `wire::TxBlock{memory, granted}`
+preserves the original physical descriptor even when a size class overgrants.
+Message caps useful capacity at MaxAdu - 2 - CRC width.
 
-The internal `TxBlock::adu_capacity` is likewise a physical byte count. Public
-`Message::capacity()` subtracts the selected format's address, function, and
-trailer bytes at compile time, so applications see only usable function data.
+Retaining Packet copies extends RX block lifetime. Unsent Messages and the
+active transport borrow consume TX blocks. Exhaustion returns an empty owner;
+it never overwrites a live block.
 
-Retaining Packet copies consumes RX blocks. Holding unsent Messages or an
-active UART borrow consumes TX blocks. Exhaustion returns an empty owner and
-increments pool diagnostics; it never overwrites a live block.
-
-Custom storage implementations satisfy `modbus::rtu::Storage` and the runtime
-contract in [ARCHITECTURE.md](ARCHITECTURE.md#6-storage-extension-contract).
-`MODBUS_POOL_CHECKS` is enabled by default so a built-in pool rejects foreign
-or duplicate releases. Define it consistently in every translation unit if
-you deliberately change that policy.
+Custom memory implements the same four noexcept raw-byte operations for both
+protocols. See the complete [shared storage contract](../doc/STORAGE.md).
+`WIRE_POOL_CHECKS` defaults to 1 even under NDEBUG; its opt-out must be
+consistent across translation units.
 
 ## Diagnostics
 
@@ -428,10 +414,14 @@ include(path/to/modbus/rtu/rtu.pri)
 Set `MODBUS_DELEGATE_DIR` before including the fragment only if
 `tiny_delegate.hpp` is outside the repository's normal `libs/delegate` path.
 The RTU implementation is header-only. Its fragment includes
-[`crc/crc.pri`](../crc/crc.pri) automatically; standalone CRC consumers may
+[`crc/crc.pri`](../crc/crc.pri) and [`wire/wire.pri`](../wire/wire.pri) automatically; standalone CRC consumers may
 include that fragment directly.
 
 ## Verification
+
+Current shared-policy migration evidence is recorded in
+[SHARED_POLICIES_VALIDATION.md](../doc/SHARED_POLICIES_VALIDATION.md).
+The older measurements below remain labeled as historical comparison data.
 
 ```bash
 sh crc/tests/run.sh
@@ -469,7 +459,8 @@ The ARM code-generation guard builds all four selected table widths at
 bytes, while calling a selected table policy emits exactly one private
 read-only 256-entry object of the expected 256/512/1024/2048-byte size.
 
-The final paranoid real-silicon matrix passed all suites at 115200 and 1M
+Historical pre-shared-storage evidence (not proof of the current tree): the
+paranoid real-silicon matrix passed all suites at 115200 and 1M
 baud. Its extended `-Os` 1M run echoed 7,319 exact ADUs / 632,449
 function-data bytes in 15 seconds with zero unexpected RTU, UART, ownership,
 or pool failures. Separate `-O2` and `-O3 + LTO` images passed the same 1M
@@ -480,7 +471,7 @@ attribute the split solely to ST-Link VCP or distinguish peer discontinuity
 from an over-eager IDLE boundary. The raw observation is retained without a
 stronger claim.
 
-The final 2026-09-05 real-silicon A/B run repeated both built-ins from the
+The pre-shared-storage 2026-09-05 real-silicon A/B run repeated both built-ins from the
 protocol-independent CRC tree at 115200 and 1M. Both passed vectors,
 corruption/recovery, backpressure, pool exhaustion, 5-second stress and
 15-second stress with zero unexpected RTU/UART/storage failures. Over 15

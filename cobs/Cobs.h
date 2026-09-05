@@ -4,7 +4,7 @@
  */
 
 /*
- * Endpoint — the assembled engine. RX vertical, TX vertical, one storage strategy.
+ * Endpoint — the assembled engine. RX vertical, TX vertical, one memory strategy.
  *
  * Contract: doc/ARCHITECTURE.md. Wire details are in doc/PROTOCOL.md and the
  * memory extension boundary is in doc/STORAGE.md. Everything difficult
@@ -14,6 +14,18 @@
  *     RX:  bytes -> cobs::codec::Decoder -> storage -> RxBlock -> Packet
  *     TX:  Message -> encoder -> sender delegate -> activeTx -> storage
  *
+ * ---------------------------------------------------------------------------
+ * TWO PARAMETERS: where the bytes live, and what goes over the wire.
+ *
+ *     cobs::Endpoint<Memory, Format>
+ *
+ * Memory is a wire::Storage specification (wire::Heap, wire::Pool<Rx, Tx>, or
+ * a user-written one) — the same type a modbus::rtu::Endpoint accepts, because
+ * storage knows nothing about either protocol. Format is this protocol's
+ * geometry. The endpoint is the only party that knows both, so it computes
+ * the physical block geometry from the Format and its private block header,
+ * and binds the memory specification to it: `Memory::For<Geometry>` is the
+ * storage that actually lives inside this object.
  * ---------------------------------------------------------------------------
  * LIFETIME PRECONDITIONS. Not decoration — violating either is a use-after-
  * free that no amount of internal bookkeeping can repair:
@@ -45,16 +57,19 @@
 #include "Format.h"
 #include "Read.h"
 #include "Stats.h"
-#include "Storage.h"
+#include "../wire/Storage.h"
 #include "detail/Message.h"
 #include "detail/Packet.h"
 #include "detail/Receiver.h"
+#include "detail/RxBlock.h"
 
 #include "tiny_delegate.hpp"
 
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <type_traits>
 #include <utility>
 
 namespace cobs {
@@ -67,26 +82,48 @@ enum class SendResult : uint8_t {
 	Invalid,  // the message owns no block, or belongs to another engine
 };
 
-template<class StorageT = cobs::Heap<>>
+template<class MemoryT = wire::Heap, class FormatT = cobs::Format<>>
 class Endpoint final {
-	static_assert(cobs::Storage<StorageT>,
-		"Endpoint storage must satisfy the cobs::Storage contract");
-
 public:
-	using StorageType = StorageT;
-	using Message = cobs::Message<StorageT>;
-	using Packet = cobs::Packet<StorageT>;
-	using Format = typename StorageT::Format;
+	using Memory = MemoryT;
+	using Format = FormatT;
+	using Crc = typename Format::Crc;
+	using Layout = typename Format::Layout;
 
 	/*
-	 * Republished so callers have one place to ask, and so a change of storage
-	 * is visible rather than implied (§4.1). Both are BODY limits — the
-	 * largest application payload this instance will receive and send. The
-	 * decoded frame is length_size bytes longer than either, which is why
-	 * neither is called max_decoded_size any more: that name was one header
-	 * away from the truth, on a layer where being one header out is the
-	 * easiest mistake there is.
+	 * The physical block geometry this endpoint binds its memory to, derived
+	 * from the Format and the private RX block header (detail/RxBlock.h). A
+	 * wire::BlockGeometry keyed on the numbers alone, so every endpoint with
+	 * the same Format binds the same storage type. Public so an integration
+	 * build can static_assert its RAM budget, and so a custom storage's
+	 * conformance test can run with a real geometry.
 	 */
+	using Geometry = detail::GeometryFor<Layout>;
+
+	static_assert(wire::Storage<MemoryT, Geometry>,
+		"Endpoint storage must satisfy the wire::Storage contract");
+
+	using Storage = typename MemoryT::template For<Geometry>;
+
+private:
+	// The RX block is typed on the storage (its owner pointer), and the
+	// storage is bound to the geometry, which needs the block's size. The
+	// layout-only stand-in RxBlock<AnyStorage> breaks that circle, and this
+	// confirms that the real block has the shape the geometry was sized from.
+	using Block = cobs::RxBlock<Storage>;
+	using Shape = cobs::RxBlock<detail::AnyStorage>;
+	static_assert(sizeof(Block) == sizeof(Shape) && alignof(Block) == alignof(Shape),
+		"the RX block header must have the layout the geometry was sized from");
+
+public:
+
+	using Message = cobs::Message<Storage, Layout>;
+	using Packet = cobs::Packet<Storage>;
+
+	/*
+	 * Payload limits exclude length and integrity bytes.
+	 */
+	static constexpr std::size_t crc_size = Layout::crc_size;
 	static constexpr std::size_t max_receive_size = Format::max_receive_size;
 	static constexpr std::size_t max_send_size    = Format::max_send_size;
 
@@ -96,7 +133,7 @@ public:
 	 * from the LARGER of the two limits so that one engine uses one header
 	 * width in both directions:
 	 *
-	 *     length_size = max(rx_max_size, tx_max_size) <= 255 ? 1 : 2
+	 *     length_size = max(rx_max_size, tx_max_size) + crc_size <= 255 ? 1 : 2
 	 *
 	 * Peers must agree on this exactly as they agree on a baud rate; two that
 	 * disagree cannot exchange even a one-byte frame. It is constexpr so an
@@ -116,10 +153,10 @@ public:
 	 * An API that only performs well when the caller thought to pass a hint is
 	 * a trap with good documentation.
 	 *
-	 * It costs nothing on Pool, which reports max_send_size
-	 * whatever it was asked for. A caller who wants no reserve at all says
-	 * make_message(0) — a zero capacity REQUEST, not an empty-only message: it
-	 * can accept appends and grow like any other.
+	 * It costs nothing on Pool, which grants the whole slab whatever it was
+	 * asked for. A caller who wants no reserve at all says make_message(0) —
+	 * a zero capacity REQUEST, not an empty-only message: it can accept
+	 * appends and grow like any other.
 	 *
 	 * Clamped, because a Format may declare a limit below this default, and
 	 * make_message() must never fail merely because of its own default.
@@ -130,16 +167,38 @@ public:
 	using Sender = tiny::delegate<bool(std::span<const uint8_t>)>;
 	using BusyQuery = tiny::delegate<bool()>;
 
-	Endpoint() noexcept = default;
+	Endpoint() noexcept(
+			std::is_nothrow_default_constructible_v<Storage> &&
+			std::is_nothrow_default_constructible_v<Crc>)
+		requires std::default_initializable<Storage> &&
+		         std::default_initializable<Crc>
+		= default;
 
-	// For storage that needs runtime arguments — an external memory region, a
-	// handle to somebody else's arena. It is constructed in place from
-	// them, so it need not be copyable or movable (§9.4). There is
-	// deliberately no constructor taking a ready-made instance: it would only
-	// serve copyable ones, and one way in is enough.
+	explicit Endpoint(Crc crc) noexcept(
+			std::is_nothrow_default_constructible_v<Storage> &&
+			std::is_nothrow_move_constructible_v<Crc>)
+		requires std::default_initializable<Storage> &&
+		         std::constructible_from<Crc, Crc&&>
+		: m_crc(std::move(crc)) {}
+
 	template<class... Args>
-	explicit Endpoint(std::in_place_t, Args&&... args) noexcept
+	explicit Endpoint(std::in_place_t, Args&&... args) noexcept(
+			std::is_nothrow_constructible_v<Storage, Args&&...> &&
+			std::is_nothrow_default_constructible_v<Crc>)
+		requires std::constructible_from<Storage, Args&&...> &&
+		         std::default_initializable<Crc>
 		: m_storage(std::forward<Args>(args)...) {}
+
+	template<class... Args>
+	Endpoint(Crc crc,
+	         std::in_place_t,
+	         Args&&... args) noexcept(
+			std::is_nothrow_constructible_v<Storage, Args&&...> &&
+			std::is_nothrow_move_constructible_v<Crc>)
+		requires std::constructible_from<Storage, Args&&...> &&
+		         std::constructible_from<Crc, Crc&&>
+		: m_storage(std::forward<Args>(args)...),
+		  m_crc(std::move(crc)) {}
 
 	Endpoint(const Endpoint&) = delete;
 	Endpoint& operator=(const Endpoint&) = delete;
@@ -202,7 +261,7 @@ public:
 
 	/* --------------------------------- RX -------------------------------- */
 
-	void consume(std::span<const uint8_t> bytes) noexcept { m_rx.consume(bytes); }
+	void consume(std::span<const uint8_t> bytes) noexcept { m_rx.consume(m_crc, bytes); }
 	void notify_gap() noexcept { m_rx.gap(); }
 
 	[[nodiscard]] Packet pop_packet() noexcept { return m_rx.pop_packet(); }
@@ -276,11 +335,11 @@ public:
 			return SendResult::Busy;
 		}
 
-		const auto wire = msg.encode();
-		if (wire.empty()) {
+		const auto wire_frame = msg.encode(m_crc);
+		if (wire_frame.empty()) {
 			return SendResult::Invalid;
 		}
-		if (!m_transport.start(wire)) {
+		if (!m_transport.start(wire_frame)) {
 			++m_txStats.send_failed;
 			return SendResult::Failed; // message stays Encoded, frame retryable
 		}
@@ -306,9 +365,9 @@ public:
 	void poll() noexcept
 	{
 		if (m_activeTx.memory != nullptr && !m_transport.busy()) {
-			// The capacity storage reported travels with the pointer, so a
-			// strategy that segregates by size class knows where the block
-			// belongs without searching (§9.1).
+			// The descriptor goes back exactly as storage granted it, so a
+			// strategy that segregates by size knows where the block belongs
+			// without searching (§9.1).
 			m_storage.release_tx(m_activeTx);
 			m_activeTx = {};
 		}
@@ -326,7 +385,7 @@ public:
 	// Const on purpose: statistics and geometry are worth reading, but a
 	// mutable reference would let a caller allocate behind the engine's back
 	// and hand out blocks it never learns about.
-	[[nodiscard]] const StorageT& storage() const noexcept { return m_storage; }
+	[[nodiscard]] const Storage& storage() const noexcept { return m_storage; }
 
 private:
 	/*
@@ -371,12 +430,13 @@ private:
 		BusyQuery m_busy{};
 	};
 
-	[[no_unique_address]] StorageT m_storage{};
-	cobs::detail::Receiver<StorageT> m_rx{m_storage};
+	[[no_unique_address]] Storage m_storage{};
+	[[no_unique_address]] Crc m_crc{};
+	cobs::detail::Receiver<Storage, Layout> m_rx{m_storage};
 
 	Transport m_transport{};
 
-	cobs::TxBlock m_activeTx{};
+	wire::TxBlock m_activeTx{};
 	cobs::Stats::Tx m_txStats{};
 };
 

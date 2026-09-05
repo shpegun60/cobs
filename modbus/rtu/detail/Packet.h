@@ -9,7 +9,7 @@
 #define MODBUS_RTU_DETAIL_PACKET_H_
 
 #include "../Format.h"
-#include "../Storage.h"
+#include "RxBlock.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -17,14 +17,16 @@
 
 namespace modbus::rtu {
 
-template<class StorageT, class FormatT>
+// Typed on the instantiated storage (the block's owner pointer) and on the
+// LAYOUT, not the Format: policies of equal trailer width share this type.
+template<class StorageT, class LayoutT>
 class Packet final {
 	template<class, class>
 	friend class detail::Receiver;
 
 public:
-	using Block = typename StorageT::RxBlock;
-	using Format = FormatT;
+	using Block = modbus::rtu::RxBlock<StorageT>;
+	using Layout = LayoutT;
 
 	Packet() noexcept = default;
 	~Packet() { release(); }
@@ -43,6 +45,8 @@ public:
 
 	Packet& operator=(const Packet& other) noexcept
 	{
+		// Increment BEFORE releasing: with self-assignment both sides are the
+		// same packet, and releasing first could free what we then adopt.
 		if (other.m_block != nullptr) {
 			++other.m_block->refs;
 		}
@@ -88,9 +92,9 @@ public:
 	{
 		return m_block != nullptr
 			? std::span<const uint8_t>{
-				m_block->payload() + Format::adu_prefix_size,
+				m_block->payload() + Layout::adu_prefix_size,
 				static_cast<std::size_t>(m_block->adu_size) -
-					Format::adu_overhead}
+					Layout::adu_overhead}
 			: std::span<const uint8_t>{};
 	}
 
@@ -100,9 +104,9 @@ public:
 	{
 		return m_block != nullptr
 			? std::span<const uint8_t>{
-				m_block->payload() + Format::address_size,
+				m_block->payload() + Layout::address_size,
 				static_cast<std::size_t>(m_block->adu_size) -
-					Format::pdu_envelope_size}
+					Layout::pdu_envelope_size}
 			: std::span<const uint8_t>{};
 	}
 
@@ -124,7 +128,10 @@ private:
 	void release() noexcept
 	{
 		if (m_block != nullptr && --m_block->refs == 0u) {
-			m_block->owner->release_rx(m_block);
+			// Trivially destructible: the bytes go straight back to the
+			// storage that handed them out.
+			m_block->owner->release_rx(
+				static_cast<std::byte*>(static_cast<void*>(m_block)));
 		}
 	}
 

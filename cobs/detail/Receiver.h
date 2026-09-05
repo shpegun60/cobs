@@ -7,9 +7,9 @@
  * cobs::detail::Receiver — the RX vertical, assembled.
  *
  * Contract: doc/COBS_ENGINE.md §5–§7. Everything hard already lives one layer
- * down; this is the glue that answers the decoder's NeedOutput from an
- * storage, threads completed blocks onto the intrusive ready queue, and
- * hands their references to the application.
+ * down; this is the glue that answers the decoder's NeedOutput from storage,
+ * threads completed blocks onto the intrusive ready queue, and hands their
+ * references to the application.
  *
  * The ownership invariant of the whole normal path (§6.3):
  *
@@ -33,34 +33,43 @@
 #define COBS_DETAIL_RECEIVER_H_
 
 #include "../Codec.h"
+#include "../Format.h"
 #include "../Stats.h"
+#include "../../wire/Storage.h"
 #include "Packet.h"
-#include "../Storage.h"
+#include "RxBlock.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
+#include <type_traits>
 
 namespace cobs::detail {
 
-// One template parameter, per the frozen contract (COBS_ENGINE.md §4.3): the
-// storage names one Format, so a separate geometry parameter could only
-// disagree with it.
+// Two template parameters: the instantiated storage (a supply of bytes, per
+// wire/Storage.h) and the protocol Format. The storage has no opinion about
+// the Format, so the endpoint names both and passes them down.
 //
 // This is the RX half on its own, taking storage by reference. The assembled
-// Endpoint owns storage by value (§9.4) and wraps this; an
-// application uses Endpoint rather than naming Receiver directly.
-template<class StorageT>
+// Endpoint owns storage by value (§9.4) and wraps this; an application uses
+// Endpoint rather than naming Receiver directly.
+template<class StorageT, class LayoutT>
 class Receiver final {
-	static_assert(cobs::Storage<StorageT>,
-		"Receiver storage must satisfy the cobs::Storage contract");
+	static_assert(wire::ByteStorage<StorageT>,
+		"Receiver storage must satisfy the wire::ByteStorage contract");
 
 public:
-	using StorageType = StorageT;
-	using Block = typename StorageT::RxBlock;
+	using Storage = StorageT;
+	using Block = cobs::RxBlock<StorageT>;
 	using Packet = cobs::Packet<StorageT>;
-	using Format = typename StorageT::Format;
+	using Layout = LayoutT;
+
+	// Storage hands back bytes, not objects, so nothing may need tearing down
+	// before those bytes go back. The header is ints and pointers; keep it so.
+	static_assert(std::is_trivially_destructible_v<Block>,
+		"RxBlock must stay trivially destructible: storage releases raw bytes");
 
 	/*
 	 * The largest BODY this instance accepts, from Format (§9.2). Not the
@@ -69,10 +78,10 @@ public:
 	 * from the truth, on a layer where being one header out is the easiest
 	 * mistake there is.
 	 */
-	static constexpr std::size_t max_receive_size = Format::max_receive_size;
+	static constexpr std::size_t max_receive_size = Layout::max_receive_size;
 	static_assert(max_receive_size <= UINT16_MAX, "RxBlock::size is a uint16_t");
 
-	static constexpr std::size_t length_size = Format::length_size;
+	static constexpr std::size_t length_size = Layout::length_size;
 
 	explicit Receiver(StorageT& storage) noexcept : m_storage(storage)
 	{
@@ -91,8 +100,10 @@ public:
 
 	// Feed whatever the transport delivered. The span need not contain whole
 	// frames, and may contain several.
-	void consume(std::span<const uint8_t> bytes) noexcept
+	template<::crc::Policy CrcT>
+	void consume(CrcT& crc, std::span<const uint8_t> bytes) noexcept
 	{
+		static_assert(CrcT::wire_size == Layout::crc_size);
 		while (!bytes.empty()) {
 			const cobs::codec::Decoder::Result r = m_decoder.consume(bytes);
 			bytes = bytes.subspan(r.consumed);
@@ -109,7 +120,7 @@ public:
 				onNeedOutput();
 				break;
 			case cobs::codec::Decoder::Event::FrameComplete:
-				onFrameComplete(r.decoded_size);
+				onFrameComplete(crc, r.decoded_size);
 				break;
 			case cobs::codec::Decoder::Event::Malformed:
 				++m_stats.malformed;
@@ -156,7 +167,7 @@ private:
 	 * only then — knowing exactly how many body bytes are coming — is a packet
 	 * allocated and the decoder pointed straight at its final home.
 	 *
-	 *     Header  ->  parse N  ->  acquire_rx(N)  ->  Body  ->  publish
+	 *     Header  ->  parse N  ->  acquire_rx(header + N)  ->  Body  ->  publish
 	 *
 	 * There is no staging buffer for the payload and no copy after allocation.
 	 * The only temporary decoded storage in the whole RX path is the one or
@@ -189,40 +200,45 @@ private:
 	}
 
 	/*
-	 * The only place a packet is allocated, and the only place `owner` is set.
+	 * The only place a packet is allocated, and the only place a block is
+	 * constructed and `owner` set.
 	 *
-	 * Storage does NOT stamp it, deliberately. §9 says storage names Format
-	 * and RxBlock and provides four operations; if it also had to write a private field of
-	 * a type it merely allocates storage for, that would be a hidden fifth
-	 * obligation, invisible in the signatures and impossible for the contract
-	 * test to check now that the field is private. Storage written to the
-	 * letter of the contract would then hand back a packet whose owner is
-	 * null, and the first Packet release would dereference it.
-	 *
-	 * So the RX vertical establishes ownership, which is also where it
-	 * belongs: storage supplies memory and takes it back, and nothing
-	 * else.
+	 * Storage hands out BYTES — sizeof(Block) plus the payload — and knows
+	 * nothing about what goes in them. The RX vertical constructs the header
+	 * in place and establishes ownership, which is where both belong: storage
+	 * supplies memory and takes it back, and nothing else. (An earlier
+	 * contract had storage stamp `owner`; a storage written to its letter then
+	 * handed back a packet whose owner was null, and the first Packet release
+	 * dereferenced it.)
 	 */
 	[[nodiscard]] Block* acquire_block(const std::size_t size) noexcept
 	{
-		Block* const block = m_storage.acquire_rx(size);
-		if (block != nullptr) {
-			block->owner = &m_storage;
+		std::byte* const memory = m_storage.acquire_rx(sizeof(Block) + size);
+		if (memory == nullptr) {
+			return nullptr;
 		}
+		Block* const block = std::construct_at(
+			static_cast<Block*>(static_cast<void*>(memory)));
+		block->owner = &m_storage;
 		return block;
+	}
+
+	[[nodiscard]] static std::byte* bytes_of(Block* const block) noexcept
+	{
+		return static_cast<std::byte*>(static_cast<void*>(block));
 	}
 
 	// Turns a complete header into an allocated packet, or refuses the frame.
 	void beginBody() noexcept
 	{
-		const std::size_t declared = Format::load_length(m_lengthBytes.data());
+		const std::size_t declared = Layout::load_length(m_lengthBytes.data());
 
-		if (declared > max_receive_size) {
+		if (declared > Layout::max_receive_body) {
 			++m_stats.oversize;
 			abandonFrame();
 			return;
 		}
-		if (declared == 0u) {
+		if (declared == 0u || declared < Layout::crc_size) {
 			// A zero-length body followed by more decoded bytes: the frame
 			// contradicts its own header.
 			++m_stats.length_mismatch;
@@ -248,7 +264,8 @@ private:
 		m_decoder.attach_output(block->writable_payload(declared));
 	}
 
-	void onFrameComplete(const std::size_t decoded_size) noexcept
+	template<::crc::Policy CrcT>
+	void onFrameComplete(CrcT& crc, const std::size_t decoded_size) noexcept
 	{
 		if (m_stage != Stage::Body) {
 			// The delimiter arrived before any body did. Only one of these is
@@ -258,19 +275,25 @@ private:
 				endFrame(true);
 				return;
 			}
-			const std::size_t declared = Format::load_length(m_lengthBytes.data());
+			const std::size_t declared = Layout::load_length(m_lengthBytes.data());
 			// Oversize is decided by the HEADER, so it has to be decided the
 			// same way whether or not a body ever started. Without this the
 			// classification would depend on the frame's punctuation: a frame
 			// declaring 65 with one body byte is oversize, and the same frame
 			// with no body at all would be a mere length mismatch.
-			if (declared > max_receive_size) {
+			if (declared > Layout::max_receive_body) {
 				++m_stats.oversize;
 				endFrame(true); // the delimiter is already consumed: no resync
 				return;
 			}
-			if (declared != 0u) {
+			if (declared != 0u || Layout::crc_size != 0u) {
 				++m_stats.length_mismatch; // declared a body, sent none
+				endFrame(true);
+				return;
+			}
+			// Only a zero-width policy can have an empty body.
+			if (!::crc::verify(std::span<const uint8_t>{}, crc)) {
+				++m_stats.crc_errors;
 				endFrame(true);
 				return;
 			}
@@ -296,7 +319,12 @@ private:
 			endFrame(true);
 			return;
 		}
-		publish(body);
+		if (!::crc::verify(m_building->data(), crc)) {
+			++m_stats.crc_errors;
+			endFrame(true); // delimiter consumed: next frame must not be lost
+			return;
+		}
+		publish(body - Layout::crc_size);
 	}
 
 	void publish(const std::size_t body) noexcept
@@ -346,7 +374,7 @@ private:
 	void releaseBuilding() noexcept
 	{
 		if (m_building != nullptr) {
-			m_storage.release_rx(m_building);
+			m_storage.release_rx(bytes_of(m_building));
 			m_building = nullptr;
 		}
 	}
@@ -395,7 +423,7 @@ private:
 	cobs::codec::Decoder m_decoder{};
 	StorageT& m_storage;
 
-	std::array<uint8_t, Format::length_size> m_lengthBytes{};
+	std::array<uint8_t, Layout::length_size> m_lengthBytes{};
 	Stage m_stage = Stage::NeedHeader;
 
 	Block* m_building  = nullptr;

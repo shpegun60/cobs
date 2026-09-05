@@ -6,7 +6,7 @@
 #ifndef MODBUS_RTU_TEST_H_
 #define MODBUS_RTU_TEST_H_
 
-#include "modbus/rtu/Crc.h"
+#include "crc/Crc.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -62,7 +62,7 @@ inline std::vector<uint8_t> make_adu(
 		const uint8_t function,
 		const std::span<const uint8_t> data = {})
 {
-	modbus::rtu::crc::Bitwise policy{};
+	::crc::Crc16Bitwise policy{};
 	return make_adu(policy, address, function, data);
 }
 

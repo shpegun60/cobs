@@ -30,9 +30,10 @@ struct Stats final {
 		uint32_t frames_lost        = 0; // every frame that did not reach the queue
 		uint32_t allocation_failure = 0;
 		uint32_t malformed          = 0; // structural COBS error
-		uint32_t oversize           = 0; // declared length above max_receive_size
+		uint32_t oversize           = 0; // declared body above payload limit + CRC
 		uint32_t length_mismatch    = 0; // absent/short header, or body != declared
 		uint32_t resyncs            = 0; // times RX had to hunt for a delimiter
+		uint32_t crc_errors         = 0; // fully delimited body failed integrity
 	};
 
 	struct Tx final {

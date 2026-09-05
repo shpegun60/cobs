@@ -60,7 +60,7 @@ bool exercise()
 	auto packet = link.pop_packet();
 	if (!packet || packet.address() != 0x11u || packet.function() != 0x03u ||
 	    packet.size() != 5u || packet.pdu().size() != 6u ||
-	    packet.adu().size() != 9u || !modbus::rtu::crc::verify(packet.adu())) {
+	    packet.adu().size() != 9u || !::crc::verify<::crc::Crc16Bitwise>(packet.adu())) {
 		return false;
 	}
 
@@ -89,11 +89,10 @@ int main()
 	if (!exercise<modbus::rtu::Endpoint<>>()) {
 		return 1;
 	}
-	if (!exercise<modbus::rtu::Endpoint<modbus::rtu::Pool<2, 2>>>()) {
+	if (!exercise<modbus::rtu::Endpoint<wire::Pool<2, 2>>>()) {
 		return 2;
 	}
-	if (!exercise<modbus::rtu::Endpoint<
-			modbus::rtu::Pool<2, 2>, modbus::rtu::crc::Table>>()) {
+	if (!exercise<modbus::rtu::Endpoint<wire::Pool<2, 2>, modbus::rtu::Format<::crc::Crc16Table>>>()) {
 		return 3;
 	}
 	std::puts("qmake Modbus RTU consumer passed");

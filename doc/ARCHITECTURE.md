@@ -8,8 +8,8 @@ SPDX-License-Identifier: MIT
 This is the canonical entry point for the current COBS implementation.
 It describes component boundaries, the supported API, ownership, lifetimes,
 and the dependency direction. The exact wire contract is in `PROTOCOL.md`;
-the storage extension contract is in `STORAGE.md`. `COBS_ENGINE.md` retains
-the longer design rationale, state-machine traces, and proofs.
+the storage extension contract is in `STORAGE.md`. `COBS_ENGINE.md` retains historical v1 rationale and overlap proofs; its
+old storage/API examples are not the current contract.
 
 The implementation is idiomatic C++20. Transport delegates, explicit state
 machines, typed ownership, and the separation between UART and COBS are
@@ -49,7 +49,7 @@ The current version intentionally has:
 
 - one active TX transfer and no internal TX queue;
 - a plain, non-atomic RX reference count;
-- no CRC or integrity trailer;
+- compile-time CRC policy (default CRC16, explicit NoCrc opt-out);
 - no thread synchronization;
 - no HAL dependency in the COBS layer.
 
@@ -67,9 +67,9 @@ The stable application vocabulary is:
 
 | Type or member | Responsibility |
 |---|---|
-| `cobs::Endpoint<StorageT>` | assembled RX/TX coordinator; owns storage |
-| `cobs::Message<StorageT>` | move-only TX body builder and exclusive block owner |
-| `cobs::Packet<StorageT>` | copyable immutable RX packet handle |
+| `cobs::Endpoint<Memory, Format>` | assembled RX/TX coordinator; owns storage |
+| `Endpoint::Message` | move-only TX body builder and exclusive block owner |
+| `Endpoint::Packet` | copyable immutable RX packet handle |
 | `cobs::SendResult` | exact result of a send attempt |
 | `cobs::Stats` | value snapshot of protocol counters |
 | `Endpoint::bind(sender, busy)` | installs one consistent transport pair |
@@ -129,13 +129,14 @@ width integer types and explicitly sized enum underlying types. It does not use
 A custom memory strategy includes:
 
 ```cpp
-#include "Storage.h"
+#include "wire/Storage.h"
 ```
 
-That header exports `cobs::Format`, `cobs::RxBlock`, `cobs::TxBlock`,
-the `cobs::Storage` concept, and the built-in `cobs::Heap` and `cobs::Pool`
-strategies. A storage author does not include or depend on `detail/` headers.
-See `STORAGE.md` for the complete syntactic and behavioral contract.
+That header exports `wire::Heap`, `wire::Pool<Rx, Tx>`, `wire::TxBlock`,
+`wire::Geometry`, `wire::ByteStorage` and `wire::Storage<Memory, Geometry>`.
+A memory specification provides `template<class Geometry> class For`.
+It sees three compile-time physical sizes/alignment and four raw-byte
+operations, never a protocol or a packet header. See `STORAGE.md`.
 
 ### 2.3 Codec surface
 
@@ -154,7 +155,7 @@ Everything under `cobs/detail/` is implementation detail:
 
 - `detail::Receiver`;
 - `detail::Message.h` and `detail::Packet.h`, reached through `Cobs.h`;
-- `detail::BlockPool`;
+- private `RxBlock` metadata; the shared pool primitive lives in `wire/detail/`;
 - `detail::NativeScalar`.
 
 Applications must not include those headers or depend on their fields,
@@ -164,22 +165,13 @@ so explicitly.
 ## 3. Dependency direction and files
 
 ```text
-Codec.h  <---------------- Decoder.cpp / Encoder.cpp
-   ^
-   |
-Format.h
-   ^
-   |
-Storage.h <--------------- detail/BlockPool.h
-   ^  ^                         ^
-   |  |                         |
-   |  +---- detail/Packet.h     +---- cobs::Pool
-   |        detail/Message.h
-   |        detail/Receiver.h
-   |                 ^
-   +-----------------+
-                     |
-                  Cobs.h
+crc/Crc.h -> cobs/Format.h -> Layout (widths/limits only)
+                                 |
+wire/Storage.h <--- Endpoint computes Geometry and binds Memory::For<Geometry>
+                                 |
+                 cobs Receiver / Message / Packet
+                     |           |
+                   Decoder     Encoder
 ```
 
 | File | Current responsibility |
@@ -191,16 +183,19 @@ Storage.h <--------------- detail/BlockPool.h
 | `wire/Scalar.h` | shared constrained native/BE/LE scalar codec |
 | `wire/Read.h` | shared stateless bounds-checked scalar/byte readers |
 | `cobs/Read.h` | zero-cost public `cobs::read_*` names |
-| `cobs/Storage.h` | storage concept, ownership blocks, Heap, Pool |
+| `wire/Storage.h` | shared raw-byte storage concept, TxBlock, Heap, Pool |
+| `cobs/detail/RxBlock.h` | private typed RX metadata and derived Geometry |
 | `cobs/Stats.h` | public protocol counter snapshot |
 | `cobs/detail/Receiver.h` | RX allocation, validation, queue, and ownership |
 | `cobs/detail/Message.h` | TX builder, growth, encoding, exclusive ownership |
 | `cobs/detail/Packet.h` | intrusive shared RX handle |
-| `cobs/detail/BlockPool.h` | fixed-block memory primitive used by Pool |
+| `wire/detail/BlockPool.h` | shared fixed-block memory primitive |
 | `cobs/Cobs.h` | public umbrella and assembled Endpoint |
 | `cobs/cobs.pri` | reusable qmake source/header boundary |
 
-Protocol geometry points downward into the codec; storage names one format.
+Protocol geometry uses the codec and CRC wire width. Storage names neither:
+the endpoint binds it to a numeric Geometry. Message/Receiver depend on Layout,
+not calculator type, so equal-width Bitwise/Table share their instantiations.
 `detail/Message.h` uses the transport-neutral `wire/Scalar.h`, while
 `cobs/Read.h` re-exports `wire/Read.h`. Modbus uses those same two primitives,
 so the builders and readers cannot drift in scalar constraints, byte order, or
@@ -209,12 +204,13 @@ endpoint, or transport. UART never enters this dependency graph.
 
 ## 4. Endpoint composition
 
-`cobs::Endpoint<StorageT>` owns the complete instance state:
+`cobs::Endpoint<Memory, Format>` owns the complete instance state:
 
 ```text
 Endpoint
-├── [[no_unique_address]] StorageT m_storage
-├── detail::Receiver<StorageT> m_rx
+├── [[no_unique_address]] Storage m_storage
+├── [[no_unique_address]] Crc m_crc (same instance for RX/TX)
+├── detail::Receiver<Storage, Layout> m_rx
 │   ├── codec::Decoder
 │   ├── StorageT&
 │   ├── 1-2 length bytes and RX stage
@@ -254,15 +250,15 @@ it synchronously and retains no pointer into it.
 
 The receiver first decodes the one- or two-byte length field into local state.
 Only after the declared body length `N` is known does it call
-`storage.acquire_rx(N)`. The body then decodes directly into the final block.
+`storage.acquire_rx(sizeof(RxBlock) + N)`. The body then decodes directly into the final block.
 
 ```text
 wire bytes
    -> local length field
    -> validate N
-   -> acquire exactly N payload bytes
+   -> acquire private header + exactly N body bytes
    -> decode body into RxBlock payload
-   -> publish on delimiter
+   -> verify CRC on delimiter, publish payload without trailer
 ```
 
 There is no encoded staging buffer, second decoding pass, or post-allocation
@@ -387,7 +383,7 @@ The following are preconditions, not optional advice:
    `send()` detects the mismatch and returns `Invalid`.
 4. Calls that mutate an endpoint are externally serialized. The endpoint,
    decoder, pool, message, and plain packet refcount contain no locks.
-5. Packet copying/releasing stays in one execution domain in v1. Cross-task
+5. Packet copying/releasing stays in one execution domain. Cross-task
    sharing would require a separately designed atomic reference policy.
 6. `consume()` and `notify_gap()` are presented in real stream order. A gap
    moves decoding into discard-until-delimiter state even if it appeared to
@@ -412,7 +408,7 @@ const cobs::Stats snapshot = endpoint.stats();
 RX and TX counters remain physically beside the state transitions that update
 them, but callers cannot mutate them or retain references into engine state.
 The RX snapshot distinguishes delivered/lost frames, allocation failures,
-structural malformed frames, oversize declarations, length mismatches, and
+structural malformed frames, oversize declarations, length mismatches, CRC mismatches, and
 resynchronizations. TX distinguishes accepted frames, busy refusals, and
 sender-start failures.
 
@@ -431,14 +427,14 @@ Any future change must preserve these unless the protocol and architecture are
 explicitly revised together:
 
 1. UART or another transport handles bytes; COBS handles frames and packets.
-2. `Endpoint` has one template parameter: storage.
+2. `Endpoint<Memory, Format>` separates memory strategy from wire format.
 3. Transport remains one paired sender/busy owning-delegate boundary.
 4. `Format` is the only source of protocol limits and length width.
 5. Storage is the only source of memory strategy and quotas.
 6. RX allocation is exact and the body decodes directly into final storage.
 7. RX ownership stays typed and intrusive; no per-packet `void*` deleter.
 8. TX ownership stays exclusive and moves only after transport acceptance.
-9. `TxBlock` keeps pointer and granted payload capacity together until release.
+9. `TxBlock` keeps pointer and granted physical bytes together until release.
 10. A failed sender start retains one byte-identical encoded frame for retry.
 11. A gap is absorbed below the application packet boundary.
 12. The public application include does not expose `detail` types.
@@ -452,5 +448,5 @@ explicitly revised together:
 - Read `STORAGE.md` when selecting or writing a memory strategy.
 - Read `UART_PARANOID_AUDIT.md` for the independent STM32 DMA byte transport.
 - Read `BUILD.md` for exact verified commands.
-- Read `COBS_ENGINE.md` for the detailed rationale and overlap proof.
-- Read `COBS_REFACTOR_PLAN.md` for locked migration decisions and history.
+- Read `COBS_ENGINE.md` for historical rationale and the unchanged codec overlap proof.
+- Read `SHARED_POLICIES_PLAN.md` for current decisions; `COBS_REFACTOR_PLAN.md` is the older completed migration.

@@ -3,166 +3,134 @@ Author: shpegun60
 SPDX-License-Identifier: MIT
 -->
 
-# COBS wire protocol
+# COBS wire protocol v2
 
-This document is the normative wire contract for the current COBS engine.
-It is independent of UART, heap versus pool storage, transport delegates, and
-application scheduling. Two peers interoperate only when this contract and
-their configured limits are compatible.
+This is the normative current engine contract, independent of storage and
+transport. The low-level COBS codec itself is unchanged. Version numbers are
+documentation labels: **no version byte, CRC negotiation, autodetection or
+fallback is present on the wire**.
 
 ## 1. Terms
 
 | Term | Meaning |
 |---|---|
-| body | bytes counted by the engine length field; in v1, the application payload |
-| payload | application-visible bytes; equal to the body in v1 |
-| decoded frame | fixed-width length field followed by the body |
-| encoded frame | canonical COBS encoding of the decoded frame, without delimiter |
-| wire frame | encoded frame followed by one `0x00` delimiter |
-| `H` | length-field width in bytes |
-| `S` | actual payload/body size for one frame |
-| `C` | granted TX payload capacity for one block, `S <= C` |
+| payload | application-visible bytes supplied to Message and exposed by Packet |
+| trailer | exactly `Crc::wire_size` bytes serialized by the selected CRC policy |
+| body | payload + trailer; the length field counts this |
+| decoded frame | little-endian length field + body |
+| wire frame | COBS encoding of the decoded frame + final 00 |
+| H / W | length-field width / trailer width |
+| S / C | actual useful payload size / useful TX capacity, S <= C |
 
-Future integrity bytes, if added, belong inside the body and are included in
-the declared length. They are not part of this version.
-
-## 2. Frame grammar
+## 2. Grammar and integrity
 
 ```text
-wire_frame    ::= COBS(decoded_frame) 0x00
-decoded_frame ::= length body
-length        ::= H bytes, unsigned little-endian
-body          ::= exactly the number of bytes declared by length
+wire    = COBS(length_le | payload | trailer) | 00
+length  = S + W                         (does not count itself)
+trailer = policy.store(policy.calculate(payload))
 ```
 
-No leading delimiter is required. Leading or repeated bare delimiters are
-harmless synchronization bytes and deliver no packet.
+CRC covers payload only, **not the length field**. RX separately requires the
+actual body length to equal the declared length and to contain the trailer.
+A CRC does not authenticate the peer and is not a cryptographic MAC.
 
-The encoder emits canonical/minimal COBS:
+The default policy is CRC-16/MODBUS: init FFFF, reflected polynomial A001,
+no final XOR, two trailer bytes low byte first. Table and Bitwise produce the
+same values and wire order. A custom policy controls its own calculation,
+result type, width and codec; the library does not validate its algorithm.
+Both peers must agree on those semantics.
 
-- `0x00` appears only as the final delimiter;
-- every non-`0xFF` code block represents an implicit zero if another block
-  follows;
-- a final full `0xFF` block is not followed by a redundant `0x01` block;
-- a payload ending in zero does retain the final `0x01` needed to materialize
-  that zero.
+No leading delimiter is required. Bare/repeated delimiters deliver no packet.
+The encoder emits minimal canonical COBS (no redundant 01 after a final full
+FF block); the decoder also accepts structurally valid non-canonical COBS.
+A payload or trailer ending in zero keeps the code needed to materialize it.
 
-The decoder accepts structurally valid non-canonical COBS as well. Canonical
-encoding is a sender requirement, not a receiver rejection rule.
-
-## 3. Length field and directional limits
-
-Each `cobs::Format<RxMax, TxMax>` declares two body limits. Its concise forms
-are deliberately symmetric:
+## 3. Format and limits
 
 ```cpp
-cobs::Format<>       // RX 255, TX 255
-cobs::Format<1024>   // RX 1024, TX 1024
-cobs::Format<1024, 64>
+cobs::Format<>                       // CRC16, RX/TX payload 253, H=1
+cobs::Format<crc::Crc16Table>         // same bytes and capacity
+cobs::Format<crc::Crc16Bitwise, 1024> // explicit 1024 useful bytes, H=2
+cobs::Format<crc::Crc32Table, 4096>   // 4096 useful bytes plus CRC4, H=2
+cobs::Format<crc::NoCrc, 255>         // exact old v1 H1 format
+cobs::Format<crc::NoCrc, 1024, 64>    // old asymmetric v1 H2 format
 ```
+
+The general form is `Format<Crc, MaxReceivePayload, MaxSendPayload>`.
+Omitted TX equals RX. Omitted RX is `255 - Crc::wire_size`, so the default
+body fits an unsigned one-byte length. A trailer above 255 requires explicit
+payload limits instead of an unsigned-wrapping default.
+
+Explicit numeric limits always mean useful payload, never physical storage.
+Both bodies must fit 65535 bytes; no 32-bit length is offered.
 
 ```text
-max_receive_size = largest body this instance accepts
-max_send_size    = largest body this instance can build
+max_receive_body = max_receive_size + W
+max_send_body    = max_send_size + W
+H = max(max_receive_body, max_send_body) <= 255 ? 1 : 2
 ```
 
-The decoded frame is `H` bytes longer than either body. The larger
-directional limit chooses one width for both directions:
+Length is explicitly little-endian on every CPU; H2 writes the low byte then
+the high byte. The selected CRC codec controls trailer order independently.
+Application append_native/BE/LE calls cannot change either envelope.
 
-```text
-wire_length_limit = max(max_receive_size, max_send_size)
-H = length_size   = wire_length_limit <= 255 ? 1 : 2
-```
+### Compatibility
 
-Both limits must fit `uint16_t`; no wider v1 length field exists.
-
-Length bytes are explicitly little-endian:
-
-```text
-H = 1:  length[0] = S
-H = 2:  length[0] = S & 0xff
-        length[1] = (S >> 8) & 0xff
-```
-
-The length counts only body bytes, never itself.
-
-### 3.1 Compatibility conditions
-
-Three different checks must not be conflated:
-
-| Check | Condition | Consequence |
-|---|---|---|
-| wire compatibility | `A.length_size == B.length_size` | required for any frame to be interpreted consistently |
-| per-frame acceptance | `declared <= receiver.max_receive_size` | decides whether this frame can be delivered |
-| full-range compatibility | `A.max_send_size <= B.max_receive_size` and the reverse | guarantees every legal sender frame is accepted by its peer |
-
-Only the first is unconditional. Peers may use asymmetric limits:
-
-```text
-Peer A: Format<1024, 64> -> H = 2
-Peer B: Format<64, 1024> -> H = 2
-```
-
-These peers share a wire format and have full-range compatibility in both
-directions. Replacing storage without changing `Format` cannot alter their
+Peers need equal H and matching integrity semantics/codec. Their useful
+limits may differ. With the same CRC, `Format<Crc, 1024, 64>` and
+`Format<Crc, 64, 1024>` agree on H2 and cover each other's full transmit
+range. Replacing memory or Bitwise with its equivalent Table cannot change
 wire bytes.
 
-Integrations should lock the width at compile time:
+Migration requires a coordinated configuration of both ends. An old NoCrc
+receiver can accept new CRC-bearing frames and expose trailer bytes as
+payload: the v2 payload `41 42` is delivered by a v1 H1 receiver as
+`41 42 B1 D1`. In the reverse direction some bytes can accidentally satisfy
+CRC; mismatched configurations are **not guaranteed to reject**. Keep
+`Format<crc::NoCrc, 255>` explicitly when byte-for-byte legacy is required.
 
-```cpp
-using Link = cobs::Endpoint<MyStorage>;
-static_assert(Link::length_size == 2);
+## 4. Empty payload and delimiter
+
+No input causes no event. A bare `00` is synchronization only.
+`01 00` is pure COBS for no decoded bytes, but lacks the engine header and
+is a length_mismatch.
+
+An empty application payload is valid. CRC is calculated over the empty
+span; default CRC16 is FFFF:
+
+```text
+default H1 decoded: 02 FF FF
+default H1 wire:    04 02 FF FF 00
+NoCrc H1 decoded:   00
+NoCrc H1 wire:      01 01 00
+NoCrc H2 decoded:   00 00
+NoCrc H2 wire:      01 01 01 00
 ```
 
-## 4. Empty input, empty packet, and bare delimiter
+An empty payload still owns an RX block. With nonzero W, a declared body
+shorter than W is invalid and rejected without allocation.
 
-These are three different cases.
+## 5. Locked vectors
 
-| Bytes | Pure COBS meaning | Engine meaning |
+Default CRC16/H1:
+
+| Payload | Decoded length + body | Canonical wire |
 |---|---|---|
-| no bytes | no event | no event |
-| `00` | bare delimiter | synchronization/no-op |
-| `01 00` | valid empty decoded COBS frame | invalid engine frame: length field absent |
-| COBS encoding of `H` zero bytes + `00` | decoded length is zero | valid empty application packet |
+| empty | 02 FF FF | 04 02 FF FF 00 |
+| 41 42 | 04 41 42 B1 D1 | 06 04 41 42 B1 D1 00 |
 
-For a one-byte length field, the canonical empty engine packet is:
+Explicit NoCrc/H1 (v1 regression oracle):
 
-```text
-decoded: 00
-wire:    01 01 00
-```
-
-For a two-byte length field:
-
-```text
-decoded: 00 00
-wire:    01 01 01 00
-```
-
-`01 00` is counted as `length_mismatch` rather than `malformed`. Its COBS
-structure is valid; it fails only the engine protocol layered above COBS.
-
-## 5. Worked one-byte-header vectors
-
-The following vectors assume `Format` chooses `H = 1`:
-
-| Application payload | Decoded `[length][body]` | Canonical wire |
+| Payload | Decoded length + body | Canonical wire |
 |---|---|---|
-| empty | `00` | `01 01 00` |
-| `11` | `01 11` | `03 01 11 00` |
-| `00` | `01 00` | `02 01 01 00` |
-| `11 22` | `02 11 22` | `04 02 11 22 00` |
-| `11 00 22` | `03 11 00 22` | `03 03 11 02 22 00` |
+| empty | 00 | 01 01 00 |
+| 11 | 01 11 | 03 01 11 00 |
+| 00 | 01 00 | 02 01 01 00 |
+| 11 22 | 02 11 22 | 04 02 11 22 00 |
+| 11 00 22 | 03 11 00 22 | 03 03 11 02 22 00 |
 
-For `H = 2`, the one-byte body `11` is:
-
-```text
-decoded: 01 00 11
-wire:    02 01 02 11 00
-```
-
-These examples include the engine length field. A pure COBS test vector that
-encodes only application bytes is not an engine frame.
+NoCrc/H2, payload 11: decoded `01 00 11`, wire `02 01 02 11 00`.
+These are engine vectors, not pure COBS encodings of application data alone.
 
 ## 6. Size arithmetic
 
@@ -203,18 +171,18 @@ placement. Selected pure-codec values:
 For an application payload of size `S`:
 
 ```text
-decoded_size = H + S
-maximum wire = max_wire_size(H + S)
+decoded_size = H + S + W
+maximum wire = max_wire_size(H + S + W)
 ```
 
 For a TX block granting payload capacity `C`:
 
 ```text
-physical block size = max_wire_size(H + C)
-payload offset      = raw_offset(H + C) + H
+physical block size = max_wire_size(H + C + W)
+payload offset      = raw_offset(H + C + W) + H
 ```
 
-`Format` statically checks that its header-inclusive size arithmetic cannot
+`Format` statically checks that its header-and-trailer-inclusive size arithmetic cannot
 overflow `size_t`.
 
 ## 7. Streaming decoder contract
@@ -294,7 +262,10 @@ decisions:
 
 | Condition | Primary counter | Frame lost | Enter discard-until-delimiter |
 |---|---|---:|---:|
-| declared equals actual | delivered | no | no |
+| declared equals actual, body >= W, integrity matches | delivered | no | no |
+| declared < W, body follows | length mismatch | yes | yes |
+| declared < W, delimiter follows header | length mismatch | yes | no |
+| fully delimited body fails integrity | crc_errors | yes | no |
 | no length field | length mismatch | yes | no |
 | truncated two-byte length | length mismatch | yes | no |
 | declared zero, body follows | length mismatch | yes | yes |
@@ -341,7 +312,7 @@ missing packet and the RX statistics snapshot.
 For a block granting `C` payload bytes:
 
 ```text
-| encoder headroom for H+C | H-byte length | C-byte payload area |
+| encoder headroom for H+C+W | H-byte length | C-byte payload area | W-byte trailer area |
 ^                           ^               ^
 block start                 raw frame       public builder data
 ```
@@ -349,19 +320,19 @@ block start                 raw frame       public builder data
 The payload is physically placed using capacity geometry:
 
 ```text
-payload = block + raw_offset(H + C) + H
+payload = block + raw_offset(H + C + W) + H
 ```
 
 When only `S <= C` bytes were appended, encoding does not move them. It begins
 later in the same allocation using actual-size geometry:
 
 ```text
-decoded = H + S
+decoded = H + S + W
 encoding begin = payload - H - raw_offset(decoded)
 wire span capacity = max_wire_size(decoded)
 ```
 
-The length is written immediately before encoding, then `encode_in_place()`
+The length and policy trailer are written immediately before encoding, then `encode_in_place()`
 reads raw bytes forward and writes encoded bytes forward.
 
 ### 10.1 Overlap invariant
@@ -391,7 +362,8 @@ Once a message is encoded, the length field and raw payload have been
 overwritten in place. If the transport refuses to start:
 
 - the message remains Encoded;
-- no header is rewritten;
+- no header or trailer is rewritten;
+- the CRC calculator is not invoked again;
 - no second encoding occurs;
 - the next send attempt presents the same pointer range and byte-identical
   wire frame.
@@ -400,11 +372,12 @@ Only after a sender accepts the span does ownership move to the endpoint.
 
 ## 11. Wire-change checklist
 
-A protocol-affecting change is incomplete unless all of the following are
+Current regression tests include every built-in CRC width/method, arbitrary sums,
+stateful policies, exact inverse geometry and legacy vectors. A protocol-affecting change is incomplete unless all of the following are
 reviewed together:
 
 1. `Format` remains the single source of limits and `H`.
-2. Both peers agree on length width and byte order.
+2. Both peers agree on length width and integrity width/semantics/codec.
 3. Body-length semantics, including any trailer, are explicit.
 4. `max_encoded_size`, `max_wire_size`, and `raw_offset` remain consistent.
 5. The in-place overlap proof still holds.

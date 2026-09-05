@@ -87,7 +87,7 @@ concept HasAppendBe16 = requires(M& message) { message.append_be16(uint16_t{}); 
 
 int main()
 {
-	using Endpoint = modbus::rtu::Endpoint<modbus::rtu::Pool<2, 2>>;
+	using Endpoint = modbus::rtu::Endpoint<wire::Pool<2, 2>>;
 	using Message = Endpoint::Message;
 	static_assert(!std::is_copy_constructible_v<Message>);
 	static_assert(std::is_nothrow_move_constructible_v<Message>);
@@ -114,7 +114,7 @@ int main()
 	check(transport.last.size() == 9u &&
 	      std::equal(expected_prefix.begin(), expected_prefix.end(), transport.last.begin()),
 	      "wire layout is address, function, big-endian data");
-	check(modbus::rtu::crc::verify(transport.last),
+	check(::crc::verify<::crc::Crc16Bitwise>(transport.last),
 	      "Message appends a valid low-byte-first CRC automatically");
 	check(endpoint.storage().tx_available() == 1u && endpoint.tx_active(),
 	      "Endpoint owns the pool block while transport borrows it");
@@ -157,7 +157,7 @@ int main()
 	      transport.last.size() == universal_prefix.size() + 2u &&
 	      std::equal(universal_prefix.begin(), universal_prefix.end(),
 	                 transport.last.begin()) &&
-	      modbus::rtu::crc::verify(transport.last),
+	      ::crc::verify<::crc::Crc16Bitwise>(transport.last),
 	      "every serializer produces exact bytes before the library-owned CRC");
 	transport.finish();
 	endpoint.poll();
@@ -249,7 +249,7 @@ int main()
 	check(!maximum && moved && moved.size() == 252u,
 	      "move transfers exclusive ownership and logical size");
 	check(endpoint.send(moved) == modbus::SendResult::Sent &&
-	      transport.last.size() == 256u && modbus::rtu::crc::verify(transport.last),
+	      transport.last.size() == 256u && ::crc::verify<::crc::Crc16Bitwise>(transport.last),
 	      "maximum Message becomes an exact valid 256-byte RTU ADU");
 	transport.finish();
 	endpoint.poll();

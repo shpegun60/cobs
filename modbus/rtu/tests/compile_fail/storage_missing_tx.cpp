@@ -3,13 +3,21 @@
  * SPDX-License-Identifier: MIT
  */
 
+/*
+ * A storage specification whose bound storage lacks the TX operations must
+ * fail where Endpoint applies the shared wire::Storage contract.
+ */
 #include "modbus/rtu/Rtu.h"
 
+#include <cstddef>
+
 struct MissingTx {
-	using RxBlock = modbus::rtu::RxBlock<MissingTx>;
-	static constexpr std::size_t max_adu_size = 256u;
-	RxBlock* acquire_rx(std::size_t) noexcept;
-	void release_rx(RxBlock*) noexcept;
+	template<class Geometry>
+	class For final {
+	public:
+		std::byte* acquire_rx(std::size_t) noexcept;
+		void release_rx(std::byte*) noexcept;
+	};
 };
 
 modbus::rtu::Endpoint<MissingTx> endpoint;

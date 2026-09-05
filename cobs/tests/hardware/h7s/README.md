@@ -5,6 +5,66 @@ SPDX-License-Identifier: MIT
 
 # NUCLEO-H7S3L8 COBS + UART hardware integration test
 
+## Matched performance comparison through 10M
+
+The separate [matched-load benchmark](../../../../doc/COBS_PERFORMANCE.md)
+uses the unchanged v2 firmware to compare NoCrc / CRC16 Bitwise / Table with
+identical payload corpora, 253/H1 and 1024/H2 geometries, short/long/mixed
+packets and two repeats at each of five baud rates. It reports actual wire
+throughput alongside instrumented CPU work, with the scope-nesting and
+IRQ-preemption limitations made explicit.
+
+`run_performance.ps1` backs up and restores the original 64 KiB board image
+even on a failed measurement. `cobs_performance.py` precomputes all host
+CRC/COBS work before timing; `verify_performance.py` independently checks
+the records and produces weighted comparison tables.
+
+The [5 September results](results_performance_2026-09-05.jsonl) contain
+300 passed measurements / 1,055,138 echoes. The adjacent
+[session receipt](results_performance_2026-09-05.jsonl.session.json) records
+verified restoration of the original firmware. See the benchmark document
+for the CPU/throughput tables, including the distinction between measured
+10M-configured traffic and an extrapolated continuous full-line load.
+
+## Current shared-storage / CRC v2 validation
+
+The current harness defaults to the real `cobs::Format<>`: CRC16 Bitwise,
+253 useful bytes, one-byte length, `Endpoint<wire::Pool<8,2>, Format<>>`.
+Its harness protocol is version 2; STATS is a two-page coherent snapshot so
+the control response does not require an enlarged application payload.
+
+All three configurations passed the full 115200/1M/3M/6M/10M matrix:
+
+- [CRC16 Bitwise / 253](results_crc_default_2026-09-05.jsonl), 29 records;
+- [CRC16 Table / 253](results_crc_table_2026-09-05.jsonl), 28 records;
+- [explicit legacy NoCrc / 1024](results_legacy_shared_storage_2026-09-05.jsonl), 28 records.
+
+See [the current validation report](../../../../doc/SHARED_POLICIES_VALIDATION.md)
+for tables, caveats and source/image identities. Recheck without touching a
+board using `python -B wire/tests/verify_hardware_migration.py` from the root.
+
+From the repository root (these commands build and flash the selected board):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File cobs/tests/hardware/h7s/run_matrix.ps1 `
+  -Port COM6 -StLinkSerial 002A001F3033510135393935 -Crc bitwise
+
+# Alternative policies/limits use the same runner:
+# -Crc table                  CRC16 Table, payload 253
+# -Crc none -MaxPayload 1024   exact legacy NoCrc/H2 wire
+```
+
+For manual builds, `COBS_HW_CRC` is 0=NoCrc, 1=Bitwise, 2=Table and
+`COBS_HW_MAX_PAYLOAD` is optional. The Python peer takes matching `--crc`
+and `--max-payload` options and validates HELLO before testing. These are
+explicit test configurations, not automatic wire-version detection.
+
+## Historical v1 measurements
+
+The geometry, wire/control version and numeric tables below describe the
+original 2026-09-01 images. They remain comparison evidence, not current
+default settings or the current storage API.
+
 Status: audited on real silicon, 2026-09-01
 
 Raw evidence:

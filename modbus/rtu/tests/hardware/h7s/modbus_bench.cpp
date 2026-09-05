@@ -55,12 +55,12 @@ constexpr std::size_t kTxBlocks = 2u;
 constexpr std::size_t kUartChunkSize = 256u;
 constexpr std::size_t kUartChunkCount = 4u;
 
-using Memory = modbus::rtu::Pool<kRxBlocks, kTxBlocks>;
+using Memory = wire::Pool<kRxBlocks, kTxBlocks>;
 #if MODBUS_HW_CRC_POLICY_ID == 0
 using Crc = ::crc::Crc16Bitwise;
 constexpr uint32_t kCrcPolicy = 0u;
 #elif MODBUS_HW_CRC_POLICY_ID == 1
-using Crc = modbus::rtu::crc::Table;
+using Crc = ::crc::Crc16Table;
 constexpr uint32_t kCrcPolicy = 1u;
 #elif MODBUS_HW_CRC_POLICY_ID == 2
 using Crc = ::crc::NoCrc;
@@ -84,11 +84,11 @@ constexpr uint32_t kCrcPolicy = 7u;
 using Crc = ::crc::Crc64Table;
 constexpr uint32_t kCrcPolicy = 8u;
 #endif
-using Link = modbus::rtu::Endpoint<Memory, Crc>;
+using Link = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<Crc>>;
 using Serial = Uart<kUartChunkSize, kUartChunkCount>;
 
 static_assert(Link::max_receive_size ==
-	modbus::rtu::max_adu_size - 2u - Crc::wire_size);
+	modbus::rtu::standard_adu_size - 2u - Crc::wire_size);
 static_assert(Link::max_send_size == Link::max_receive_size);
 static_assert(Link::max_frame_size == 256u);
 
@@ -136,8 +136,8 @@ struct AppMetrics final {
 AppMetrics s_app;
 modbus::rtu::Stats s_rtu0;
 Serial::Stats s_uart0;
-Memory::PoolStats s_rx_pool0;
-Memory::PoolStats s_tx_pool0;
+Link::Storage::Stats s_rx_pool0;
+Link::Storage::Stats s_tx_pool0;
 uint32_t s_window_start = 0u;
 
 PendingAction s_pending_action = PendingAction::None;
@@ -407,8 +407,8 @@ void reset_metrics() noexcept
 	__disable_irq();
 	const modbus::rtu::Stats rtu_stats = s_link.stats();
 	const Serial::Stats uart_stats = s_uart.stats();
-	const Memory::PoolStats rx_pool = s_link.storage().rx_stats();
-	const Memory::PoolStats tx_pool = s_link.storage().tx_stats();
+	const Link::Storage::Stats rx_pool = s_link.storage().rx_stats();
+	const Link::Storage::Stats tx_pool = s_link.storage().tx_stats();
 	const AppMetrics app = s_app;
 	const uint32_t window_ms = HAL_GetTick() - s_window_start;
 	const BenchCounter usart_irq = g_bench_usart_irq;

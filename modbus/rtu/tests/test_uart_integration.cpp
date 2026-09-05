@@ -20,7 +20,7 @@ namespace {
 
 struct Fixture final {
 	using Serial = Uart<256, 4>;
-	using Link = modbus::rtu::Endpoint<modbus::rtu::Pool<4, 2>>;
+	using Link = modbus::rtu::Endpoint<wire::Pool<4, 2>>;
 
 	USART_TypeDef usart{};
 	DMA_Channel_TypeDef channel_rx{};
@@ -168,7 +168,7 @@ int main()
 	      fixture.uart.tx_busy() && fixture.link.tx_active(),
 	      "Endpoint transfers one contiguous ADU borrow into UART DMA");
 	check(fake::model().tx_len == 6u &&
-	      modbus::rtu::crc::verify(
+	      ::crc::verify<::crc::Crc16Bitwise>(
 			std::span<const uint8_t>{fake::model().tx_src, fake::model().tx_len}),
 	      "UART DMA sees address/function/data/CRC in the same owned block");
 	fake::tx_done();

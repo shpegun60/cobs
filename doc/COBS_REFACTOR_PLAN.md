@@ -5,6 +5,10 @@ SPDX-License-Identifier: MIT
 
 # COBS refactor plan
 
+The later shared-storage/CRC migration is tracked in
+[SHARED_POLICIES_PLAN.md](SHARED_POLICIES_PLAN.md). The completed status and
+wire constraints below describe the original 2026-09-01 refactor only.
+
 Status: complete
 
 Created: 2026-09-01

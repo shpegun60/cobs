@@ -23,12 +23,17 @@ Production-oriented C++20 libraries for framed serial communication:
 
 Author: [shpegun60](https://github.com/shpegun60)
 
+Current migration and its acceptance criteria: [shared policies plan](doc/SHARED_POLICIES_PLAN.md).
+Fresh verification: [shared policies validation](doc/SHARED_POLICIES_VALIDATION.md).
+Matched live performance: [COBS NoCrc / CRC16 Bitwise / Table through 10M](doc/COBS_PERFORMANCE.md)
+(300 measurements; actual wire throughput alongside instrumented CPU work).
+
 ## What is in this repository?
 
 | Layer | Main include | Responsibility |
 |---|---|---|
 | COBS application API | [`cobs/Cobs.h`](cobs/Cobs.h) | frames, packet ownership, TX message building, retries, counters |
-| COBS storage API | [`cobs/Storage.h`](cobs/Storage.h) | `Format`, `Heap`, `Pool`, custom storage contract |
+| Shared storage API | [`wire/Storage.h`](wire/Storage.h) | `Heap`, `Pool`, three-value Geometry, protocol-blind custom memory |
 | Low-level codec | [`cobs/Codec.h`](cobs/Codec.h) | streaming decoder and canonical in-place encoder |
 | Shared scalar I/O | [`wire/Scalar.h`](wire/Scalar.h), [`wire/Read.h`](wire/Read.h) | constrained native/BE/LE scalar representation and stateless bounds-checked readers |
 | CRC policy API | [`crc/Crc.h`](crc/Crc.h) | bitwise/table CRC8/16/32/64, wire codecs, custom policy contract, `NoCrc` |
@@ -44,8 +49,9 @@ spans and reports physical gaps. `cobs::Endpoint` and
 different byte transport can be bound to either endpoint, and UART can be
 used without either protocol layer. COBS and Modbus share the stateless
 `wire/Scalar.h` and `wire/Read.h` primitives so their native/BE/LE scalar I/O
-contracts cannot drift. Modbus additionally selects policies from the
-protocol-independent CRC module; COBS does not use that module yet. Neither
+contracts cannot drift. Both select policies from the
+protocol-independent CRC module and bind the same memory specifications from
+`wire/Storage.h` to their own computed geometry. Neither
 protocol depends on the other's framing or ownership types.
 
 ```text
@@ -57,7 +63,7 @@ RX wire
 
 application payload
   -> cobs::Message
-  -> in-place [length + COBS + delimiter]
+  -> in-place [length + CRC + COBS + delimiter]
   -> Uart::send()
   -> DMA borrows the same block
   -> Endpoint::poll() releases it after UART becomes idle
@@ -73,13 +79,14 @@ application payload
 - `cobs::Packet` is an immutable copyable handle with explicit storage-backed
   lifetime.
 - `cobs::Message` is a move-only exclusive TX owner.
-- `cobs::Pool` performs deterministic O(1) fixed-block allocation without a
+- `wire::Pool` performs deterministic O(1) fixed-block allocation without a
   heap.
 - `modbus::rtu::Packet` exposes zero-copy `data()`, `pdu()`, and `adu()` views;
   `Message` adds address, function, and a compile-time CRC/checksum policy.
-- RTU keeps one 256-byte physical slab while CRC width determines useful data:
+- RTU defaults to a 256-byte ADU ceiling; `Format<Crc, MaxAdu>` configures it.
+  At 256 bytes, CRC width determines useful data:
   254 bytes with `NoCrc`, 253/252/250/246 with CRC8/16/32/64.
-- `modbus::rtu::Pool<Rx, Tx>` provides fixed 256-byte RTU slabs with independent
+- `wire::Pool<Rx, Tx>` provides geometry-sized slabs with independent
   RX/TX ownership quotas and no heap use.
 - UART RX DMA writes directly into cache-aligned SPSC chunks; there is no
   intermediate memcpy.
@@ -124,31 +131,35 @@ Normal application code includes only:
 #include "Cobs.h"
 ```
 
-The shortest endpoint is heap-backed and accepts 255 application bytes in
+The shortest endpoint is heap-backed and accepts 253 application bytes with CRC16 in
 each direction:
 
 ```cpp
 cobs::Endpoint<> endpoint;
 
-static_assert(decltype(endpoint)::max_receive_size == 255);
-static_assert(decltype(endpoint)::max_send_size == 255);
+static_assert(decltype(endpoint)::max_receive_size == 253);
+static_assert(decltype(endpoint)::max_send_size == 253);
 static_assert(decltype(endpoint)::length_size == 1);
 ```
 
 ### Formats and storage
 
-`Format` numbers are application-body limits. Length bytes, COBS code bytes,
+`Format` numbers are useful application-payload limits. CRC, length and COBS code bytes,
 the delimiter, and encoding headroom are calculated internally and do not
 reduce the requested payload capacity.
 
 ```cpp
-cobs::Format<>             // RX 255,  TX 255,  one-byte length
-cobs::Format<1024>         // RX 1024, TX 1024, two-byte length
-cobs::Format<1024, 64>     // RX 1024, TX 64,   two-byte length
+cobs::Format<>                            // CRC16, payload 253/253, H1
+cobs::Format<crc::Crc16Table>               // same wire, faster table calculation
+cobs::Format<crc::Crc16Bitwise, 1024>       // payload 1024/1024, H2
+cobs::Format<crc::Crc16Bitwise, 1024, 64>   // asymmetric payload, H2
+cobs::Format<crc::NoCrc, 255>               // explicit legacy v1, H1
 ```
 
-The larger directional limit chooses the length-field width for both
-directions. Peers must agree on that width.
+The larger directional payload limit plus CRC width chooses the length width
+for both directions. Peers must agree on that width and checksum semantics.
+There is no version marker or automatic detection; an old NoCrc receiver can
+deliver a new frame's trailer as application data. See [migration](doc/PROTOCOL.md#compatibility).
 
 Built-in storage choices:
 
@@ -157,23 +168,23 @@ Built-in storage choices:
 using DesktopLink = cobs::Endpoint<>;
 
 // Fixed memory, eight RX owners and two TX owners; default Format<>.
-using SmallEmbeddedLink = cobs::Endpoint<cobs::Pool<8, 2>>;
+using SmallEmbeddedLink = cobs::Endpoint<wire::Pool<8, 2>>;
 
 // Fixed memory and a symmetric 1024-byte application payload limit.
-using Wire = cobs::Format<1024>;
-using Memory = cobs::Pool<8, 2, Wire>;
-using EmbeddedLink = cobs::Endpoint<Memory>;
+using Wire = cobs::Format<crc::Crc16Bitwise, 1024>;
+using Memory = wire::Pool<8, 2>;
+using EmbeddedLink = cobs::Endpoint<Memory, Wire>;
 
 // Heap-backed asymmetric protocol.
 using AsymmetricLink =
-    cobs::Endpoint<cobs::Heap<cobs::Format<1024, 64>>>;
+    cobs::Endpoint<wire::Heap, cobs::Format<crc::Crc16Bitwise, 1024, 64>>;
 ```
 
 The `Pool` block counts remain explicit because they determine static RAM use
 and backpressure. The library never invents those quotas.
 
-`Format<255>` still gives all 255 useful payload bytes. Its worst-case wire
-storage is larger because it also contains one length byte, COBS overhead, and
+`Format<crc::Crc16Bitwise, 255>` gives all 255 useful payload bytes. Its body
+is 257 bytes, so storage includes two length bytes, the CRC, COBS overhead, and
 the trailing `0x00`. If a complete transport frame must fit a separate hard
 256-byte wire buffer, use the sizing functions in `cobs::codec` rather than
 subtracting a guessed constant.
@@ -375,7 +386,7 @@ For a pool-backed endpoint, the read-only storage view also exposes current
 capacity and allocator diagnostics:
 
 ```cpp
-using Link = cobs::Endpoint<cobs::Pool<8, 2>>;
+using Link = cobs::Endpoint<wire::Pool<8, 2>>;
 Link link;
 
 const std::size_t free_rx_blocks = link.storage().rx_available();
@@ -410,7 +421,7 @@ own namespace and wire framing:
 ```cpp
 #include "modbus/rtu/Rtu.h"
 
-using Memory = modbus::rtu::Pool<8, 2>;
+using Memory = wire::Pool<8, 2>;
 using Modbus = modbus::rtu::Endpoint<Memory>;
 
 Modbus link;
@@ -423,14 +434,14 @@ messages/transport borrows. The heap-backed convenience form is simply:
 modbus::rtu::Endpoint<> link;
 ```
 
-The second Endpoint template argument selects a complete CRC/checksum policy
-at compile time: result type, wire width, calculation, and store/load codec.
+The second Endpoint argument is `modbus::rtu::Format<Crc, MaxAdu>`.
+It selects the complete integrity policy and the physical ADU ceiling.
 The portable table-free CRC-16/MODBUS implementation remains the default; its
-faster alias uses one private 512-byte flash table:
+Table option uses one private 512-byte flash table:
 
 ```cpp
 using FastModbus = modbus::rtu::Endpoint<
-    Memory, modbus::rtu::crc::Table>;
+    Memory, modbus::rtu::Format<crc::Crc16Table>>;
 ```
 
 The independent [`crc/Crc.h`](crc/Crc.h) module also supplies CRC8/32/64,
@@ -481,9 +492,11 @@ uart.setRxGapHandler(Serial::GapHandler{
 
 With the default CRC16, the maximum PDU is 253 bytes: one function byte plus up
 to 252 function-data bytes. Address and two CRC bytes make the RTU ADU exactly
-256 bytes. The physical limit remains 256 for every policy; `NoCrc` recovers
-the two trailer bytes and exposes 254 function-data bytes. Alternate policies
-are private wire formats, not standard Modbus RTU. This v1 adapter uses a
+256 bytes. The configured physical ceiling stays unchanged when selecting a
+different CRC; use `modbus::rtu::Format<Crc, MaxAdu>` to change it. `NoCrc` recovers
+the two trailer bytes and exposes 254 function-data bytes at MaxAdu=256.
+Non-Modbus checksum semantics or actual ADUs above 256 are private exchanges;
+CRC16 Table or an equivalent hardware calculator remain compatible. This adapter uses a
 continuous UART burst as its physical boundary;
 it does not claim strict software t1.5/t3.5 timing. Read the full
 [Modbus usage guide](modbus/README.md) and canonical
@@ -677,9 +690,9 @@ receives byte chunks and ordered gap notifications.
 class SerialStack final {
 public:
     using Serial = Uart<128, 8>;
-    using Wire = cobs::Format<1024>;
-    using Memory = cobs::Pool<8, 2, Wire>;
-    using Link = cobs::Endpoint<Memory>;
+    using Wire = cobs::Format<crc::Crc16Bitwise, 1024>;
+    using Memory = wire::Pool<8, 2>;
+    using Link = cobs::Endpoint<Memory, Wire>;
 
     bool init(UART_HandleTypeDef* huart) noexcept
     {
@@ -768,21 +781,21 @@ The exact implementation used for real-silicon testing is
 Every engine frame is:
 
 ```text
-COBS( little_endian_body_length | application_body ) 00
+COBS( little_endian_body_length | payload | CRC(payload) ) 00
 ```
 
-The length counts only application-body bytes. Empty application packets are
+The length counts payload plus trailer, not the length field itself. Empty application packets are
 valid. Bare delimiters are synchronization no-ops. The encoder is canonical;
 the decoder accepts structurally valid non-canonical COBS.
 
 Length width:
 
 ```text
-max(RX limit, TX limit) <= 255  -> 1 byte
+max(RX payload limit, TX payload limit) + CRC width <= 255 -> 1 byte
 otherwise                      -> 2 bytes
 ```
 
-Both limits must fit `uint16_t`. Peers with different length widths are wire
+Both payload-plus-trailer limits must fit `uint16_t`. Peers with different length widths are wire
 incompatible even for a one-byte body. For vectors, size arithmetic, malformed
 behavior, retry identity, and the gap state machine, read
 [`doc/PROTOCOL.md`](doc/PROTOCOL.md).
@@ -900,6 +913,7 @@ cross-target code generation, benchmarks, and real hardware evidence.
 | UART port matrix | `sh uart/tests/port/build.sh` | F1/G4/H7RS compile paths, analyzer, probes, hot symbol/stack budgets |
 | UART H7S bench | [`uart/tests/bench/README.md`](uart/tests/bench/README.md) | real DMA/IRQ throughput and CPU accounting |
 | COBS + UART H7S matrix | [`cobs/tests/hardware/h7s/README.md`](cobs/tests/hardware/h7s/README.md) | independent PC codec, vectors, faults, pools, gaps, stress through 10 Mbaud |
+| Matched COBS CRC performance | [`doc/COBS_PERFORMANCE.md`](doc/COBS_PERFORMANCE.md) | 300 live measurements: NoCrc/Bitwise/Table, 253/H1 and 1024/H2, short/long/mixed data, measured CPU and wire throughput through 10M |
 
 Raw current hardware evidence:
 
@@ -956,16 +970,16 @@ integrations.
 
 ### Why is the default COBS body limit 255 instead of 256?
 
-One byte represents values `0..255`. The protocol uses `0` for an empty body,
-so the largest directly representable one-byte length is 255. A 256-byte body
-uses a two-byte length field. Service bytes are allocated in addition to the
-declared body capacity.
+One byte represents 0..255. The default body is at most 253 useful bytes plus
+a two-byte CRC. A 256-byte body needs H2. An explicit useful-payload limit
+is never reduced: `Format<crc::Crc16Bitwise, 256>` carries all 256 payload
+bytes with a two-byte length and a two-byte trailer.
 
 ### Does `Pool<8, 2>` mean byte sizes?
 
-No. It means eight RX ownership blocks and two TX ownership blocks. Its omitted
-third parameter is `Format<>` (255/255). Use
-`Pool<8, 2, Format<1024>>` for a 1024-byte symmetric body limit.
+No. `wire::Pool<8, 2>` means eight RX owners and two TX owners. There is no
+third parameter. Put the format on the endpoint:
+`cobs::Endpoint<wire::Pool<8, 2>, cobs::Format<crc::Crc16Bitwise, 1024>>`.
 
 ### Why is there no COBS or UART TX queue?
 
@@ -981,7 +995,7 @@ TX start. The code paths still mention HT because disabling it is required.
 
 ### Can `Packet` cross RTOS tasks?
 
-Not under the current v1 contract. Its reference count is intentionally plain
+Not under the current ownership contract. Its reference count is intentionally plain
 and cheap. Keep copies/releases in one execution domain or design a separate
 atomic ownership policy.
 

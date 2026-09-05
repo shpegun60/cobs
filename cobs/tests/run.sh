@@ -41,8 +41,7 @@ rm -f "$OUT/.sancheck" "$OUT/.sancheck.exe"
 # One binary per layer, so a failure names the layer without a stack trace:
 #   test_decoder         framing only
 #   test_codec_exhaustive independent differential oracle over every short stream
-#   test_block_pool      cobs::detail::BlockPool, the raw memory primitive
-#   test_storage         the storage contract, run against BOTH strategies
+#   shared storage and raw block pool are verified by wire/tests/run.sh
 #   test_receiver        the internal RX vertical, end to end
 #   test_packet          public packet lifetime/refcount via Endpoint only
 #   test_encoder         canonical in-place encoding over its own payload
@@ -66,9 +65,9 @@ build_release() {
 }
 
 build test_decoder         "$COBS/Decoder.cpp" "$HERE/test_decoder.cpp"
+build test_geometry        "$HERE/test_geometry.cpp"
+build test_crc             "$COBS/Decoder.cpp" "$COBS/Encoder.cpp" "$HERE/test_crc.cpp"
 build test_codec_exhaustive "$COBS/Decoder.cpp" "$COBS/Encoder.cpp" "$HERE/test_codec_exhaustive.cpp"
-build test_block_pool      "$HERE/test_block_pool.cpp"
-build test_storage         "$HERE/test_storage.cpp"
 build test_receiver        "$COBS/Decoder.cpp" "$HERE/test_receiver.cpp"
 build test_packet          "$COBS/Decoder.cpp" "$HERE/test_packet.cpp"
 build test_encoder         "$COBS/Decoder.cpp" "$COBS/Encoder.cpp" "$HERE/test_encoder.cpp"
@@ -76,20 +75,14 @@ build test_message         "$COBS/Decoder.cpp" "$COBS/Encoder.cpp" "$HERE/test_m
 build test_endpoint        "$COBS/Decoder.cpp" "$COBS/Encoder.cpp" "$HERE/test_endpoint.cpp"
 build test_layout          "$HERE/test_layout.cpp"
 
-# The release build is a DIFFERENT build, so it is tested as one. The pool's
-# double-free and foreign-pointer rejection used to be compiled out by NDEBUG,
-# which meant the shipped configuration had weaker safety semantics than the
-# one every test ran against -- a guarantee that evaporates under -DNDEBUG is a
-# debugging aid with good manners. COBS_POOL_CHECKS now defaults to on
-# regardless, and these two prove it rather than assuming it.
-build test_block_pool_ndebug -DNDEBUG "$HERE/test_block_pool.cpp"
-build test_storage_ndebug -DNDEBUG "$HERE/test_storage.cpp"
+# Shared storage's independent NDEBUG guards live in wire/tests/run.sh.
 build_release test_codec_exhaustive_o3 "$COBS/Decoder.cpp" "$COBS/Encoder.cpp" "$HERE/test_codec_exhaustive.cpp"
+build_release test_crc_o3 "$COBS/Decoder.cpp" "$COBS/Encoder.cpp" "$HERE/test_crc.cpp"
 
 "$OUT/test_decoder.exe"
+"$OUT/test_geometry.exe"
+"$OUT/test_crc.exe"
 "$OUT/test_codec_exhaustive.exe"
-"$OUT/test_block_pool.exe"
-"$OUT/test_storage.exe"
 "$OUT/test_receiver.exe"
 "$OUT/test_packet.exe"
 "$OUT/test_encoder.exe"
@@ -97,9 +90,6 @@ build_release test_codec_exhaustive_o3 "$COBS/Decoder.cpp" "$COBS/Encoder.cpp" "
 "$OUT/test_endpoint.exe"
 "$OUT/test_layout.exe"
 
-echo "=== the same guarantees, built with -DNDEBUG ==="
-"$OUT/test_block_pool_ndebug.exe"
-"$OUT/test_storage_ndebug.exe"
-
 echo "=== exhaustive codec oracle, optimized -O3/-DNDEBUG build ==="
 "$OUT/test_codec_exhaustive_o3.exe"
+"$OUT/test_crc_o3.exe"

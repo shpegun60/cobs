@@ -12,6 +12,7 @@ isEmpty(MODBUS_RTU_PRI_INCLUDED) {
         MODBUS_DELEGATE_DIR = $$clean_path($$MODBUS_ROOT/../libs/delegate)
     }
 
+    include($$MODBUS_ROOT/../wire/wire.pri)
     include($$MODBUS_ROOT/../crc/crc.pri)
 
     INCLUDEPATH += $$MODBUS_DELEGATE_DIR
@@ -19,18 +20,14 @@ isEmpty(MODBUS_RTU_PRI_INCLUDED) {
     DEPENDPATH += $$MODBUS_DELEGATE_DIR
 
     HEADERS += \
-        $$MODBUS_ROOT/../wire/Scalar.h \
-        $$MODBUS_ROOT/../wire/Read.h \
         $$MODBUS_ROOT/Types.h \
         $$MODBUS_ROOT/Pdu.h \
-        $$MODBUS_ROOT/detail/BlockPool.h \
-        $$MODBUS_RTU_DIR/Crc.h \
         $$MODBUS_RTU_DIR/RtuLimits.h \
         $$MODBUS_RTU_DIR/Format.h \
         $$MODBUS_RTU_DIR/Stats.h \
-        $$MODBUS_RTU_DIR/Storage.h \
         $$MODBUS_RTU_DIR/Rtu.h \
         $$MODBUS_RTU_DIR/detail/Message.h \
         $$MODBUS_RTU_DIR/detail/Packet.h \
-        $$MODBUS_RTU_DIR/detail/Receiver.h
+        $$MODBUS_RTU_DIR/detail/Receiver.h \
+        $$MODBUS_RTU_DIR/detail/RxBlock.h
 }

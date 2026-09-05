@@ -3,14 +3,23 @@
  * SPDX-License-Identifier: MIT
  */
 
-/* Exclusive, growable owner of one Modbus RTU transmit ADU. */
+/*
+ * Exclusive, growable owner of one Modbus RTU transmit ADU.
+ *
+ * Storage speaks bytes (wire/Storage.h): Message asks for
+ * Layout::adu_size_for_data(capacity) physical bytes and receives a
+ * wire::TxBlock {memory, granted}. `granted` may exceed the request (a
+ * size-class pool, a whole slab) and may even exceed the ADU ceiling; the
+ * usable data capacity is derived from it and clamped to the Layout, while
+ * the descriptor itself goes back to storage exactly as it came.
+ */
 
 #ifndef MODBUS_RTU_DETAIL_MESSAGE_H_
 #define MODBUS_RTU_DETAIL_MESSAGE_H_
 
 #include "../Format.h"
-#include "../Storage.h"
 #include "../../../wire/Scalar.h"
+#include "../../../wire/Storage.h"
 
 #include <bit>
 #include <cstddef>
@@ -20,21 +29,20 @@
 
 namespace modbus::rtu {
 
-template<class StorageT, class CrcT>
+template<class MemoryT, class FormatT>
 class Endpoint;
 
-template<class StorageT, class FormatT>
+template<class StorageT, class LayoutT>
 class Message final {
-	static_assert(modbus::rtu::Storage<StorageT>,
-		"Message storage must satisfy modbus::rtu::Storage");
-	static_assert(StorageT::max_adu_size == modbus::rtu::max_adu_size,
-		"Modbus RTU storage must provide one complete 256-byte ADU");
+	static_assert(wire::ByteStorage<StorageT>,
+		"Message storage must satisfy the wire::ByteStorage contract");
 	template<class, class>
 	friend class Endpoint;
 
 public:
-	using Format = FormatT;
-	static constexpr std::size_t max_payload_size = Format::max_data_size;
+	using Storage = StorageT;
+	using Layout = LayoutT;
+	static constexpr std::size_t max_payload_size = Layout::max_data_size;
 
 	Message() noexcept = default;
 
@@ -47,9 +55,9 @@ public:
 		if (hint > max_payload_size) {
 			return;
 		}
-		const std::size_t requested = Format::adu_size_for_data(hint);
+		const std::size_t requested = Layout::adu_size_for_data(hint);
 		m_block = storage.acquire_tx(requested);
-		if (valid_block(m_block, requested)) {
+		if (honours(m_block, requested)) {
 			write_header();
 			m_state = State::Building;
 		} else {
@@ -95,9 +103,15 @@ public:
 	}
 
 	[[nodiscard]] std::size_t size() const noexcept { return m_size; }
+
+	// Function-data bytes the current block permits. A grant above the ADU
+	// ceiling is legal for storage but not for the wire, so it is clamped.
 	[[nodiscard]] std::size_t capacity() const noexcept
 	{
-		return Format::data_capacity_for_adu(m_block.adu_capacity);
+		const std::size_t adu = m_block.granted < Layout::max_adu_size
+			? m_block.granted
+			: Layout::max_adu_size;
+		return Layout::data_capacity_for_adu(adu);
 	}
 	[[nodiscard]] uint8_t address() const noexcept { return m_address; }
 	[[nodiscard]] uint8_t function() const noexcept { return m_function; }
@@ -175,16 +189,16 @@ public:
 		}
 
 		const std::size_t target = grow_target(capacity(), required);
-		const std::size_t requested = Format::adu_size_for_data(target);
-		const TxBlock fresh = m_storage->acquire_tx(requested);
-		if (!valid_block(fresh, requested)) {
+		const std::size_t requested = Layout::adu_size_for_data(target);
+		const wire::TxBlock fresh = m_storage->acquire_tx(requested);
+		if (!honours(fresh, requested)) {
 			if (fresh.memory != nullptr) {
 				m_storage->release_tx(fresh);
 			}
 			return false;
 		}
 		std::memcpy(fresh.memory, m_block.memory,
-		            Format::adu_prefix_size + m_size);
+		            Layout::adu_prefix_size + m_size);
 		m_storage->release_tx(m_block);
 		m_block = fresh;
 		return true;
@@ -199,7 +213,7 @@ private:
 	}
 
 	template<::crc::Policy CrcT>
-		requires (CrcT::wire_size == Format::crc_size)
+		requires (CrcT::wire_size == Layout::crc_size)
 	[[nodiscard]] std::span<const uint8_t> finalize(CrcT& policy) noexcept
 	{
 		if (m_block.memory == nullptr) {
@@ -209,18 +223,18 @@ private:
 		if (m_state == State::Finalized) {
 			return {bytes, m_wire};
 		}
-		const std::size_t without_crc = Format::adu_prefix_size + m_size;
+		const std::size_t without_crc = Layout::adu_prefix_size + m_size;
 		const typename CrcT::value_type checksum = policy.calculate(
 			std::span<const uint8_t>{bytes, without_crc});
 		policy.store(bytes + without_crc, checksum);
-		m_wire = without_crc + Format::crc_size;
+		m_wire = without_crc + Layout::crc_size;
 		m_state = State::Finalized;
 		return {bytes, m_wire};
 	}
 
-	[[nodiscard]] TxBlock surrender_block() noexcept
+	[[nodiscard]] wire::TxBlock surrender_block() noexcept
 	{
-		const TxBlock block = m_block;
+		const wire::TxBlock block = m_block;
 		m_block = {};
 		disown();
 		return block;
@@ -239,13 +253,14 @@ private:
 		return target > max_payload_size ? max_payload_size : target;
 	}
 
-	[[nodiscard]] static constexpr bool valid_block(
-			const TxBlock block,
+	// The storage contract's one promise about a non-empty grant: at least
+	// the bytes asked for. A shorter grant is a contract violation and the
+	// block goes straight back rather than being written past its end.
+	[[nodiscard]] static constexpr bool honours(
+			const wire::TxBlock block,
 			const std::size_t requested) noexcept
 	{
-		return block.memory != nullptr &&
-		       block.adu_capacity >= requested &&
-		       block.adu_capacity <= StorageT::max_adu_size;
+		return block.memory != nullptr && block.granted >= requested;
 	}
 
 	[[nodiscard]] bool make_room(const std::size_t count) noexcept
@@ -300,7 +315,7 @@ private:
 	void write_header() noexcept
 	{
 		raw()[0] = m_address;
-		raw()[Format::address_size] = m_function;
+		raw()[Layout::address_size] = m_function;
 	}
 
 	[[nodiscard]] uint8_t* raw() const noexcept
@@ -310,7 +325,7 @@ private:
 
 	[[nodiscard]] uint8_t* data_ptr() const noexcept
 	{
-		return raw() + Format::adu_prefix_size;
+		return raw() + Layout::adu_prefix_size;
 	}
 
 	void release() noexcept
@@ -333,7 +348,7 @@ private:
 	}
 
 	StorageT* m_storage = nullptr;
-	TxBlock m_block{};
+	wire::TxBlock m_block{};   // exactly as granted; goes back unchanged
 	std::size_t m_size = 0u;
 	std::size_t m_wire = 0u;
 	uint8_t m_address = 0u;

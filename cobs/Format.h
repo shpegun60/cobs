@@ -4,57 +4,21 @@
  */
 
 /*
- * cobs::Format — protocol geometry, independent of memory strategy.
+ * Wire: COBS(length_le | payload | CRC(payload)) | 00.
+ * Length counts the body (payload + trailer), never itself. Its width is
+ * chosen from the larger directional body limit, so a link uses one width
+ * in both directions. Peers must agree on width and integrity semantics:
+ * there is no version marker or checksum autodetection.
  *
- * Contract: doc/PROTOCOL.md. Every engine frame carries a fixed-width decoded
- * length prefix ahead of its body:
- *
- *     wire     =  COBS( [length][body] ) 00
- *     length   =  the number of decoded BODY bytes that follow it
- *
- * The length never counts itself. In v1 the body IS the application payload;
- * a future integrity trailer would live inside the body and would therefore
- * be included in the declared length, which is the whole point of defining it
- * this way now rather than after the trailer exists.
- *
- * WHY A LENGTH AT ALL. Without it, RX has to commit to rx_max_size before the
- * first payload byte arrives, because a COBS frame announces its size only by
- * ending. With it, the decoder can be given the length prefix first, and the
- * packet can then be allocated at exactly the size that is coming — still with
- * no staging buffer and no copy, because the body decodes straight into its
- * final home.
- *
- * ---------------------------------------------------------------------------
- * WIRE FORMAT PROPERTY, NOT A MEMORY PROPERTY. The width is chosen from the
- * LARGER of the two directional limits:
- *
- *     length_size = max(rx_max_size, tx_max_size) <= 255 ? 1 : 2
- *
- * so that one engine speaks ONE header width in both directions. Choosing it
- * per direction would let an engine with rx_max_size = 1024 and
- * tx_max_size = 64 expect two bytes and send one, which is a wire-format
- * disagreement with itself.
- *
- * This does NOT merge the limits. With RX = 1024 and TX = 64 the header is two
- * bytes both ways, RX still refuses frames above 1024, and TX still refuses
- * payloads above 64.
- *
- * PEERS MUST AGREE ON length_size. It is part of the wire format exactly like
- * byte order, and two peers that disagree cannot exchange even a one-byte
- * frame. A complementary pair agrees automatically:
- *
- *     Peer A: RX 1024, TX 64    -> length_size 2
- *     Peer B: RX 64,   TX 1024  -> length_size 2
- *
- * `cobs::Endpoint<A>::length_size` is constexpr so an integration build can
- * static_assert the format it expects.
- * ---------------------------------------------------------------------------
+ * Layout contains only numeric geometry. Format adds the calculator type.
+ * Equal-width Bitwise/Table policies share Layout, Message, Packet and the
+ * bound Storage; an endpoint alone owns and invokes the calculator.
  */
-
 #ifndef COBS_FORMAT_H_
 #define COBS_FORMAT_H_
 
 #include "Codec.h"
+#include "../crc/Crc.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -62,80 +26,99 @@
 
 namespace cobs {
 
-template<std::size_t RxMaxSize = 255, std::size_t TxMaxSize = RxMaxSize>
-struct Format final {
-	// A 32-bit format is deliberately not offered. Nothing in this stack wants
-	// 64 KiB frames, and an unused third width is a third thing to get wrong.
-	static_assert(RxMaxSize <= UINT16_MAX,
-		"rx_max_size must fit the wire length field: at most 65535");
-	static_assert(TxMaxSize <= UINT16_MAX,
-		"tx_max_size must fit the wire length field: at most 65535");
+template<std::size_t CrcSize, std::size_t RxMaxSize, std::size_t TxMaxSize = RxMaxSize>
+struct Layout {
+	static_assert(CrcSize <= UINT16_MAX,
+		"CRC trailer must fit the COBS 16-bit body length");
+	static_assert(RxMaxSize <= UINT16_MAX - CrcSize,
+		"RX payload plus CRC must fit the COBS 16-bit body length");
+	static_assert(TxMaxSize <= UINT16_MAX - CrcSize,
+		"TX payload plus CRC must fit the COBS 16-bit body length");
 
+	static constexpr std::size_t crc_size = CrcSize;
 	static constexpr std::size_t max_receive_size = RxMaxSize;
 	static constexpr std::size_t max_send_size = TxMaxSize;
-
-	// The larger limit picks the width — see the header comment. Both
-	// directions then use it.
+	static constexpr std::size_t max_receive_body = RxMaxSize + crc_size;
+	static constexpr std::size_t max_send_body = TxMaxSize + crc_size;
 	static constexpr std::size_t wire_length_limit =
-		(RxMaxSize > TxMaxSize) ? RxMaxSize : TxMaxSize;
-
-	static constexpr std::size_t length_size = (wire_length_limit <= UINT8_MAX) ? 1u : 2u;
-
+		max_receive_body > max_send_body ? max_receive_body : max_send_body;
+	static constexpr std::size_t length_size = wire_length_limit <= UINT8_MAX ? 1u : 2u;
 	using LengthType = std::conditional_t<length_size == 1u, uint8_t, uint16_t>;
 
-	/*
-	 * Explicit little-endian, byte by byte. Never a memcpy of a LengthType:
-	 * that would put this host's byte order on the wire and work perfectly
-	 * until the first big-endian peer, which is the kind of bug that is found
-	 * by a customer rather than by a test.
-	 */
-	static constexpr void store_length(uint8_t* const dst, const std::size_t n) noexcept
+	static constexpr void store_length(uint8_t* dst, std::size_t body_size) noexcept
 	{
-		dst[0] = static_cast<uint8_t>(n & 0xFFu);
+		dst[0] = static_cast<uint8_t>(body_size & 0xFFu);
 		if constexpr (length_size == 2u) {
-			dst[1] = static_cast<uint8_t>((n >> 8) & 0xFFu);
+			dst[1] = static_cast<uint8_t>((body_size >> 8u) & 0xFFu);
 		}
 	}
 
-	[[nodiscard]] static constexpr std::size_t load_length(const uint8_t* const src) noexcept
+	[[nodiscard]] static constexpr std::size_t load_length(const uint8_t* src) noexcept
 	{
 		std::size_t n = src[0];
 		if constexpr (length_size == 2u) {
-			n |= static_cast<std::size_t>(src[1]) << 8;
+			n |= static_cast<std::size_t>(src[1]) << 8u;
 		}
 		return n;
 	}
 
-	// The decoded frame is the header plus the body, and every piece of
-	// geometry below is expressed in that total rather than in the payload.
-	[[nodiscard]] static constexpr std::size_t decoded_size_for_payload(
-		const std::size_t payload_size) noexcept
+	// The caller supplies a legal payload/capacity (<= its directional limit).
+	[[nodiscard]] static constexpr std::size_t decoded_size_for_payload(std::size_t n) noexcept
 	{
-		return length_size + payload_size;
+		return length_size + n + crc_size;
 	}
 
-	// What a TX block must physically hold to carry `capacity` payload bytes.
-	[[nodiscard]] static constexpr std::size_t tx_storage_size_for_capacity(
-		const std::size_t capacity) noexcept
+	[[nodiscard]] static constexpr std::size_t tx_storage_size_for_capacity(std::size_t n) noexcept
 	{
-		return cobs::codec::max_wire_size(decoded_size_for_payload(capacity));
+		return codec::max_wire_size(decoded_size_for_payload(n));
 	}
 
-	// Where the LENGTH FIELD sits inside such a block; the payload begins
-	// length_size bytes later.
-	[[nodiscard]] static constexpr std::size_t raw_offset_for_capacity(
-		const std::size_t capacity) noexcept
+	[[nodiscard]] static constexpr std::size_t raw_offset_for_capacity(std::size_t n) noexcept
 	{
-		return cobs::codec::raw_offset(decoded_size_for_payload(capacity));
+		return codec::raw_offset(decoded_size_for_payload(n));
 	}
 
-	// The guard of §4.2 still applies, now to the header-inclusive size.
-	static_assert(cobs::codec::size_arithmetic_fits(decoded_size_for_payload(RxMaxSize)),
-		"rx_max_size plus the length header overflows the COBS size arithmetic");
-	static_assert(cobs::codec::size_arithmetic_fits(decoded_size_for_payload(TxMaxSize)),
-		"tx_max_size plus the length header overflows the COBS size arithmetic");
+	// Exact O(1) inverse: M encoded bytes hold at most M - ceil(M/255)
+	// decoded bytes. Subtract both header and trailer for useful capacity.
+	// Clamp the physical grant first; even SIZE_MAX is safe. Used once per
+	// allocation/growth, never on the append hot path.
+	[[nodiscard]] static constexpr std::size_t payload_capacity_for_storage(std::size_t bytes) noexcept
+	{
+		if (bytes < tx_storage_size_for_capacity(0u)) { return 0u; }
+		constexpr auto maximum = tx_storage_size_for_capacity(max_send_size);
+		const auto encoded = (bytes < maximum ? bytes : maximum) - 1u;
+		const auto codes = encoded / 255u + (encoded % 255u != 0u ? 1u : 0u);
+		return encoded - codes - length_size - crc_size;
+	}
+
+	static_assert(codec::size_arithmetic_fits(decoded_size_for_payload(RxMaxSize)),
+		"RX decoded size overflows COBS size arithmetic");
+	static_assert(codec::size_arithmetic_fits(decoded_size_for_payload(TxMaxSize)),
+		"TX decoded size overflows COBS size arithmetic");
 };
 
-} // namespace cobs
+namespace detail {
+template<class CrcT>
+consteval std::size_t default_payload_size()
+{
+	static_assert(CrcT::wire_size <= UINT8_MAX,
+		"a CRC trailer above 255 bytes requires explicit COBS payload limits");
+	return CrcT::wire_size <= UINT8_MAX ? UINT8_MAX - CrcT::wire_size : 0u;
+}
+} // namespace detail
 
+template<class CrcT = ::crc::Crc16Bitwise,
+         std::size_t RxMaxSize = detail::default_payload_size<CrcT>(),
+         std::size_t TxMaxSize = RxMaxSize>
+struct Format final : Layout<CrcT::wire_size, RxMaxSize, TxMaxSize> {
+	static_assert(::crc::Policy<CrcT>, "COBS Format CRC must satisfy crc::Policy");
+	using Crc = CrcT;
+	using Layout = cobs::Layout<CrcT::wire_size, RxMaxSize, TxMaxSize>;
+};
+
+static_assert(Format<>::max_receive_size == 253u && Format<>::length_size == 1u);
+static_assert(Format<::crc::NoCrc>::max_receive_size == 255u);
+static_assert(std::is_same_v<Format<>::Layout, Format<::crc::Crc16Table>::Layout>);
+
+} // namespace cobs
 #endif /* COBS_FORMAT_H_ */

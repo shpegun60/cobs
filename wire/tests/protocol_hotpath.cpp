@@ -7,7 +7,7 @@
 
 #include "cobs/Format.h"
 #include "modbus/Pdu.h"
-#include "modbus/rtu/Crc.h"
+#include "crc/Crc.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -23,26 +23,26 @@ extern "C" WIRE_NOINLINE void cobs_store_length16(
 		uint8_t* const destination,
 		const std::size_t value) noexcept
 {
-	cobs::Format<256u>::store_length(destination, value);
+	cobs::Format<crc::NoCrc, 256u>::store_length(destination, value);
 }
 
 extern "C" WIRE_NOINLINE std::size_t cobs_load_length16(
 		const uint8_t* const source) noexcept
 {
-	return cobs::Format<256u>::load_length(source);
+	return cobs::Format<crc::NoCrc, 256u>::load_length(source);
 }
 
 extern "C" WIRE_NOINLINE void modbus_crc_store(
 		uint8_t* const destination,
 		const uint16_t value) noexcept
 {
-	modbus::rtu::crc::Bitwise::store(destination, value);
+	::crc::Crc16Bitwise::store(destination, value);
 }
 
 extern "C" WIRE_NOINLINE uint16_t modbus_crc_load(
 		const uint8_t* const source) noexcept
 {
-	return modbus::rtu::crc::Bitwise::load(source);
+	return ::crc::Crc16Bitwise::load(source);
 }
 
 extern "C" WIRE_NOINLINE uint32_t modbus_read_be32_exact(
@@ -69,7 +69,7 @@ extern "C" WIRE_NOINLINE uint16_t modbus_crc_calculate(
 		const uint8_t* const source,
 		const std::size_t size) noexcept
 {
-	return modbus::rtu::crc::calculate(
+	return ::crc::calculate<::crc::Crc16Bitwise>(
 		std::span<const uint8_t>{source, size});
 }
 
@@ -77,7 +77,7 @@ extern "C" WIRE_NOINLINE uint16_t modbus_crc_calculate_table(
 		const uint8_t* const source,
 		const std::size_t size) noexcept
 {
-	return modbus::rtu::crc::calculate<modbus::rtu::crc::Table>(
+	return ::crc::calculate<::crc::Crc16Table>(
 		std::span<const uint8_t>{source, size});
 }
 

@@ -11,7 +11,7 @@
  * production stack under test:
  *
  *   PC reference codec <-> USART3/VCP <-> Uart<128,8>
- *                      <-> Endpoint<Pool<8,2,Format<1024>>>
+ *                      <-> Endpoint<wire::Pool<8,2>, Format<1024>>
  *
  * Ordinary application bodies are echoed exactly. Bodies beginning with the
  * reserved four-byte magic below are harness control packets. All responses
@@ -44,23 +44,38 @@ BenchCounter g_bench_tx_dma_irq;
 
 namespace {
 
-constexpr std::size_t kMaxPayload = 1024u;
+#ifndef COBS_HW_CRC
+#define COBS_HW_CRC 1
+#endif
+#if COBS_HW_CRC == 0
+using Integrity = crc::NoCrc;
+#elif COBS_HW_CRC == 1
+using Integrity = crc::Crc16Bitwise;
+#elif COBS_HW_CRC == 2
+using Integrity = crc::Crc16Table;
+#else
+#error unsupported COBS hardware CRC
+#endif
+#ifndef COBS_HW_MAX_PAYLOAD
+#define COBS_HW_MAX_PAYLOAD cobs::Format<Integrity>::max_send_size
+#endif
+constexpr std::size_t kMaxPayload = COBS_HW_MAX_PAYLOAD;
 constexpr std::size_t kRxBlocks = 8u;
 constexpr std::size_t kTxBlocks = 2u;
 constexpr std::size_t kUartChunkSize = 128u;
 constexpr std::size_t kUartChunkCount = 8u;
 
-using Wire = cobs::Format<kMaxPayload>;
-using Memory = cobs::Pool<kRxBlocks, kTxBlocks, Wire>;
-using Link = cobs::Endpoint<Memory>;
+using Wire = cobs::Format<Integrity, kMaxPayload>;
+using Memory = wire::Pool<kRxBlocks, kTxBlocks>;
+using Link = cobs::Endpoint<Memory, Wire>;
 using Serial = Uart<kUartChunkSize, kUartChunkCount>;
 
-static_assert(Link::length_size == 2u);
+static_assert(kMaxPayload >= 192u, "test control pages must fit");
 static_assert(Link::max_receive_size == kMaxPayload);
 static_assert(Link::max_send_size == kMaxPayload);
 
 constexpr std::array<uint8_t, 4> kMagic{0xC7u, 0x43u, 0x42u, 0x53u};
-constexpr uint32_t kProtocolVersion = 1u;
+constexpr uint32_t kProtocolVersion = 2u; // harness version, not on-wire COBS negotiation
 constexpr uint32_t kMaxActionMs = 5000u;
 
 enum class Command : uint8_t {
@@ -92,8 +107,8 @@ struct AppMetrics final {
 AppMetrics s_app;
 cobs::Stats s_cobs0;
 Serial::Stats s_uart0;
-cobs::detail::PoolStats s_rxPool0;
-cobs::detail::PoolStats s_txPool0;
+wire::detail::PoolStats s_rxPool0;
+wire::detail::PoolStats s_txPool0;
 uint32_t s_windowStart = 0u;
 
 PendingAction s_pendingAction = PendingAction::None;
@@ -257,11 +272,27 @@ void resetMetrics() noexcept
 		writer.putU32(static_cast<uint32_t>(kUartChunkCount)) &&
 		writer.putU32(static_cast<uint32_t>(kRxBlocks)) &&
 		writer.putU32(static_cast<uint32_t>(kTxBlocks)) &&
+		writer.putU32(static_cast<uint32_t>(Link::crc_size)) &&
 		sendWriter(writer);
 }
 
-[[nodiscard]] bool sendStats(const uint32_t token) noexcept
+// A snapshot is larger than the default 253-byte payload. Capture once,
+// then serve two bounded pages; page 1 must not resample the counters.
+std::array<uint8_t, 272u> s_statsSnapshot{};
+
+[[nodiscard]] bool sendStatsPage(const uint32_t token, const uint32_t page) noexcept
 {
+	if (page > 1u) { return false; }
+	Writer response;
+	const auto bytes = std::span<const uint8_t>{s_statsSnapshot};
+	return beginResponse(response, Command::Stats, token) &&
+		response.putBytes(page == 0u ? bytes.first(128u) : bytes.subspan(128u)) &&
+		sendWriter(response);
+}
+
+[[nodiscard]] bool sendStats(const uint32_t token, const uint32_t page) noexcept
+{
+	if (page != 0u) { return sendStatsPage(token, page); }
 	// One coherent observation point.  In particular, BenchCounter::total is
 	// 64-bit on a 32-bit core and is written by IRQs, so direct live reads are
 	// not merely approximate: they can be torn into an impossible value.
@@ -269,8 +300,8 @@ void resetMetrics() noexcept
 	__disable_irq();
 	const cobs::Stats cobsStats = s_link.stats();
 	const Serial::Stats uartStats = s_uart.stats();
-	const cobs::detail::PoolStats rxPool = s_link.storage().rx_stats();
-	const cobs::detail::PoolStats txPool = s_link.storage().tx_stats();
+	const wire::detail::PoolStats rxPool = s_link.storage().rx_stats();
+	const wire::detail::PoolStats txPool = s_link.storage().tx_stats();
 	const AppMetrics app = s_app;
 	const uint32_t windowMs = HAL_GetTick() - s_windowStart;
 	const BenchCounter usartIrq = g_bench_usart_irq;
@@ -283,12 +314,8 @@ void resetMetrics() noexcept
 	__set_PRIMASK(primask);
 
 	Writer writer;
-	if (!beginResponse(writer, Command::Stats, token)) {
-		return false;
-	}
-
 	// The order is a versioned wire contract mirrored by cobs_hardware.py.
-	const std::array<uint32_t, 31> values{
+	const std::array<uint32_t, 32> values{
 		kProtocolVersion,
 		windowMs,
 		app.echo_frames,
@@ -307,6 +334,7 @@ void resetMetrics() noexcept
 		delta(cobsStats.rx.oversize, s_cobs0.rx.oversize),
 		delta(cobsStats.rx.length_mismatch, s_cobs0.rx.length_mismatch),
 		delta(cobsStats.rx.resyncs, s_cobs0.rx.resyncs),
+		delta(cobsStats.rx.crc_errors, s_cobs0.rx.crc_errors),
 		delta(cobsStats.tx.frames_sent, s_cobs0.tx.frames_sent),
 		delta(cobsStats.tx.send_refused_busy, s_cobs0.tx.send_refused_busy),
 		delta(cobsStats.tx.send_failed, s_cobs0.tx.send_failed),
@@ -336,7 +364,9 @@ void resetMetrics() noexcept
 	putCounter(writer, cobsConsume);
 	putCounter(writer, cobsTxRelease);
 	putCounter(writer, packetProcess);
-	return sendWriter(writer);
+	if (writer.data().size() != s_statsSnapshot.size()) { return false; }
+	std::memcpy(s_statsSnapshot.data(), writer.data().data(), s_statsSnapshot.size());
+	return sendStatsPage(token, 0u);
 }
 
 void runBackpressureSelfTest() noexcept
@@ -389,7 +419,7 @@ void processControl(const std::span<const uint8_t> body) noexcept
 		(void)sendHello(token);
 		return;
 	case Command::Stats:
-		(void)sendStats(token);
+		(void)sendStats(token, argument);
 		return;
 	case Command::ResetMetrics:
 		if (!sendAck(command, token, 0u, 0u)) {

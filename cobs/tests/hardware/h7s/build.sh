@@ -60,6 +60,7 @@ done
 
 echo "CXX cobs_bench.cpp"
 "$GXX" $CXXFLAGS -DCOBS_HW_BAUD="${COBS_HW_BAUD:-115200}u" \
+	-DCOBS_HW_CRC="${COBS_HW_CRC:-1}" ${COBS_HW_MAX_PAYLOAD:+-DCOBS_HW_MAX_PAYLOAD=$COBS_HW_MAX_PAYLOAD} \
   "$HERE/cobs_bench.cpp" -o "$OUT/cobs_bench.o"
 OBJS="$OBJS $OUT/cobs_bench.o"
 

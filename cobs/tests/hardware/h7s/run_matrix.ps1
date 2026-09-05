@@ -20,6 +20,11 @@ param(
     [ValidateRange(0, 3600)]
     [int]$ExtendedSeconds = 30,
 
+    [ValidateSet('none', 'bitwise', 'table')]
+    [string]$Crc = 'bitwise',
+
+    [int]$MaxPayload = 0,
+
     [string]$Output,
 
     [string]$CubeProgrammer =
@@ -70,6 +75,14 @@ if ($matrix.Count -eq 0) {
 $minimumBaud = $matrix[0]
 $maximumBaud = $matrix[-1]
 $previousBaud = $env:COBS_HW_BAUD
+$previousCrc = $env:COBS_HW_CRC
+$previousPayload = $env:COBS_HW_MAX_PAYLOAD
+$env:COBS_HW_CRC = [string]@{none=0; bitwise=1; table=2}[$Crc]
+if ($MaxPayload -eq 0) { $MaxPayload = if ($Crc -eq 'none') { 255 } else { 253 } }
+if ($MaxPayload -lt 192 -or $MaxPayload -gt 65535 - $(if ($Crc -eq 'none') { 0 } else { 2 })) {
+    throw 'Invalid hardware payload ceiling'
+}
+$env:COBS_HW_MAX_PAYLOAD = [string]$MaxPayload
 
 function Assert-NativeSuccess([string]$Operation) {
     if ($LASTEXITCODE -ne 0) {
@@ -94,6 +107,7 @@ function Run-Suite([int]$Baud, [string]$Suite, [int]$Seconds,
     $arguments = @(
         '-B', $runner, $Port,
         '--baud', [string]$Baud,
+        '--crc', $Crc, '--max-payload', [string]$MaxPayload,
         '--suite', $Suite,
         '--output', $Output
     )
@@ -128,5 +142,7 @@ try {
     Write-Host "Results: $Output"
 } finally {
     $env:COBS_HW_BAUD = $previousBaud
+    $env:COBS_HW_CRC = $previousCrc
+    $env:COBS_HW_MAX_PAYLOAD = $previousPayload
     Pop-Location
 }

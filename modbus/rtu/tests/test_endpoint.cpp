@@ -67,7 +67,7 @@ struct WrappingSum final : ::crc::Codec<
 
 int main()
 {
-	using Endpoint = modbus::rtu::Endpoint<modbus::rtu::Pool<2, 1>>;
+	using Endpoint = modbus::rtu::Endpoint<wire::Pool<2, 1>>;
 	Endpoint endpoint;
 
 	group("ReceiveValidation");
@@ -136,8 +136,7 @@ int main()
 	      "Stats returns one RX/TX value snapshot");
 
 	group("TablePolicy");
-	using TableEndpoint = modbus::rtu::Endpoint<
-		modbus::rtu::Pool<2, 1>, modbus::rtu::crc::Table>;
+	using TableEndpoint = modbus::rtu::Endpoint<wire::Pool<2, 1>, modbus::rtu::Format<::crc::Crc16Table>>;
 	TableEndpoint table_endpoint;
 	Transport table_transport;
 	check(table_endpoint.bind(
@@ -163,8 +162,7 @@ int main()
 	table_endpoint.poll();
 
 	group("CustomChecksumPolicy");
-	using SumEndpoint = modbus::rtu::Endpoint<
-		modbus::rtu::Pool<2, 1>, WrappingSum>;
+	using SumEndpoint = modbus::rtu::Endpoint<wire::Pool<2, 1>, modbus::rtu::Format<WrappingSum>>;
 	static_assert(!std::is_default_constructible_v<SumEndpoint>);
 	static_assert(std::is_constructible_v<SumEndpoint, WrappingSum>);
 	static_assert(std::is_constructible_v<
@@ -187,7 +185,7 @@ int main()
 	      sum_transport.frame[6] == static_cast<uint8_t>(expected_sum >> 8u) &&
 	      sum_state.calls == 1u && sum_state.last_size == 5u,
 	      "RTU stores the custom 16-bit result low byte first without semantic validation");
-	check(!modbus::rtu::crc::verify(sum_transport.frame),
+	check(!::crc::verify<::crc::Crc16Bitwise>(sum_transport.frame),
 	      "a deliberately non-Modbus checksum is not silently relabeled as CRC-16/MODBUS");
 	sum_endpoint.receive_adu(sum_transport.frame);
 	auto sum_packet = sum_endpoint.pop_packet();

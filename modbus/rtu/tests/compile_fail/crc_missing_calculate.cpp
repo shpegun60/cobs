@@ -7,4 +7,4 @@
 
 struct MissingCalculate final {};
 
-modbus::rtu::Endpoint<modbus::rtu::Heap, MissingCalculate> endpoint;
+modbus::rtu::Endpoint<wire::Heap, modbus::rtu::Format<MissingCalculate>> endpoint;

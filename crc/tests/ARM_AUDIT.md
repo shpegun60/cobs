@@ -5,6 +5,13 @@ SPDX-License-Identifier: MIT
 
 # CRC AArch32 code-generation audit, 2026-09-05
 
+Fresh revalidation after the shared-policy migration and comparison-contract
+hardening also passed 6360/6360 objects:
+[current case-level results](results_shared_policies_arm_2026-09-05.json).
+Its source hashes are rechecked by `wire/tests/verify_hardware_migration.py`.
+The original report below remains intact for historical comparison; matrix
+dimensions and bounded AArch32 scope are unchanged.
+
 **6,360/6,360 objects passed**, covering all **106 named CPU targets** accepted
 by the installed GNU Arm compiler. This is compilation and inspection of real
 machine-code objects, not execution on 106 boards.

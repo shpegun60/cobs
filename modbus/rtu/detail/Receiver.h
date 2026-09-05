@@ -10,26 +10,34 @@
 
 #include "../Format.h"
 #include "../Stats.h"
+#include "../../../wire/Storage.h"
 #include "Packet.h"
+#include "RxBlock.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <span>
+#include <type_traits>
 
 namespace modbus::rtu::detail {
 
-template<class StorageT, class FormatT>
+template<class StorageT, class LayoutT>
 class Receiver final {
-	static_assert(modbus::rtu::Storage<StorageT>,
-		"Receiver storage must satisfy modbus::rtu::Storage");
-	static_assert(StorageT::max_adu_size == modbus::rtu::max_adu_size,
-		"Modbus RTU storage must provide one complete 256-byte ADU");
+	static_assert(wire::ByteStorage<StorageT>,
+		"Receiver storage must satisfy the wire::ByteStorage contract");
 
 public:
-	using Block = typename StorageT::RxBlock;
-	using Format = FormatT;
-	using Packet = modbus::rtu::Packet<StorageT, Format>;
+	using Storage = StorageT;
+	using Block = modbus::rtu::RxBlock<StorageT>;
+	using Layout = LayoutT;
+	using Packet = modbus::rtu::Packet<StorageT, Layout>;
+
+	// Storage hands back bytes, not objects, so nothing may need tearing down
+	// before those bytes go back.
+	static_assert(std::is_trivially_destructible_v<Block>,
+		"RxBlock must stay trivially destructible: storage releases raw bytes");
 
 	explicit Receiver(StorageT& storage) noexcept : m_storage(storage) {}
 	Receiver(const Receiver&) = delete;
@@ -38,17 +46,17 @@ public:
 	~Receiver() { clear_ready(); }
 
 	template<::crc::Policy CrcT>
-		requires (CrcT::wire_size == Format::crc_size)
+		requires (CrcT::wire_size == Layout::crc_size)
 	void receive_adu(
 			CrcT& policy,
 			const std::span<const uint8_t> candidate) noexcept
 	{
 		++m_stats.candidates;
-		if (candidate.size() < Format::min_adu_size) {
+		if (candidate.size() < Layout::min_adu_size) {
 			++m_stats.too_short;
 			return;
 		}
-		if (candidate.size() > StorageT::max_adu_size) {
+		if (candidate.size() > Layout::max_adu_size) {
 			++m_stats.oversize;
 			return;
 		}
@@ -57,15 +65,21 @@ public:
 			return;
 		}
 
-		Block* const block = m_storage.acquire_rx(candidate.size());
-		if (block == nullptr) {
+		// Storage supplies sizeof(Block) + adu bytes and knows nothing about
+		// what goes in them; the header is constructed here and ownership is
+		// established here.
+		std::byte* const memory =
+			m_storage.acquire_rx(sizeof(Block) + candidate.size());
+		if (memory == nullptr) {
 			++m_stats.allocation_failure;
 			return;
 		}
+		Block* const block = std::construct_at(
+			static_cast<Block*>(static_cast<void*>(memory)));
 		block->owner = &m_storage;
 		block->adu_size = static_cast<uint16_t>(candidate.size());
 		block->address = candidate[0];
-		block->function = candidate[Format::address_size];
+		block->function = candidate[Layout::address_size];
 		std::memcpy(block->writable_adu(candidate.size()).data(),
 		            candidate.data(), candidate.size());
 		enqueue(block);

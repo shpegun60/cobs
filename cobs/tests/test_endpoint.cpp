@@ -90,11 +90,11 @@ void bind(C& cobs, FakeTransport& t)
 
 /* =================== the engine, for either storage ===================== */
 
-template<class StorageT>
+template<class MemoryT, class FormatT>
 void runEngine(const char* name)
 {
 	g_strategy = name;
-	using Engine = cobs::Endpoint<StorageT>;
+	using Engine = cobs::Endpoint<MemoryT, FormatT>;
 
 	static_assert(!std::is_copy_constructible_v<Engine>, "Endpoint must not be copyable");
 	static_assert(!std::is_move_constructible_v<Engine>,
@@ -327,8 +327,7 @@ void runEngine(const char* name)
 void testFixedExhaustion()
 {
 	g_strategy = "fixed";
-	using Memory = cobs::Pool<2, 1, cobs::Format<32>>;
-	cobs::Endpoint<Memory> cobs;
+	cobs::Endpoint<wire::Pool<2, 1>, cobs::Format<crc::NoCrc, 32>> cobs;
 	FakeTransport t;
 	bind(cobs, t);
 
@@ -356,10 +355,9 @@ void testFixedExhaustion()
 void testDestructorReclaimsActiveTx()
 {
 	g_strategy = "fixed";
-	using Memory = cobs::Pool<2, 2, cobs::Format<32>>;
 	FakeTransport t;
 	{
-		cobs::Endpoint<Memory> cobs;
+		cobs::Endpoint<wire::Pool<2, 2>, cobs::Format<crc::NoCrc, 32>> cobs;
 		bind(cobs, t);
 		auto msg = cobs.make_message();
 		check(msg.append_native(uint32_t{0x01020304u}), "a frame is built");
@@ -379,7 +377,7 @@ void testDefaultCapacityHint()
 	{	// The heap policy grants exactly what is asked, so the default is
 		// visible directly: a short frame never reallocates.
 		g_strategy = "heap";
-		using Engine = cobs::Endpoint<cobs::Heap<cobs::Format<64, 1024>>>;
+		using Engine = cobs::Endpoint<wire::Heap, cobs::Format<crc::NoCrc, 64, 1024>>;
 		static_assert(Engine::default_capacity_hint == 32);
 		Engine cobs;
 		FakeTransport t;
@@ -418,7 +416,7 @@ void testDefaultCapacityHint()
 	{	// A policy whose limit is BELOW the default must still work: the
 		// default is clamped, so make_message() can never fail on its own default.
 		g_strategy = "fixed";
-		using Engine = cobs::Endpoint<cobs::Pool<2, 1, cobs::Format<32, 16>>>;
+		using Engine = cobs::Endpoint<wire::Pool<2, 1>, cobs::Format<crc::NoCrc, 32, 16>>;
 		static_assert(Engine::default_capacity_hint == 16,
 		              "the default must clamp to a smaller tx_max_size");
 		Engine cobs;
@@ -431,72 +429,83 @@ void testDefaultCapacityHint()
 
 
 /*
- * The reported capacity has to survive the WHOLE ownership chain, not just
+ * The granted byte count has to survive the WHOLE ownership chain, not just
  * cobs::Message:
  *
  *     cobs::Message -> surrender_block() -> Endpoint::m_activeTx -> poll()
- *             -> release_tx(the same TxBlock descriptor)
+ *             -> release_tx(the same wire::TxBlock descriptor)
  *
- * Neither shipped policy can catch a regression here. The heap one reports
- * capacity == requested, so a mix-up is invisible; the fixed one ignores the
- * capacity at free time entirely. So this uses a policy that over-allocates
- * the way segregated storage would, and checks the number that comes back
- * at the far end of the chain.
+ * Neither shipped strategy can catch a regression here. The heap grants
+ * exactly what was requested, so a mix-up is invisible; the pool ignores the
+ * descriptor's size at release entirely. So this uses a storage that
+ * over-grants the way segregated size classes would, and checks the number
+ * that comes back at the far end of the chain. It is a specification like
+ * wire::Heap — the endpoint binds For<Geometry> — so it also stands in for
+ * the user-written storage the shared contract exists for.
  */
-class OvergrantStorage final {
-public:
-	using Format = cobs::Format<64, 512>;
-	using RxBlock = cobs::RxBlock<OvergrantStorage>;
+struct OvergrantStorage final {
+	template<class Geometry>
+	class For final {
+	public:
+		[[nodiscard]] std::byte* acquire_rx(const std::size_t bytes) noexcept
+		{
+			if (bytes > Geometry::rx_block_bytes) { return nullptr; }
+			return static_cast<std::byte*>(::operator new(bytes, std::nothrow));
+		}
+		void release_rx(std::byte* const memory) noexcept
+		{
+			::operator delete(static_cast<void*>(memory));
+		}
 
-	[[nodiscard]] RxBlock* acquire_rx(const std::size_t requested_size) noexcept
-	{
-		if (requested_size > Format::max_receive_size) { return nullptr; }
-		void* const memory = ::operator new(sizeof(RxBlock) + requested_size, std::nothrow);
-		if (memory == nullptr) { return nullptr; }
-		return std::construct_at(static_cast<RxBlock*>(memory));
-	}
-	void release_rx(RxBlock* const block) noexcept
-	{
-		if (block == nullptr) { return; }
-		std::destroy_at(block);
-		::operator delete(static_cast<void*>(block));
-	}
+		[[nodiscard]] wire::TxBlock acquire_tx(const std::size_t requested) noexcept
+		{
+			if (requested > Geometry::tx_block_bytes) { return {}; }
+			const std::size_t doubled = requested * 2u + 1u;
+			const std::size_t granted =
+				(doubled > Geometry::tx_block_bytes) ? Geometry::tx_block_bytes : doubled;
+			void* const memory = ::operator new(granted, std::nothrow);
+			if (memory == nullptr) { return {}; }
+			++allocations;
+			last_granted = granted;
+			return {static_cast<std::byte*>(memory), granted};
+		}
+		void release_tx(const wire::TxBlock block) noexcept
+		{
+			if (block.memory != nullptr) { ++frees; last_freed = block.granted; }
+			::operator delete(static_cast<void*>(block.memory));
+		}
 
-	[[nodiscard]] cobs::TxBlock acquire_tx(const std::size_t requested) noexcept
-	{
-		if (requested > Format::max_send_size) { return {}; }
-		const std::size_t doubled = requested * 2u + 1u;
-		const std::size_t capacity =
-			(doubled > Format::max_send_size) ? Format::max_send_size : doubled;
-		void* const memory = ::operator new(Format::tx_storage_size_for_capacity(capacity), std::nothrow);
-		if (memory == nullptr) { return {}; }
-		++allocations;
-		last_granted = capacity;
-		return {static_cast<std::byte*>(memory), capacity};
-	}
-	void release_tx(const cobs::TxBlock block) noexcept
-	{
-		if (block.memory != nullptr) { ++frees; last_freed = block.capacity; }
-		::operator delete(static_cast<void*>(block.memory));
-	}
-
-	std::size_t allocations = 0;
-	std::size_t frees = 0;
-	std::size_t last_granted = 0;
-	std::size_t last_freed = 0;
+		std::size_t allocations = 0;
+		std::size_t frees = 0;
+		std::size_t last_granted = 0;
+		std::size_t last_freed = 0;
+	};
 };
 
-void testReportedCapacitySurvivesTheEngine()
+void testGrantSurvivesTheEngine()
 {
-	g_strategy = "overalloc";
-	using Engine = cobs::Endpoint<OvergrantStorage>;
+	g_strategy = "overgrant";
+	using Format = cobs::Format<crc::NoCrc, 64, 512>;
+	using Engine = cobs::Endpoint<OvergrantStorage, Format>;
 	Engine cobs;
 	FakeTransport t;
 	bind(cobs, t);
 
+	// Message asks for the physical size of a 10-byte payload, the storage
+	// grants twice that plus one, and Message reads the payload capacity back
+	// out of the grant — 25 bytes, not the 10 requested:
+	//
+	//     request  = tx_storage_size_for_capacity(10) = 14 bytes (H = 2)
+	//     granted  = 14 * 2 + 1                       = 29 bytes
+	//     capacity = payload_capacity_for_storage(29) = 25
+	constexpr std::size_t kRequest = Format::tx_storage_size_for_capacity(10);
+	constexpr std::size_t kGranted = kRequest * 2u + 1u;
+	static_assert(kRequest == 14 && kGranted == 29);
+	static_assert(Format::payload_capacity_for_storage(kGranted) == 25);
+
 	auto msg = cobs.make_message(10);
-	check(static_cast<bool>(msg) && msg.capacity() == 21,
-	      "the policy grants more than was asked for (10 -> 21)");
+	check(static_cast<bool>(msg) && msg.capacity() == 25,
+	      "the storage grants more than was asked for (10 payload -> 29 bytes -> capacity 25)");
 
 	const auto payload = pattern(0x80, 12);
 	check(msg.append_bytes(std::span<const uint8_t>{payload}), "a payload is appended");
@@ -508,23 +517,27 @@ void testReportedCapacitySurvivesTheEngine()
 	t.finish();
 	cobs.poll();
 	check(cobs.storage().frees == 1, "poll reclaims the block");
-	check(cobs.storage().last_freed == 21,
-	      "returning it with the capacity the POLICY reported, not the 10 requested "
+	check(cobs.storage().last_freed == kGranted,
+	      "returning it with the byte count the STORAGE granted, not the 14 requested "
 	      "nor the 12 appended");
 
-	{	// The same, after a growth: the capacity that travels to activeTx must
+	{	// The same, after a growth: the descriptor that travels to activeTx must
 		// be the CURRENT block's, not the one the message was born with.
+		constexpr std::size_t kSmall = Format::tx_storage_size_for_capacity(4) * 2u + 1u;
+		constexpr std::size_t kGrown = Format::tx_storage_size_for_capacity(60) * 2u + 1u;
+		static_assert(kSmall == 17 && Format::payload_capacity_for_storage(kSmall) == 13);
+		static_assert(kGrown == 129 && Format::payload_capacity_for_storage(kGrown) == 125);
+
 		auto grown = cobs.make_message(4);
-		check(grown.capacity() == 9, "a second message starts at 9");
+		check(grown.capacity() == 13, "a second message starts at 13 (17 granted bytes)");
 		const auto big = pattern(0x10, 60);
 		check(grown.append_bytes(std::span<const uint8_t>{big}), "60 bytes force a growth");
-		const std::size_t after_growth = grown.capacity();
-		check(after_growth == 121, "to 121 (asked 60, granted 121)");
+		check(grown.capacity() == 125, "to 125 (asked for 60, granted 129 bytes)");
 		check(cobs.send(grown) == cobs::SendResult::Sent, "it sends");
 		t.finish();
 		cobs.poll();
-		check(cobs.storage().last_freed == after_growth,
-		      "and comes back with the GROWN capacity, not the original 9");
+		check(cobs.storage().last_freed == kGrown,
+		      "and comes back with the GROWN block's grant, not the original 17");
 	}
 }
 
@@ -545,8 +558,8 @@ void testReportedCapacitySurvivesTheEngine()
 void testComplementaryPeers()
 {
 	g_strategy = "pair";
-	using A = cobs::Endpoint<cobs::Heap<cobs::Format<1024, 64>>>;
-	using B = cobs::Endpoint<cobs::Heap<cobs::Format<64, 1024>>>;
+	using A = cobs::Endpoint<wire::Heap, cobs::Format<crc::NoCrc, 1024, 64>>;
+	using B = cobs::Endpoint<wire::Heap, cobs::Format<crc::NoCrc, 64, 1024>>;
 
 	static_assert(A::length_size == 2 && B::length_size == 2,
 	              "the larger limit picks the width, so the pair agrees");
@@ -617,9 +630,9 @@ void testComplementaryPeers()
 void testStorageDoesNotChangeFormat()
 {
 	g_strategy = "format";
-	using Wire = cobs::Format<64>;
-	using HeapEngine = cobs::Endpoint<cobs::Heap<Wire>>;
-	using PoolEngine = cobs::Endpoint<cobs::Pool<2, 1, Wire>>;
+	using Wire = cobs::Format<crc::NoCrc, 64>;
+	using HeapEngine = cobs::Endpoint<wire::Heap, Wire>;
+	using PoolEngine = cobs::Endpoint<wire::Pool<2, 1>, Wire>;
 
 	static_assert(std::is_same_v<typename HeapEngine::Format, Wire>);
 	static_assert(std::is_same_v<typename PoolEngine::Format, Wire>);
@@ -655,7 +668,7 @@ void testStorageDoesNotChangeFormat()
 void testDelegateBindingModes()
 {
 	g_strategy = "delegate";
-	using Engine = cobs::Endpoint<cobs::Heap<cobs::Format<32>>>;
+	using Engine = cobs::Endpoint<wire::Heap, cobs::Format<crc::NoCrc, 32>>;
 	const std::vector<uint8_t> payload{0x11, 0x00, 0x22};
 
 	{	// Ordinary callables are owned, including a move-only capture.
@@ -743,8 +756,8 @@ void testDelegateBindingModes()
 int main()
 {
 	group("Engine");
-	runEngine<cobs::Heap<cobs::Format<64>>>("heap");
-	runEngine<cobs::Pool<4, 2, cobs::Format<64>>>("fixed");
+	runEngine<wire::Heap, cobs::Format<crc::NoCrc, 64>>("heap");
+	runEngine<wire::Pool<4, 2>, cobs::Format<crc::NoCrc, 64>>("fixed");
 	group("DelegateLifetime");
 	testDelegateBindingModes();
 
@@ -753,7 +766,7 @@ int main()
 	testDefaultCapacityHint();
 	testComplementaryPeers();
 	testStorageDoesNotChangeFormat();
-	testReportedCapacitySurvivesTheEngine();
+	testGrantSurvivesTheEngine();
 	testDestructorReclaimsActiveTx();
 
 	std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

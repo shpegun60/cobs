@@ -1,0 +1,11 @@
+# Source fingerprints in the hardware evidence are byte-exact. Keep measured
+# inputs stable when checking out on Windows with core.autocrlf enabled.
+*.h text eol=lf
+*.cpp text eol=lf
+*.py text eol=lf
+*.ps1 text eol=lf
+*.sh text eol=lf
+
+# Raw benchmark records may have a recorded SHA-256 of the complete file.
+# Preserve their original bytes instead of normalizing platform newlines.
+*.jsonl -text whitespace=trailing-space,space-before-tab,cr-at-eol

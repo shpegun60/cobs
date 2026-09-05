@@ -21,7 +21,8 @@ Current COBS documentation is split by boundary:
 - `ARCHITECTURE.md` — components, public API, ownership, and lifetimes;
 - `PROTOCOL.md` — normative wire format and framing behavior;
 - `STORAGE.md` — checked storage extension contract and custom strategies;
-- `COBS_ENGINE.md` — detailed rationale, state traces, and overlap proof.
+- `COBS_ENGINE.md` — historical v1 rationale and the unchanged codec overlap proof.
+- `SHARED_POLICIES_VALIDATION.md` — fresh shared-storage/CRC migration evidence.
 
 ## Toolchain
 
@@ -137,6 +138,30 @@ also proves protocol bytes under `-fshort-enums -funsigned-char`. Both commands
 compile the COBS/Modbus API parity contract, including identical reader
 function identity and the deliberately different COBS-stream/RTU-ADU boundary.
 
+## Shared storage and integrity verification
+
+```bash
+sh wire/tests/run.sh
+sh wire/tests/check_shared_crc.sh
+python -B wire/tests/verify_hardware_migration.py
+```
+
+MSVC has a separate native x64/x86 runner (no sanitizer claim):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File wire/tests/check_msvc.ps1
+```
+
+The shared suites include raw Pool checks under NDEBUG, real protocol Geometry,
+a protocol-blind custom memory used through both endpoints, under/overgrants,
+original descriptor return and equal-width Bitwise/Table type identity.
+`check_shared_crc.sh` links two translation units: both protocols together emit
+one 512-byte CRC16 Table, or no lookup bytes for Bitwise/NoCrc.
+
+COBS also tests explicit legacy NoCrc vectors and its CRC16/253 default,
+all built-in policies, stateful/sum/custom-width policies, corruption, empty and
+maximum frames, and the exact inverse of physical TX geometry.
+
 ## CRC and Modbus RTU verification
 
 The protocol-independent CRC module and header-only RTU endpoint have separate
@@ -151,7 +176,7 @@ The CRC suite checks named CRC8/16/32/64 vectors, 20,000 independent random
 oracles for both Bitwise and Table implementations, little/big-endian and
 truncated integer codecs, stateful custom policies, and `NoCrc` under
 ASan+UBSan and `-O3 -DNDEBUG`. The RTU suite adds compile-fail contracts,
-policy-derived `0/1/2/3/4/8`-byte geometry, maximum 256-byte round trips,
+policy-derived `0/1/2/3/4/8`-byte geometry, configurable ADU ceilings through 65535,
 stateful fake-hardware injection, storage ownership, and fuzzing.
 
 The Cortex-M guards are:

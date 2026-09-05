@@ -50,7 +50,11 @@ expect_failure() {
 }
 
 expect_failure "$CASES/storage_missing_tx.cpp" \
-	"Endpoint storage must satisfy the cobs::Storage contract"
+	"Endpoint storage must satisfy the wire::Storage contract"
+expect_failure "$CASES/crc_body_overflow.cpp" \
+	"RX payload plus CRC must fit the COBS 16-bit body length"
+expect_failure "$CASES/crc_huge_default.cpp" \
+	"a CRC trailer above 255 bytes requires explicit COBS payload limits"
 expect_failure "$CASES/message_private_encode.cpp" \
 	"encode" "private"
 expect_failure "$CASES/packet_private_adopt.cpp" \

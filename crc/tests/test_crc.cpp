@@ -104,6 +104,44 @@ static_assert(crc::Policy<ThrowyCtor>);
 static_assert(!AcceptedByDefaultConstructingHelpers<ThrowyCtor>);
 static_assert(AcceptedByDefaultConstructingHelpers<crc::Crc16Bitwise>);
 
+struct ThrowingValue {
+	friend bool operator==(const ThrowingValue&, const ThrowingValue&) { return true; }
+};
+struct ThrowingEqualityPolicy {
+	using value_type = ThrowingValue;
+	static constexpr std::size_t wire_size = 1u;
+	value_type calculate(std::span<const uint8_t>) noexcept { return {}; }
+	void store(uint8_t*, value_type) noexcept {}
+	value_type load(const uint8_t*) noexcept { return {}; }
+};
+static_assert(!crc::Policy<ThrowingEqualityPolicy>);
+
+// Explicit and implicit bool conversions need not choose the same operator.
+// The noexcept contract and verify() must use the exact same expression.
+struct BoolProxy {
+	bool value;
+	inline static unsigned implicit_conversions = 0u;
+	explicit operator bool() const noexcept { return value; }
+	operator int() const { ++implicit_conversions; return value ? 1 : 0; }
+};
+struct ProxyValue {
+	uint8_t value;
+	friend BoolProxy operator==(const ProxyValue& a, const ProxyValue& b) noexcept
+		{ return {a.value == b.value}; }
+	friend BoolProxy operator!=(const ProxyValue& a, const ProxyValue& b) noexcept
+		{ return {a.value != b.value}; }
+};
+struct ProxyPolicy {
+	using value_type = ProxyValue;
+	static constexpr std::size_t wire_size = 1u;
+	value_type calculate(std::span<const uint8_t> bytes) noexcept
+		{ return {bytes.empty() ? uint8_t{0} : bytes[0]}; }
+	void store(uint8_t* out, value_type value) noexcept { *out = value.value; }
+	value_type load(const uint8_t* in) noexcept { return {*in}; }
+};
+static_assert(crc::Policy<ProxyPolicy>);
+static_assert(noexcept(static_cast<bool>(ProxyValue{} == ProxyValue{})));
+
 /*
  * Catalogue models beyond the four defaults, chosen to cover what the
  * defaults cannot: a non-reflected 16- and 32-bit path, non-zero Initial and
@@ -304,6 +342,9 @@ int main()
 	      "all eight built-ins match independent oracles on 20,000 inputs");
 
 	group("PolicyAndVerify");
+	const std::array<uint8_t, 2> proxy_frame{0x42u, 0x42u};
+	check(crc::verify<ProxyPolicy>(proxy_frame) && BoolProxy::implicit_conversions == 0u,
+	      "verification executes the explicit noexcept conversion checked by Policy");
 	unsigned calls = 0u;
 	Sum16 sum{calls};
 	const auto sum_frame = append_check(sum, check_input);

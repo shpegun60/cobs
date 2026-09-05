@@ -20,11 +20,10 @@ HEADERS="
  Format.h
  Read.h
  Stats.h
- Storage.h
 "
 
 count=0
-for header in wire/Scalar.h wire/Read.h; do
+for header in wire/Scalar.h wire/Read.h wire/Storage.h; do
 	printf '#include "%s"\n' "$header" |
 		"$CXX" -std=gnu++20 $WARN -I"$PROJ" -fsyntax-only -x c++ -
 	count=$((count + 1))

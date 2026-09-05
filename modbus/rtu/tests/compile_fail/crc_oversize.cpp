@@ -18,4 +18,4 @@ struct OversizeCrc final {
 	uint8_t load(const uint8_t*) noexcept { return 0u; }
 };
 
-modbus::rtu::Endpoint<modbus::rtu::Heap, OversizeCrc> endpoint;
+modbus::rtu::Endpoint<wire::Heap, modbus::rtu::Format<OversizeCrc>> endpoint;

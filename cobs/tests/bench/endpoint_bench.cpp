@@ -23,9 +23,9 @@
 
 namespace {
 
-using Format = cobs::Format<1024>;
-using Storage = cobs::Pool<8, 1, Format>;
-using Endpoint = cobs::Endpoint<Storage>;
+using Format = cobs::Format<crc::NoCrc, 1024>;
+using Memory = wire::Pool<8, 1>;
+using Endpoint = cobs::Endpoint<Memory, Format>;
 using Clock = std::chrono::steady_clock;
 
 volatile std::uint64_t g_sink = 0;

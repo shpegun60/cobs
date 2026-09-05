@@ -12,8 +12,7 @@
 #include <span>
 
 #if defined(MODBUS_CRC_TABLE_PROBE)
-using ProbeEndpoint = modbus::rtu::Endpoint<
-	modbus::rtu::Heap, modbus::rtu::crc::Table>;
+using ProbeEndpoint = modbus::rtu::Endpoint<wire::Heap, modbus::rtu::Format<::crc::Crc16Table>>;
 #else
 using ProbeEndpoint = modbus::rtu::Endpoint<>;
 #endif

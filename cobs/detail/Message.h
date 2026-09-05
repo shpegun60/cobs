@@ -42,12 +42,19 @@
  * any operation that increases capacity() may move the payload. Appends that
  * fit do not, and encode() never does.
  * ---------------------------------------------------------------------------
+ * STORAGE SPEAKS BYTES. The storage underneath (wire/Storage.h) knows nothing
+ * about payloads: Message asks it for Layout::tx_storage_size_for_capacity(C)
+ * physical bytes and receives a wire::TxBlock {memory, granted}, where
+ * `granted` may exceed the request (a size class, a whole slab). Message then
+ * derives its payload capacity once, with Layout::payload_capacity_for_storage,
+ * and keeps the descriptor untouched so that exactly it goes back to storage.
+ * ---------------------------------------------------------------------------
  *
- * Layout (§8.3), with K the capacity of the current block and H the width of
- * the wire length header (cobs::Format). The header is INSIDE the block,
- * ahead of the payload, and is invisible to size() and capacity():
+ * Layout (§8.3), with K the payload capacity of the current block and H the
+ * width of the wire length header (cobs::Format). The header is INSIDE the
+ * block, ahead of the payload, and is invisible to size() and capacity():
  *
- *      block, cobs::codec::max_wire_size(H + K) bytes
+ *      block, cobs::codec::max_wire_size(H + K) bytes (or more, if storage granted more)
  *      |<-- cobs::codec::raw_offset(H+K) -->|<- H ->|<------------ K ------------>|
  *      +----------------------------+-------+-----------------------------+
  *      | encoder headroom           | length| payload area                |
@@ -77,8 +84,9 @@
 #define COBS_DETAIL_MESSAGE_H_
 
 #include "../Codec.h"
-#include "../Storage.h"
+#include "../Format.h"
 #include "../../wire/Scalar.h"
+#include "../../wire/Storage.h"
 
 #include <bit>
 #include <cstddef>
@@ -89,7 +97,7 @@
 namespace cobs {
 
 // The only legitimate destination for a surrendered block.
-template<class StorageT>
+template<class MemoryT, class FormatT>
 class Endpoint;
 
 } // namespace cobs
@@ -160,25 +168,31 @@ concept EndianScalar = wire::EndianScalar<T>;
 
 namespace cobs {
 
-// One template parameter, like everything else in this layer: the storage
-// names its protocol Format, so memory strategy cannot redefine geometry.
-template<class StorageT>
+/*
+ * Two template parameters: the instantiated storage the endpoint bound, and
+ * the protocol Format the endpoint speaks. Storage has no opinion about the
+ * Format (it deals in bytes), so the endpoint is the one place both are named,
+ * and it names them here.
+ */
+template<class StorageT, class LayoutT>
 class Message final {
-	static_assert(Storage<StorageT>,
-		"Message storage must satisfy the cobs::Storage contract");
+	static_assert(wire::ByteStorage<StorageT>,
+		"Message storage must satisfy the wire::ByteStorage contract");
 
 	// surrender_block() is private for the same reason Packet::adopt() is:
 	// it hands out ownership without freeing it, so exactly one type may call
 	// it — the one that will keep the block alive until the transport is done.
-	friend class Endpoint<StorageT>;
+	template<class, class>
+	friend class Endpoint;
 
 public:
-	using Format = typename StorageT::Format;
+	using Storage = StorageT;
+	using Layout = LayoutT;
 
-	static constexpr std::size_t max_payload_size = Format::max_send_size;
+	static constexpr std::size_t max_payload_size = Layout::max_send_size;
 	// Part of the wire format, republished so an integration build can assert
 	// the format it expects (COBS_ENGINE.md §3).
-	static constexpr std::size_t length_size = Format::length_size;
+	static constexpr std::size_t length_size = Layout::length_size;
 
 	Message() noexcept = default;
 
@@ -197,8 +211,8 @@ public:
 		if (hint > max_payload_size) {
 			return;
 		}
-		m_block = storage.acquire_tx(hint);
-		if (m_block.memory != nullptr) {
+		const std::size_t requested = Layout::tx_storage_size_for_capacity(hint);
+		if (take(storage.acquire_tx(requested), requested)) {
 			m_state = State::Building;
 		}
 	}
@@ -209,8 +223,8 @@ public:
 	Message& operator=(const Message&) = delete;
 
 	Message(Message&& other) noexcept
-		: m_storage(other.m_storage), m_block(other.m_block), m_size(other.m_size),
-		  m_wire(other.m_wire), m_state(other.m_state)
+		: m_storage(other.m_storage), m_block(other.m_block), m_capacity(other.m_capacity),
+		  m_size(other.m_size), m_wire(other.m_wire), m_state(other.m_state)
 	{
 		other.disown();
 	}
@@ -221,6 +235,7 @@ public:
 			release(); // whatever this message held is returned first
 			m_storage = other.m_storage;
 			m_block = other.m_block;
+			m_capacity = other.m_capacity;
 			m_size = other.m_size;
 			m_wire = other.m_wire;
 			m_state = other.m_state;
@@ -232,7 +247,7 @@ public:
 	[[nodiscard]] explicit operator bool() const noexcept { return m_block.memory != nullptr; }
 
 	[[nodiscard]] std::size_t size() const noexcept { return m_size; }
-	[[nodiscard]] std::size_t capacity() const noexcept { return m_block.capacity; }
+	[[nodiscard]] std::size_t capacity() const noexcept { return m_capacity; }
 
 	/* ------------------------------ building ----------------------------- */
 
@@ -332,18 +347,25 @@ public:
 		if (m_state != State::Building) {
 			return false;
 		}
-		if (required <= m_block.capacity) {
+		if (required <= m_capacity) {
 			return true; // the common case: no allocation, nothing moves
 		}
 		if (required > max_payload_size) {
 			return false;
 		}
 
-		const cobs::TxBlock fresh =
-			m_storage->acquire_tx(grow_target(m_block.capacity, required));
-		if (fresh.memory == nullptr) {
+		const std::size_t target = grow_target(m_capacity, required);
+		const std::size_t requested = Layout::tx_storage_size_for_capacity(target);
+		const wire::TxBlock fresh = m_storage->acquire_tx(requested);
+		if (!honours(fresh, requested)) {
+			if (fresh.memory != nullptr) {
+				m_storage->release_tx(fresh); // a short grant is a contract violation, not a block we can use
+			}
 			return false; // strong guarantee: the old block is untouched
 		}
+		// The grant is at least what was asked, so the payload capacity it
+		// yields is at least `target`, which is at least `required`.
+		const std::size_t fresh_capacity = Layout::payload_capacity_for_storage(fresh.granted);
 
 		// The payload's physical offset depends on the capacity, so this is a
 		// copy between two different offsets — the one memcpy in the whole TX
@@ -351,17 +373,18 @@ public:
 		if (m_size != 0u) {
 			// Only the application bytes move. The header is regenerated at
 			// encode time, so there is nothing else worth carrying across.
-			std::memcpy(payload_of(fresh.memory, fresh.capacity), raw(), m_size);
+			std::memcpy(payload_of(fresh.memory, fresh_capacity), raw(), m_size);
 		}
-		m_storage->release_tx(m_block); // returned with its OWN capacity
+		m_storage->release_tx(m_block); // returned exactly as storage granted it
 		m_block = fresh;
+		m_capacity = fresh_capacity;
 		return true;
 	}
 
 private:
 	// Guards against sending a message through a DIFFERENT endpoint of the same
 	// type, which would return the block to the wrong pool. The types cannot
-	// catch that: two Endpoint<cobs::Pool<...>> objects are one type.
+	// catch that: two Endpoint<wire::Pool<...>, ...> objects are one type.
 	[[nodiscard]] bool belongs_to(const StorageT& storage) const noexcept
 	{
 		return m_storage == &storage;
@@ -382,8 +405,10 @@ private:
 	 *
 	 * Returns an empty span if there is no block to encode.
 	 */
-	[[nodiscard]] std::span<const uint8_t> encode() noexcept
+	template<::crc::Policy CrcT>
+	[[nodiscard]] std::span<const uint8_t> encode(CrcT& crc) noexcept
 	{
+		static_assert(CrcT::wire_size == Layout::crc_size);
 		if (m_block.memory == nullptr) {
 			return {};
 		}
@@ -393,9 +418,9 @@ private:
 		// cobs::codec::raw_offset(H + size) of headroom — so encoding begins further
 		// into the block rather than at its start. Moving the payload instead
 		// would be a copy, which is the one thing this path refuses to do.
-		const std::size_t decoded = Format::decoded_size_for_payload(m_size);
+		const std::size_t decoded = Layout::decoded_size_for_payload(m_size);
 		const std::size_t enc_offset = cobs::codec::raw_offset(decoded);
-		uint8_t* const frame_raw = raw() - Format::length_size;
+		uint8_t* const frame_raw = raw() - Layout::length_size;
 		uint8_t* const begin = frame_raw - enc_offset;
 
 		if (m_state == State::Encoded) {
@@ -406,7 +431,8 @@ private:
 			return {begin, m_wire};
 		}
 		// The last moment the header is still plain bytes.
-		Format::store_length(frame_raw, m_size);
+		Layout::store_length(frame_raw, m_size + Layout::crc_size);
+		crc.store(raw() + m_size, crc.calculate({raw(), m_size}));
 
 		const auto frame = cobs::codec::encode_in_place(
 			std::span<uint8_t>{begin, cobs::codec::max_wire_size(decoded)}, enc_offset, decoded);
@@ -446,6 +472,34 @@ private:
 		const std::size_t grown = capacity + ((delta > headroom) ? headroom : delta);
 		const std::size_t target = (required > grown) ? required : grown;
 		return (target > max_payload_size) ? max_payload_size : target;
+	}
+
+	/*
+	 * The storage contract's one promise about a non-empty grant: at least the
+	 * bytes that were asked for. Anything else is a contract violation, and a
+	 * message that trusted it would encode past the end of the block; the
+	 * block is handed straight back instead.
+	 */
+	[[nodiscard]] static constexpr bool honours(const wire::TxBlock block,
+	                                            const std::size_t requested) noexcept
+	{
+		return block.memory != nullptr && block.granted >= requested;
+	}
+
+	// Adopts a fresh grant as this message's block, deriving the payload
+	// capacity it really offers. Returns false (and returns the grant, if
+	// any) when storage refused or short-changed the request.
+	[[nodiscard]] bool take(const wire::TxBlock block, const std::size_t requested) noexcept
+	{
+		if (!honours(block, requested)) {
+			if (block.memory != nullptr) {
+				m_storage->release_tx(block);
+			}
+			return false;
+		}
+		m_block = block;
+		m_capacity = Layout::payload_capacity_for_storage(block.granted);
+		return true;
 	}
 
 	// Bounds and growth, shared by every append. Leaves the message untouched
@@ -511,15 +565,14 @@ private:
 	 * instant. Leaves the message Empty. Only called after the transport has
 	 * already accepted the frame (§8.2).
 	 *
-	 * The capacity travels with the pointer because it is what storage
-	 * reported for THIS block — which a growth may have changed since the
-	 * message was created, and which is not the logical size and not a frame
-	 * length. Recomputing it later would hand storage a different block
-	 * than it gave out.
+	 * The descriptor travels exactly as storage granted it — a growth may have
+	 * replaced the block since the message was created, and the granted byte
+	 * count is neither the logical size nor a frame length. Recomputing it
+	 * later would hand storage a different block than it gave out.
 	 */
-	[[nodiscard]] cobs::TxBlock surrender_block() noexcept
+	[[nodiscard]] wire::TxBlock surrender_block() noexcept
 	{
-		const cobs::TxBlock block = m_block;
+		const wire::TxBlock block = m_block;
 		m_block = {}; // so disown() cannot free what the transport holds
 		disown();
 		return block;
@@ -528,17 +581,17 @@ private:
 	enum class State : uint8_t { Empty, Building, Encoded };
 
 	// Where the APPLICATION payload lives: past the encoder headroom and past
-	// the hidden length header.
+	// the hidden length header, for a block of the given payload capacity.
 	[[nodiscard]] static uint8_t* payload_of(std::byte* const block,
 	                                         const std::size_t capacity) noexcept
 	{
 		return reinterpret_cast<uint8_t*>(block) +
-		       Format::raw_offset_for_capacity(capacity) + Format::length_size;
+		       Layout::raw_offset_for_capacity(capacity) + Layout::length_size;
 	}
 
 	[[nodiscard]] uint8_t* raw() const noexcept
 	{
-		return payload_of(m_block.memory, m_block.capacity);
+		return payload_of(m_block.memory, m_capacity);
 	}
 
 	void release() noexcept
@@ -553,16 +606,18 @@ private:
 	{
 		m_storage = nullptr;
 		m_block = {};
+		m_capacity = 0;
 		m_size = 0;
 		m_wire = 0;
 		m_state = State::Empty;
 	}
 
-	StorageT*     m_storage = nullptr;
-	TxBlock       m_block{};
-	std::size_t   m_size  = 0; // payload bytes appended; <= m_block.capacity
-	std::size_t   m_wire  = 0; // encoded frame length, once Encoded
-	State         m_state = State::Empty;
+	StorageT*     m_storage  = nullptr;
+	wire::TxBlock m_block{};          // exactly as granted; goes back unchanged
+	std::size_t   m_capacity = 0;     // payload bytes the grant permits, derived once
+	std::size_t   m_size     = 0;     // payload bytes appended; <= m_capacity
+	std::size_t   m_wire     = 0;     // encoded frame length, once Encoded
+	State         m_state    = State::Empty;
 };
 
 } // namespace cobs

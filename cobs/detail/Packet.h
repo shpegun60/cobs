@@ -27,7 +27,7 @@
 #ifndef COBS_DETAIL_PACKET_H_
 #define COBS_DETAIL_PACKET_H_
 
-#include "../Storage.h"
+#include "RxBlock.h"
 
 #include <cstddef>
 #include <span>
@@ -45,11 +45,11 @@ class Packet final {
 	// and end up with two RAII owners of the SAME single reference: the first
 	// destructor frees the block, the second is left holding a dangling
 	// pointer. A hand-operated use-after-free factory in the public API.
-	template<class>
+	template<class, class>
 	friend class detail::Receiver;
 
 public:
-	using Block = typename StorageT::RxBlock;
+	using Block = cobs::RxBlock<StorageT>;
 
 	Packet() noexcept = default;
 	~Packet() { release(); }
@@ -120,7 +120,10 @@ private:
 	void release() noexcept
 	{
 		if (m_p != nullptr && --m_p->refs == 0u) {
-			m_p->owner->release_rx(m_p);
+			// The block is trivially destructible, so the bytes go straight
+			// back to the storage that handed them out: nothing runs on the
+			// pointer before a checking pool has had its chance to refuse it.
+			m_p->owner->release_rx(static_cast<std::byte*>(static_cast<void*>(m_p)));
 		}
 	}
 

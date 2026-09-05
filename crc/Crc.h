@@ -37,10 +37,10 @@ struct Table final {};
 
 /*
  * The result widths this library models: exactly the four fixed-width
- * unsigned types. std::unsigned_integral would also admit bool (a Codec<bool>
- * compiles but load(0x02) -> store() yields 0x01, not a byte-exact round
- * trip), the char types and platform-sized integers, none of which anyone
- * means as a CRC register. Naming the four types keeps the accident out.
+ * unsigned types. This excludes bool and distinct character types such as
+ * char16_t. Typedefs are not distinct types: unsigned char, unsigned long or
+ * size_t remain accepted wherever they alias one of these exact-width types.
+ * The boundary checks type identity, not the spelling used by the caller.
  */
 template<class T>
 concept Value = std::same_as<T, uint8_t> || std::same_as<T, uint16_t> ||
@@ -120,15 +120,34 @@ private:
 };
 
 /*
+ * A result type verify() may compare inside a noexcept function: equality
+ * comparable, AND the comparison together with its conversion to bool must be
+ * non-throwing. std::equality_comparable alone says nothing about exceptions;
+ * a value_type whose operator== may throw satisfied it, and the first throw
+ * inside crc::verify() was a std::terminate rather than a false. The cast is
+ * part of the checked expression on purpose: an operator== returning a proxy
+ * with a throwing conversion to bool passes `{ a == b } noexcept` and still
+ * throws on the way to the `return`.
+ */
+template<class T>
+concept NothrowEqualityComparable = std::equality_comparable<T> &&
+	requires(const T& a, const T& b) {
+		{ static_cast<bool>(a == b) } noexcept;
+	};
+
+/*
  * Structural policy contract. Semantics are intentionally not prescribed:
  * a custom policy may calculate a standard CRC, use hardware, return a sum,
  * or provide no trailer. The protocol uses exactly what the policy declares.
+ * What IS prescribed is the exception contract: every operation the
+ * protocols call from their noexcept hot paths must itself be noexcept,
+ * comparison of two results included.
  */
 template<class T>
 concept Policy = requires {
 	typename T::value_type;
 	typename std::integral_constant<std::size_t, T::wire_size>;
-} && std::equality_comparable<typename T::value_type> && requires(
+} && NothrowEqualityComparable<typename T::value_type> && requires(
 		T& policy,
 		const std::span<const uint8_t> bytes,
 		uint8_t* const destination,
@@ -415,7 +434,10 @@ template<Policy PolicyT>
 	}
 	const typename PolicyT::value_type received =
 		policy.load(trailer);
-	return expected == received;
+	// Match the exact conversion checked by NothrowEqualityComparable. A
+	// proxy can have a non-throwing explicit bool conversion but a throwing
+	// implicit conversion through another arithmetic type.
+	return static_cast<bool>(expected == received);
 }
 
 template<Policy PolicyT>
