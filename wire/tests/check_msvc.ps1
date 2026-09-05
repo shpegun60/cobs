@@ -14,6 +14,8 @@ $cases = @(
     @{name='cobs_crc'; sources=@('cobs/tests/test_crc.cpp', 'cobs/Decoder.cpp', 'cobs/Encoder.cpp')},
     @{name='cobs_layout'; sources=@('cobs/tests/test_layout.cpp')},
     @{name='rtu_geometry'; sources=@('modbus/rtu/tests/test_crc_geometry.cpp')},
+    @{name='rtu_framing'; sources=@('modbus/rtu/tests/test_framing.cpp')},
+    @{name='rtu_stream'; sources=@('modbus/rtu/tests/test_stream.cpp')},
     @{name='rtu_layout'; sources=@('modbus/rtu/tests/test_layout.cpp')}
 )
 Push-Location $repo
@@ -31,5 +33,5 @@ try {
             if ($LASTEXITCODE -ne 0) { throw "MSVC $arch $($case.name) failed" }
         }
     }
-    Write-Host 'MSVC x64/x86: CRC, shared storage, protocol parity/custom memory, COBS CRC/layout, RTU geometry/layout passed'
+    Write-Host 'MSVC x64/x86: CRC, shared storage, protocol parity/custom memory, COBS CRC/layout, RTU geometry/framing/stream/layout passed'
 } finally { Pop-Location }

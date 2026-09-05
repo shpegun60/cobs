@@ -391,19 +391,79 @@ link.storage().rx_stats();
 link.storage().tx_stats();
 ```
 
-## RTU framing limitation
+## RTU framing: burst candidates by default, a framing policy on request
 
-`receive_adu()` is correct for an already framed complete ADU. The current
-direct UART adapter is a narrower burst framer: it treats one
-`Uart<256,N>` ReceiveToIdle burst as one candidate and verifies that candidate
-with CRC. It does not implement Modbus t1.5/t3.5 timing.
+`receive_adu()` is correct for an already framed complete ADU. The direct
+UART adapter is a burst framer: it treats one `Uart<256,N>` ReceiveToIdle
+burst as one candidate and verifies that candidate with CRC. It does not
+implement Modbus t1.5/t3.5 timing. UART IDLE occurs after roughly one
+character, earlier than the Modbus t1.5 invalid-frame threshold, so a peer
+must emit an entire ADU as one uninterrupted burst; on the H7S at 3 Mbaud
+and above the ST-Link bridge splits long frames and the default endpoint
+loses them.
 
-UART IDLE occurs after roughly one character, earlier than the Modbus t1.5
-invalid-frame threshold. Therefore this adapter requires a peer that emits an
-entire ADU as one uninterrupted UART burst and must not be advertised as
-general strict-timing RTU interoperability. Endpoint deliberately prescribes
-no replacement framing algorithm: any transport adapter may choose its own
-boundary contract, then pass only complete candidates to `receive_adu()`.
+The optional third template parameter finds frame ends from the bytes
+themselves instead:
+
+```cpp
+#include "modbus/rtu/Rtu.h"
+namespace framing = modbus::rtu::framing;
+
+// A device that answers requests: it RECEIVES requests, sends responses.
+using Server = modbus::rtu::Endpoint<wire::Pool<8, 2>, modbus::rtu::Format<>,
+                                     framing::Standard<framing::Direction::Request>>;
+Server server;
+
+// UART callback: any cut of the stream, several ADUs per chunk, all fine.
+void on_rx(std::span<const uint8_t> chunk) noexcept { server.consume(chunk); }
+void on_gap() noexcept { server.notify_gap(); }
+
+// The builder knows the same table: a response to 0x03 is a byte count plus
+// data, and a count that disagrees with the data is refused before the wire.
+auto reply = server.make_message(0x11, 0x03);
+reply.append_be<uint8_t>(4);
+reply.append_be<uint16_t>(0x022B);
+reply.append_be<uint16_t>(0x0064);
+server.send(reply);
+```
+
+`framing::Standard<Direction>` covers the standard functions whose length
+follows from their own header (01–07, 0B, 0C, 0F, 10, 11, 14–18 and every
+exception response); 0x08 Diagnostics and 0x2B Encapsulated Interface
+Transport carry no length indicator and are refused
+(`framing_stats().unsupported_function`). `Direction` is what this endpoint
+receives — a client uses `Direction::Response`.
+
+Private functions extend the table; a variable-length one should carry its
+length in a two-byte prefix that the library owns:
+
+```cpp
+struct MyFramer : framing::Standard<framing::Direction::Request> {
+    using Base = framing::Standard<framing::Direction::Request>;
+    static constexpr framing::Layout layout(framing::Direction d, uint8_t fn) noexcept
+    {
+        if (fn == 0x41) return framing::Layout::length_prefixed(2); // [N: BE16][body]
+        return Base::layout(d, fn);
+    }
+};
+using Device = modbus::rtu::Endpoint<wire::Pool<8, 2>, modbus::rtu::Format<>, MyFramer>;
+
+auto frame = device.make_message(0x11, 0x41); // size() == 2: the prefix is reserved
+frame.append_bytes(body);                      // the application appends only the body
+device.send(frame);                            // N = body.size() is written before the CRC
+```
+
+The peer's `packet.data()` is `[N][body]`; nothing is hidden. Forgetting or
+miscounting `N` is impossible because the application never writes it.
+
+What the policy does NOT do: it does not implement t1.5/t3.5 timing, and it
+cannot find a frame start on its own. After an unsupported function, an
+oversize declaration or a CRC failure it drops the remainder of the current
+chunk (`framing_stats().resyncs`) and starts fresh on the next chunk, which
+the UART adapter delivers at the next IDLE pause. An RX allocation failure
+skips exactly the declared frame and keeps the stream in step. With
+`framing::None` (the default) nothing described in this section is compiled
+in, and the endpoint is the one documented everywhere else in this file.
 
 ## qmake
 

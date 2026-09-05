@@ -52,6 +52,8 @@ build test_packet   "$HERE/test_packet.cpp"
 build test_message  "$HERE/test_message.cpp"
 build test_endpoint "$HERE/test_endpoint.cpp"
 build test_fuzz     "$HERE/test_fuzz.cpp"
+build test_framing  "$HERE/test_framing.cpp"
+build test_stream   "$HERE/test_stream.cpp"
 build test_layout   "$HERE/test_layout.cpp"
 build_release test_fuzz_o3 "$HERE/test_fuzz.cpp"
 
@@ -62,6 +64,8 @@ build_release test_fuzz_o3 "$HERE/test_fuzz.cpp"
 "$OUT/test_message.exe"
 "$OUT/test_endpoint.exe"
 "$OUT/test_fuzz.exe"
+"$OUT/test_framing.exe"
+"$OUT/test_stream.exe"
 "$OUT/test_layout.exe"
 
 

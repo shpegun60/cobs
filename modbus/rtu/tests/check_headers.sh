@@ -12,7 +12,7 @@ CXX="${CXX:-g++}"
 WARN="-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror"
 
 ROOT_HEADERS="Types.h Pdu.h"
-RTU_HEADERS="RtuLimits.h Format.h Stats.h Rtu.h"
+RTU_HEADERS="RtuLimits.h Format.h Framing.h Stats.h Rtu.h"
 count=0
 for header in wire/Scalar.h wire/Read.h wire/Storage.h; do
 	printf '#include "%s"\n' "$header" |

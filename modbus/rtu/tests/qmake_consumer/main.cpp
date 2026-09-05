@@ -82,10 +82,76 @@ bool exercise()
 	       stats.rx.frames_received == 1u && stats.tx.frames_sent == 1u;
 }
 
+// A framed client/server pair over the same loopback: the fragment must carry
+// Framing.h and detail/StreamReceiver.h, and the stream receiver must
+// assemble a request cut in two.
+template<class Memory>
+bool exercise_framed()
+{
+	namespace framing = modbus::rtu::framing;
+	using Client = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<>,
+		framing::Standard<framing::Direction::Response>>;
+	using Server = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<>,
+		framing::Standard<framing::Direction::Request>>;
+	Client client;
+	Server server;
+	Loopback client_wire;
+	Loopback server_wire;
+	if (!client.bind(typename Client::Sender{tiny::bind<&Loopback::send>(client_wire)},
+	                 typename Client::BusyQuery{tiny::bind<&Loopback::busy>(client_wire)}) ||
+	    !server.bind(typename Server::Sender{tiny::bind<&Loopback::send>(server_wire)},
+	                 typename Server::BusyQuery{tiny::bind<&Loopback::busy>(server_wire)})) {
+		return false;
+	}
+
+	auto request = client.make_message(0x11u, 0x03u);
+	if (!request.append_be(uint16_t{0x006Bu}) || !request.append_be(uint16_t{3u}) ||
+	    client.send(request) != modbus::SendResult::Sent) {
+		return false;
+	}
+	const std::span<const uint8_t> on_wire = client_wire.frame();
+	server.consume(on_wire.first(3u));
+	if (server.has_packet()) {
+		return false;
+	}
+	server.consume(on_wire.subspan(3u));
+	auto received = server.pop_packet();
+	if (!received || received.function() != 0x03u || received.size() != 4u) {
+		return false;
+	}
+
+	auto reply = server.make_message(received.address(), received.function());
+	if (!reply.append_be(uint8_t{6u}) || !reply.append_be(uint16_t{0x022Bu}) ||
+	    !reply.append_be(uint16_t{0u}) || !reply.append_be(uint16_t{0x64u}) ||
+	    server.send(reply) != modbus::SendResult::Sent) {
+		return false;
+	}
+	client.consume(server_wire.frame());
+	auto response = client.pop_packet();
+	if (!response || response.size() != 7u || response.data()[0] != 6u) {
+		return false;
+	}
+
+	auto inconsistent = server.make_message(0x11u, 0x03u);
+	if (!inconsistent.append_be(uint8_t{6u}) ||
+	    server.send(inconsistent) != modbus::SendResult::Invalid ||
+	    server.framing_stats().tx_layout_rejected != 1u) {
+		return false;
+	}
+	client_wire.finish();
+	server_wire.finish();
+	client.poll();
+	server.poll();
+	return server.stats().rx.frames_received == 1u && client.stats().rx.frames_received == 1u;
+}
+
 } // namespace
 
 int main()
 {
+	if (!exercise_framed<wire::Heap>() || !exercise_framed<wire::Pool<2, 2>>()) {
+		return 3;
+	}
 	if (!exercise<modbus::rtu::Endpoint<>>()) {
 		return 1;
 	}

@@ -14,7 +14,7 @@ follows, independently of the original working prompt.
 There is intentionally no transport-ambiguous `modbus::Endpoint`.
 
 ```cpp
-modbus::rtu::Endpoint<Memory, Format>
+modbus::rtu::Endpoint<Memory, Format, Framer = framing::None>
 modbus::tcp::Endpoint<Memory, Format> // future, not an empty placeholder
 ```
 
@@ -45,7 +45,7 @@ The API deliberately follows the established COBS ownership vocabulary:
 | transport setup | `bind` / `unbind` | `bind` / `unbind` |
 | receive queue | `has_packet` / `pop_packet` | same |
 | known byte loss | `notify_gap` | `notify_gap` |
-| receive boundary | `consume(arbitrary_stream_chunk)` | `receive_adu(one_complete_candidate)` |
+| receive boundary | `consume(arbitrary_stream_chunk)` | `receive_adu(one_complete_candidate)`; `consume(chunk)` only with a framing policy (§8) |
 | message factory | `make_message(hint)` | `make_message(address, function, hint)` |
 | transmit | `send` returning `cobs::SendResult` | `send` returning `modbus::SendResult` with the same outcomes |
 | scalar writing | `append_native` / `append_be` / `append_le` | same |
@@ -331,9 +331,71 @@ pause and cannot prove whether the peer violated t1.5 or the IDLE adapter made
 an early boundary. That evidence is retained under `rtu/tests/hardware/h7s`
 without attributing the cause solely to the VCP.
 
-Framing remains outside this endpoint. It neither grows a timer-based framer
-nor infers boundaries from CRC or function-length tables; a transport adapter
-must call `receive_adu()` only when it has selected one complete candidate.
+The default endpoint keeps framing outside itself: it neither grows a
+timer-based framer nor infers boundaries from CRC or function-length tables,
+and a transport adapter must call `receive_adu()` only when it has selected
+one complete candidate. Length-based framing exists, but only as the explicit
+third template parameter below.
+
+### Optional framing policy
+
+```cpp
+using Server = modbus::rtu::Endpoint<Memory, Format,
+    modbus::rtu::framing::Standard<framing::Direction::Request>>;
+server.consume(chunk); // any cut of the stream; several ADUs per chunk
+```
+
+`Framer` defaults to `framing::None`, which is the endpoint described above,
+byte for byte: same `sizeof`, same code paths, no function code interpreted.
+Choosing a policy adds one thing to the wire contract — both peers agree on
+how each function encodes the length of its data — and derives everything
+else from it:
+
+- **One declaration, both directions.** A `framing::Layout` per function
+  (`fixed(n)`, `byte_count_at(offset, width)`, `length_prefixed(width)`,
+  `unsupported()`) is read by the receiver to find the end of an ADU and by
+  the message builder to reserve and fill a library-owned length prefix, and
+  to refuse a message whose data disagrees with its layout
+  (`SendResult::Invalid`, `framing_stats().tx_layout_rejected`). The two sides
+  cannot drift, and an application can neither forget a length word nor
+  miscount it.
+- **`Standard<Direction>`** is the table of the application-protocol
+  functions whose length follows from their own header (01–07, 0B, 0C, 0F,
+  10, 11, 14–18 and every exception response `fn | 0x80`), taken from the
+  worked examples of the specification and tested against them in both
+  directions. `Direction` is the side this endpoint RECEIVES: 0x03 is four
+  fixed bytes as a request and a byte count plus data as a response. 0x08
+  Diagnostics and 0x2B Encapsulated Interface Transport carry no length
+  indicator and are `unsupported()`, as Qt Serial Bus also documents.
+- **Private functions** extend the table by inheritance: override
+  `layout(direction, function)` for your codes and forward the rest to
+  `Base::layout`. `length_prefixed(2)` is the recommended shape for a
+  variable-length private function: `[N: BE16][body]`, with `N` filled by the
+  library; `packet.data()` on the peer is `[N][body]`, nothing is hidden.
+- **Two-stage assembly, one copy.** Address, function and the bytes the
+  layout needs are collected into a 16-byte local buffer; the data size is
+  then known, `acquire_rx(header + adu)` is sized exactly, the remaining bytes
+  are copied straight into the block and the CRC is checked in place. The
+  RX block is therefore taken BEFORE the CRC check; when storage is exhausted
+  the declared frame is skipped byte-exactly (`skipped_frames`) and the
+  stream stays in step.
+- **Recovery rule.** Length-based framing finds the end of a frame only when
+  it knows its start. After an unsupported function, an oversize declaration
+  or a CRC failure the receiver drops the remainder of the current chunk
+  (`resyncs`) and treats the first byte of the next chunk as a frame start.
+  This is the same precondition `receive_adu()` has always had — the
+  transport delivers chunks eventually aligned to an inter-frame pause — and
+  not an implementation of t1.5/t3.5. `notify_gap()` releases an in-flight
+  frame.
+- **`receive_adu()` stays available** and, under a policy, also refuses a
+  candidate whose function has no layout (`unsupported_function`) or whose
+  length disagrees with it (`length_mismatch`).
+
+`Packet`, `Message`, `Storage` and the wire bytes of every accepted frame are
+identical with and without a policy; `Stats` is untouched and the
+policy-only counters live in `FramingStats`. Client/server transaction logic
+(request/response matching, timeouts, retries, register maps) remains a layer
+above this one.
 
 ## 9. UART gaps
 
@@ -383,9 +445,15 @@ or placeholder types are shipped by the RTU phase.
 
 ## 12. Deliberate non-goals of the RTU framing layer
 
+Of the default endpoint (`framing::None`):
+
 - no function-code length tables;
+- no length prefix;
+
+These two exist only as the opt-in framing policy of §8 and never change the
+default. Of every endpoint:
+
 - no standard-function semantic parser;
-- no hidden length prefix;
 - no CRC-based byte scanner;
 - no t1.5/t3.5 software timers;
 - no Client/Server transaction scheduler;

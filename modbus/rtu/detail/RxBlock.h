@@ -33,6 +33,9 @@ namespace detail {
 template<class StorageT, class LayoutT>
 class Receiver;
 
+template<class StorageT, class LayoutT, class FramerT>
+class StreamReceiver;
+
 // A never-defined stand-in for "some storage": RxBlock<AnyStorage> has the
 // layout of every RxBlock<S>, so the endpoint can size its geometry before
 // the real storage type exists (see cobs/detail/RxBlock.h for the reasoning).
@@ -46,6 +49,8 @@ struct RxBlock final {
 	friend class Packet;
 	template<class, class>
 	friend class detail::Receiver;
+	template<class, class, class>
+	friend class detail::StreamReceiver;
 
 private:
 	uint32_t refs = 1;

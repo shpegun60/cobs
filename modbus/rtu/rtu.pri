@@ -24,10 +24,12 @@ isEmpty(MODBUS_RTU_PRI_INCLUDED) {
         $$MODBUS_ROOT/Pdu.h \
         $$MODBUS_RTU_DIR/RtuLimits.h \
         $$MODBUS_RTU_DIR/Format.h \
+        $$MODBUS_RTU_DIR/Framing.h \
         $$MODBUS_RTU_DIR/Stats.h \
         $$MODBUS_RTU_DIR/Rtu.h \
         $$MODBUS_RTU_DIR/detail/Message.h \
         $$MODBUS_RTU_DIR/detail/Packet.h \
         $$MODBUS_RTU_DIR/detail/Receiver.h \
-        $$MODBUS_RTU_DIR/detail/RxBlock.h
+        $$MODBUS_RTU_DIR/detail/RxBlock.h \
+        $$MODBUS_RTU_DIR/detail/StreamReceiver.h
 }

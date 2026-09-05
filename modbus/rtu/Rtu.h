@@ -6,7 +6,7 @@
 /*
  * Modbus RTU endpoint.
  *
- *     modbus::rtu::Endpoint<Memory, Format>
+ *     modbus::rtu::Endpoint<Memory, Format, Framer = framing::None>
  *
  * Memory is a wire::Storage specification (wire::Heap, wire::Pool<Rx, Tx>, or
  * a user-written one) — the same type a cobs::Endpoint accepts, because
@@ -18,6 +18,13 @@
  * The RX boundary is different: receive_adu() accepts exactly one physical
  * UART burst candidate, not arbitrary stream chunks. The candidate is
  * validated before one copy into Packet-owned storage.
+ *
+ * Framer is optional (Framing.h). With the default, framing::None, nothing
+ * above changes: no function code is interpreted, and the endpoint's layout
+ * and code paths are those of the two-parameter endpoint. With a framing
+ * policy the endpoint gains consume() for arbitrary stream chunks, accepts
+ * only functions the policy has a layout for, fills a policy-declared length
+ * prefix on send, and refuses to send data that disagrees with its layout.
  */
 
 #ifndef MODBUS_RTU_H_
@@ -27,11 +34,13 @@
 #include "../../crc/Crc.h"
 #include "../../wire/Storage.h"
 #include "Format.h"
+#include "Framing.h"
 #include "Stats.h"
 #include "detail/Message.h"
 #include "detail/Packet.h"
 #include "detail/Receiver.h"
 #include "detail/RxBlock.h"
+#include "detail/StreamReceiver.h"
 
 #include "tiny_delegate.hpp"
 
@@ -46,13 +55,23 @@ namespace modbus::rtu {
 
 using SendResult = modbus::SendResult;
 
-template<class MemoryT = wire::Heap, class FormatT = modbus::rtu::Format<>>
+template<class MemoryT = wire::Heap,
+         class FormatT = modbus::rtu::Format<>,
+         class FramerT = framing::None>
 class Endpoint final {
+	static_assert(framing::Framer<FramerT>,
+		"Endpoint framer must be framing::None or satisfy framing::Policy");
+
 public:
 	using Memory = MemoryT;
 	using Format = FormatT;
+	using Framer = FramerT;
 	using Crc = typename Format::Crc;
 	using Layout = typename Format::Layout;
+
+	// Whether a framing policy is in effect. It never changes Packet, Message,
+	// Storage or the wire; it adds consume() and the layout table.
+	static constexpr bool framed = !std::is_same_v<FramerT, framing::None>;
 
 	/*
 	 * The physical block geometry this endpoint binds its memory to
@@ -74,6 +93,10 @@ private:
 	using Shape = modbus::rtu::RxBlock<detail::AnyStorage>;
 	static_assert(sizeof(Block) == sizeof(Shape) && alignof(Block) == alignof(Shape),
 		"the RX block header must have the layout the geometry was sized from");
+
+	using Receiver = std::conditional_t<framed,
+		detail::StreamReceiver<Storage, Layout, FramerT>,
+		detail::Receiver<Storage, Layout>>;
 
 public:
 
@@ -159,6 +182,14 @@ public:
 		m_receiver.receive_adu(m_crc, candidate);
 	}
 
+	// Arbitrary stream chunks: a fragment of an ADU, several ADUs, or both.
+	// Only with a framing policy; the frame end is found from its layout.
+	void consume(const std::span<const uint8_t> bytes) noexcept
+		requires framed
+	{
+		m_receiver.consume(m_crc, bytes);
+	}
+
 	void notify_gap() noexcept { m_receiver.notify_gap(); }
 
 	[[nodiscard]] Packet pop_packet() noexcept { return m_receiver.pop_packet(); }
@@ -179,13 +210,35 @@ public:
 		if (capacity_hint > max_send_size) {
 			return {};
 		}
-		return Message{m_storage, address, function, capacity_hint};
+		if constexpr (framed) {
+			// The policy's TX-side layout: a library-owned length prefix is
+			// reserved now and filled at send(); a fixed size is at least
+			// pre-allocated so the message need not grow to reach it.
+			const framing::Layout layout = tx_layout(function);
+			std::size_t hint = capacity_hint;
+			if (layout.kind == framing::Layout::Kind::Fixed &&
+			    hint < layout.size && layout.size <= max_send_size) {
+				hint = layout.size;
+			}
+			if (hint < layout.reserved()) {
+				hint = layout.reserved();
+			}
+			return Message{m_storage, address, function, hint, layout.reserved()};
+		} else {
+			return Message{m_storage, address, function, capacity_hint};
+		}
 	}
 
 	[[nodiscard]] SendResult send(Message& message) noexcept
 	{
 		if (!message || !message.belongs_to(m_storage)) {
 			return SendResult::Invalid;
+		}
+		if constexpr (framed) {
+			if (!message.apply_framing(tx_layout(message.function()))) {
+				m_receiver.note_tx_layout_rejected();
+				return SendResult::Invalid;
+			}
 		}
 		if (!m_transport.bound()) {
 			return SendResult::Unbound;
@@ -227,6 +280,12 @@ public:
 		return {m_receiver.stats(), m_tx_stats};
 	}
 
+	[[nodiscard]] const modbus::rtu::FramingStats& framing_stats() const noexcept
+		requires framed
+	{
+		return m_receiver.framing_stats();
+	}
+
 	[[nodiscard]] const Storage& storage() const noexcept { return m_storage; }
 
 private:
@@ -266,8 +325,16 @@ private:
 		BusyQuery m_busy{};
 	};
 
+	// What this endpoint SENDS is the other side of what it receives.
+	[[nodiscard]] static constexpr framing::Layout tx_layout(
+			const uint8_t function) noexcept
+		requires framed
+	{
+		return Framer::layout(framing::opposite(Framer::rx), function);
+	}
+
 	[[no_unique_address]] Storage m_storage{};
-	detail::Receiver<Storage, Layout> m_receiver{m_storage};
+	Receiver m_receiver{m_storage};
 	Transport m_transport{};
 	wire::TxBlock m_active_tx{};
 	modbus::rtu::Stats::Tx m_tx_stats{};

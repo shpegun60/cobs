@@ -3,7 +3,12 @@
  * SPDX-License-Identifier: MIT
  */
 
-/* One receive call is one UART-burst-delimited candidate RTU ADU. */
+/*
+ * One receive call is one UART-burst-delimited candidate RTU ADU. This is the
+ * whole RX vertical of the default endpoint; StreamReceiver.h derives from it
+ * to add stream assembly when a framing policy is selected, so what is
+ * protected here is exactly what that derivation needs and nothing more.
+ */
 
 #ifndef MODBUS_RTU_DETAIL_RECEIVER_H_
 #define MODBUS_RTU_DETAIL_RECEIVER_H_
@@ -24,7 +29,7 @@
 namespace modbus::rtu::detail {
 
 template<class StorageT, class LayoutT>
-class Receiver final {
+class Receiver {
 	static_assert(wire::ByteStorage<StorageT>,
 		"Receiver storage must satisfy the wire::ByteStorage contract");
 
@@ -65,18 +70,11 @@ public:
 			return;
 		}
 
-		// Storage supplies sizeof(Block) + adu bytes and knows nothing about
-		// what goes in them; the header is constructed here and ownership is
-		// established here.
-		std::byte* const memory =
-			m_storage.acquire_rx(sizeof(Block) + candidate.size());
-		if (memory == nullptr) {
+		Block* const block = acquire_block(candidate.size());
+		if (block == nullptr) {
 			++m_stats.allocation_failure;
 			return;
 		}
-		Block* const block = std::construct_at(
-			static_cast<Block*>(static_cast<void*>(memory)));
-		block->owner = &m_storage;
 		block->adu_size = static_cast<uint16_t>(candidate.size());
 		block->address = candidate[0];
 		block->function = candidate[Layout::address_size];
@@ -103,7 +101,27 @@ public:
 		return m_stats;
 	}
 
-private:
+protected:
+	// Storage supplies sizeof(Block) + adu bytes and knows nothing about what
+	// goes in them; the header is constructed here and ownership is
+	// established here. The only place a block comes into being.
+	[[nodiscard]] Block* acquire_block(const std::size_t adu) noexcept
+	{
+		std::byte* const memory = m_storage.acquire_rx(sizeof(Block) + adu);
+		if (memory == nullptr) {
+			return nullptr;
+		}
+		Block* const block = std::construct_at(
+			static_cast<Block*>(static_cast<void*>(memory)));
+		block->owner = &m_storage;
+		return block;
+	}
+
+	[[nodiscard]] static std::byte* bytes_of(Block* const block) noexcept
+	{
+		return static_cast<std::byte*>(static_cast<void*>(block));
+	}
+
 	void enqueue(Block* const block) noexcept
 	{
 		block->next_ready = nullptr;
@@ -115,6 +133,10 @@ private:
 		m_tail = block;
 	}
 
+	StorageT& m_storage;
+	modbus::rtu::Stats::Rx m_stats{};
+
+private:
 	[[nodiscard]] Block* dequeue() noexcept
 	{
 		Block* const block = m_head;
@@ -135,10 +157,8 @@ private:
 		}
 	}
 
-	StorageT& m_storage;
 	Block* m_head = nullptr;
 	Block* m_tail = nullptr;
-	modbus::rtu::Stats::Rx m_stats{};
 };
 
 } // namespace modbus::rtu::detail

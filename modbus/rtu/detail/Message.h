@@ -18,6 +18,7 @@
 #define MODBUS_RTU_DETAIL_MESSAGE_H_
 
 #include "../Format.h"
+#include "../Framing.h"
 #include "../../../wire/Scalar.h"
 #include "../../../wire/Storage.h"
 
@@ -29,14 +30,14 @@
 
 namespace modbus::rtu {
 
-template<class MemoryT, class FormatT>
+template<class MemoryT, class FormatT, class FramerT>
 class Endpoint;
 
 template<class StorageT, class LayoutT>
 class Message final {
 	static_assert(wire::ByteStorage<StorageT>,
 		"Message storage must satisfy the wire::ByteStorage contract");
-	template<class, class>
+	template<class, class, class>
 	friend class Endpoint;
 
 public:
@@ -46,19 +47,27 @@ public:
 
 	Message() noexcept = default;
 
+	// `reserved` leading data bytes belong to the library: a framing policy's
+	// length prefix, zeroed here and filled by apply_framing() before the CRC.
+	// They count in size() and capacity() like any other data byte.
 	Message(StorageT& storage,
 	        const uint8_t address,
 	        const uint8_t function,
-	        const std::size_t hint) noexcept
+	        const std::size_t hint,
+	        const std::size_t reserved = 0u) noexcept
 		: m_storage(&storage), m_address(address), m_function(function)
 	{
-		if (hint > max_payload_size) {
+		if (hint > max_payload_size || reserved > hint) {
 			return;
 		}
 		const std::size_t requested = Layout::adu_size_for_data(hint);
 		m_block = storage.acquire_tx(requested);
 		if (honours(m_block, requested)) {
 			write_header();
+			if (reserved != 0u) {
+				std::memset(data_ptr(), 0, reserved);
+				m_size = reserved;
+			}
 			m_state = State::Building;
 		} else {
 			if (m_block.memory != nullptr) {
@@ -230,6 +239,40 @@ private:
 		m_wire = without_crc + Layout::crc_size;
 		m_state = State::Finalized;
 		return {bytes, m_wire};
+	}
+
+	/*
+	 * The framing policy's view of this function, applied by the endpoint
+	 * before finalize(): a library-owned length prefix is filled from size(),
+	 * an application-written count or a fixed size is checked against it.
+	 * Idempotent on a finalized message, so a retry after a transport failure
+	 * neither rewrites the prefix nor re-checks. Unsupported means the policy
+	 * has no opinion about this function; the peer decides.
+	 */
+	[[nodiscard]] bool apply_framing(const framing::Layout& layout) noexcept
+	{
+		if (m_block.memory == nullptr) {
+			return false;
+		}
+		if (m_state == State::Finalized) {
+			return true;
+		}
+		switch (layout.kind) {
+		case framing::Layout::Kind::Unsupported:
+			return true;
+		case framing::Layout::Kind::Fixed:
+			return m_size == layout.size;
+		case framing::Layout::Kind::Counted:
+			if (m_size < layout.header_size()) {
+				return false;
+			}
+			if (layout.owned) {
+				layout.store_count(data_ptr(), m_size);
+				return true;
+			}
+			return layout.data_size({data_ptr(), m_size}) == m_size;
+		}
+		return false;
 	}
 
 	[[nodiscard]] wire::TxBlock surrender_block() noexcept

@@ -50,5 +50,8 @@ expect_failure "$CASES/crc_missing_calculate.cpp" \
 	"RTU Format CRC must satisfy crc::Policy"
 expect_failure "$CASES/crc_oversize.cpp" \
 	"CRC wire_size leaves no room for RTU address and function"
+expect_failure "$CASES/framing_none_consume.cpp" "consume" "constraints not satisfied"
+expect_failure "$CASES/framing_bad_policy.cpp" \
+	"Endpoint framer must be framing::None or satisfy framing::Policy"
 
 echo "$count Modbus compile-fail contracts rejected with expected diagnostics"

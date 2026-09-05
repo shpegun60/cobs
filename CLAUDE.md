@@ -27,7 +27,11 @@ the `wire::Heap` / `wire::Pool<Rx, Tx>` storage specifications and the
 and Table engines, `NoCrc`), `cobs/` and `modbus/`. Both protocol endpoints are
 spelled `Endpoint<Memory, Format>`: the same `wire::Pool<8, 2>` goes into
 either, and the protocol's `Format` names the CRC policy (`cobs::Format<Crc,
-RxMax, TxMax>`, `modbus::rtu::Format<Crc, MaxAdu>`).
+RxMax, TxMax>`, `modbus::rtu::Format<Crc, MaxAdu>`). The RTU endpoint has an
+optional third parameter, `Framer = framing::None`: a
+`framing::Standard<Direction>` policy (or a user type derived from it) adds
+`consume()` for arbitrary stream chunks and a builder-owned length prefix
+for private functions; with the default nothing changes (`modbus/ARCHITECTURE.md` §8).
 
 A Qt Widgets application (qmake, C++20) intended as a desktop host/testbed for a reusable UART + COBS communication stack. The Qt GUI itself is currently a bare scaffold (`main.cpp`, `mainwindow.*`), but `COBS.pro` includes `cobs/cobs.pri` (which includes `wire/wire.pri`) and therefore compiles the real non-template COBS core. The separate console consumers under `cobs/tests/qmake_consumer/` and `modbus/rtu/tests/qmake_consumer/` instantiate and execute the full public APIs over both built-in storage specifications. The STM32 implementation remains in `uart/Uart.h` (not part of the Qt build — it needs an STM32 HAL).
 
@@ -104,7 +108,7 @@ sh modbus/rtu/tests/run.sh
 sh crc/tests/run.sh
 ```
 
-Each runner first compiles its public headers independently and (for the protocols) verifies nine intentional compile-fail translation units with boundary-specific diagnostic markers: the `wire::Storage` contract, the CRC-in-Format limits, coordinator-only message/packet operations, serializer constraints, and the physical absence of old API names.
+Each runner first compiles its public headers independently and (for the protocols) verifies intentional compile-fail translation units with boundary-specific diagnostic markers (nine for COBS, eleven for RTU): the `wire::Storage` contract, the CRC-in-Format limits, coordinator-only message/packet operations, serializer constraints, the physical absence of old API names, and for RTU the absence of `consume()` without a framing policy and the rejection of a half-written policy.
 
 `wire/tests/run.sh` (the shared layer):
 
@@ -123,7 +127,7 @@ Each runner first compiles its public headers independently and (for the protoco
 - `test_crc` — the CRC-bearing v2 frame: every built-in policy, sum and stateful policies, corruption of every payload/trailer bit, empty/maximum frames, the H1/H2 threshold, the explicit `Format<crc::NoCrc, 255>` legacy vectors, and the v1/v2 mixing hazard.
 - `test_layout` — exact ABI snapshots; `check_arm_layout.sh` compiles the same file for Cortex-M.
 
-`modbus/rtu/tests/run.sh` mirrors this for RTU (`test_crc`, `test_crc_geometry`, `test_packet`, `test_message`, `test_endpoint`, `test_fuzz`, `test_layout`, `test_uart_integration`); `crc/tests/run.sh` checks the four default models and seven further catalogue models against their check values plus random inputs against bit-level oracles.
+`modbus/rtu/tests/run.sh` mirrors this for RTU (`test_crc`, `test_crc_geometry`, `test_packet`, `test_message`, `test_endpoint`, `test_fuzz`, `test_framing` — the `framing::Layout` rules and the standard function table against the specification's worked examples in both directions —, `test_stream` — the framed endpoint: every cut of a frame, several frames per chunk, every error class and its recovery, the builder-owned length prefix —, `test_layout`, `test_uart_integration`); `crc/tests/run.sh` checks the four default models and seven further catalogue models against their check values plus random inputs against bit-level oracles.
 
 The scripts build with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` and add `-fsanitize=address,undefined` when the toolchain provides the runtime. MinGW does not, so for a sanitized run use WSL (the exact command is in each script header); every runner prints whether its build was sanitized. `WIRE_POOL_CHECKS` (on by default in EVERY build, `NDEBUG` included) compiles in the pool's double-free and foreign-pointer detection; a rejected free is counted and ignored rather than corrupting the free list. Set it to 0 explicitly, identically in every translation unit, to opt out.
 
