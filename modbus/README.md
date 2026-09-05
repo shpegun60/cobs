@@ -491,6 +491,12 @@ changed neither data nor BSS. All 23 records passed, and the runner restored
 the default Bitwise/115200 image. Raw evidence is in
 [results_crc_library_2026-09-05.jsonl](rtu/tests/hardware/h7s/results_crc_library_2026-09-05.jsonl).
 
+The newer [nine-policy hardware benchmark](rtu/tests/hardware/h7s/CRC_BENCHMARK.md)
+extends this evidence to NoCrc and both methods at all four widths. It separates
+live calculator cycles, instrumented UART/RTU CPU cost and static instructions
+in each exact flashed ELF. Its precomputed 300-frame/s traffic is a different
+workload from the historical CRC16-only A/B figures above.
+
 ## Lifetime and concurrency
 
 - Endpoint outlives all Packet and Message owners it created.

@@ -884,6 +884,8 @@ cross-target code generation, benchmarks, and real hardware evidence.
 | COBS benchmarks | `sh cobs/tests/bench/run.sh` | codec and complete Endpoint hot paths |
 | CRC host suite | `sh crc/tests/run.sh` | known CRC8/16/32/64 models, independent random oracles, both methods, codecs, custom policy and `NoCrc` under sanitizers and O3 |
 | Cortex-M CRC emission | `sh crc/tests/check_arm_codegen.sh` | all CRC8/16/32/64 loops are helper-free on both CPU byte orders; unused tables emit zero bytes, selected tables emit one read-only object, codecs are branch/call-free, `NoCrc` folds away |
+| All GNU AArch32 CPU CRC audit | [ARM audit](crc/tests/ARM_AUDIT.md) / `python -B crc/tests/check_arm_matrix.py` | every installed-compiler CPU target, nine policies, Os/O2/O3, both byte orders, strict codecs, real object disassembly |
+| Nine-policy live CRC benchmark | [H7S3 results and methodology](modbus/rtu/tests/hardware/h7s/CRC_BENCHMARK.md) | CRC8/16/32/64 Bitwise/Table and NoCrc: live DWT cycles, paced CPU, private table bytes and exact flashed-ELF instructions |
 | Shared scalar/API host oracle | `sh wire/tests/run.sh` | exhaustive scalar values, reader facade identity, COBS/Modbus public API parity, intentional protocol differences, sanitizers and O3/LTO |
 | GCC strict/LTO consumers | `MATRIX_TAG=<compiler> CXX=<g++> sh wire/tests/check_gcc_matrix.sh` | real COBS/Modbus consumers and API parity under strict alias/alignment/bounds warnings plus `-fshort-enums`/`-funsigned-char` scalar proof |
 | Cortex-M endian hot path | `sh wire/tests/check_arm_hotpath.sh` | little- and big-endian ARM builds prove compile-time selection: native order is direct, opposite order uses REV/REV16, and neither calls a helper |

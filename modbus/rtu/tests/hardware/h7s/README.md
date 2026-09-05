@@ -10,6 +10,10 @@ including CRC-policy A/B, 2026-09-05.
 
 Raw evidence:
 
+- [Nine-policy CRC benchmark](CRC_BENCHMARK.md) and
+  [raw results](results_crc_all_2026-09-05.jsonl): CRC8/16/32/64 Bitwise/Table
+  and NoCrc, live calculation cycles, fixed-rate CPU comparison and the
+  disassembly of each flashed image;
 - [`results_crc_library_2026-09-05.jsonl`](results_crc_library_2026-09-05.jsonl)
   — final post-extraction `crc::Crc16Bitwise` versus `crc::Crc16Table` matrix
   at 115200/1M, extended 1M stress, and restored default-image smoke test;
@@ -38,14 +42,18 @@ independent Python CRC/ADU oracle
     <-> ST-Link VCP / COM port
     <-> USART3 + GPDMA
     <-> Uart<256, 4>
-    <-> modbus::rtu::Endpoint<Pool<8, 2>, crc::Bitwise|crc::Table>
+    <-> modbus::rtu::Endpoint<Pool<8, 2>, Policy>
 ```
 
 The board does not use the C++ CRC implementation to generate PC requests.
-The Python side has an independent 256-entry CRC oracle, checks the canonical
-`01 03 00 00 00 0A C5 CD` vector, rejects every single-bit mutation of that
-ADU, and round-trips every legal function-data length `0..252` before opening
-the serial port.
+The Python side has independent bit-level CRC8/16/32/64 oracles, checks the
+named models' standard check values, rejects every single-bit mutation of a
+canonical ADU, and round-trips every legal function-data length before opening
+the serial port. Maximum data depends on the policy: 254/253/252/250/246 bytes
+for NoCrc/CRC8/CRC16/CRC32/CRC64. The offline test also checks the canonical
+Modbus wire vector and CRC32 against Python's separate zlib implementation.
+NoCrc deliberately has no corruption detection. Only the default CRC16
+model/codec is standard Modbus RTU; the others are private wire formats.
 
 ## Physical framing scope
 
@@ -58,7 +66,8 @@ an uninterrupted peer burst and does not claim strict t1.5/t3.5
 interoperability.
 
 The exact 256-byte case ends through DMA transfer-complete; short cases end
-through UART IDLE. CRC decides whether each candidate is published.
+through UART IDLE. The selected integrity policy decides whether each candidate
+is published; NoCrc does not reject based on integrity.
 
 ## Board protocol
 
@@ -71,26 +80,32 @@ Harness control also uses normal RTU packets:
 ```text
 address = F7
 function = 41
-data = "MRTU" | command:u8 | token:u32-le | optional argument:u32-le
+data = "MRTU" | command:u8 | token:u32-le | optional arguments:u32-le[]
 ```
 
 Control responses preserve address/function, set bit 7 of the command byte,
 and repeat the token. `HELLO`, `STATS`, `RESET_METRICS`, `HOLD_PACKETS`, and
 `BACKPRESSURE_SELFTEST` therefore exercise the same CRC, Packet, Message,
 Pool, `send()`, UART borrow and `poll()` paths as ordinary traffic.
+Protocol version 3 also has `CRC_BENCHMARK`: two arguments select input length
+and iterations. It returns cycles, independently checkable checksum/mix,
+DWT state, cache state and CPU identity.
 
 ## Suites
 
 | Suite | Real path and required outcome |
 |---|---|
 | `smoke` | custom function with an embedded zero echoes exactly; all counters and owners settle |
-| `vectors` | data sizes 0, 1, 2, 31, 32, 63, 64, 127, 128, 251 and 252 across zero/alternating/random patterns; includes exact 255- and 256-byte ADUs |
-| `faults` | corruption in address, function, data and CRC is dropped; a valid custom ADU after every bad candidate recovers immediately |
+| `vectors` | data sizes 0, 1, 2, 31, 32, 63, 64, 127, 128, max-1 and max across zero/alternating/random patterns; includes exact 255- and 256-byte ADUs |
+| `faults` | four corruptions are dropped, each followed by recovery; NoCrc instead must echo all four changed frames |
 | `selftest` | ACK holds TX block one, a second Message gets `Busy` without losing ownership, and a third allocation exhausts TX block two cleanly |
 | `pool` | dequeue is held while 16 separately IDLE-delimited ADUs arrive; exactly the first eight survive FIFO order and the other eight report RX backpressure |
 | `stress` | repeated full-duplex standard/custom requests and exact echoes over every important size, with DWT/IRQ accounting and zero unexpected failures |
+| `paced` | same precomputed traffic at a target average 300 frames/s, with achieved cadence and DWT/IRQ accounting |
+| `crc_benchmark` | eight equal input lengths, nine samples of eight calls, live DWT cycles and an independent PC checksum oracle |
 
-`all` runs vectors, faults, selftest, pool and stress. Statistics are captured
+`all` runs vectors, faults, selftest, pool, crc_benchmark, stress and paced.
+Statistics are captured
 while the STATS request owns exactly one RX block and before its response owns
 a TX block, so the runner requires `rx_in_use=1` and `tx_in_use=0` at that
 observation point.
@@ -105,7 +120,7 @@ COBS silicon tests. Build products stay under its gitignored
 $env:MODBUS_HW_BAUD = '115200'
 $env:MODBUS_HW_OPT = '-Os'       # accepted: -Os, -O2, -O3
 $env:MODBUS_HW_LTO = '0'         # accepted: 0 or 1
-$env:MODBUS_HW_CRC_POLICY = 'bitwise' # accepted: bitwise or table
+$env:MODBUS_HW_CRC_POLICY = 'bitwise' # aliases bitwise/table or the nine named policies
 & 'C:\Program Files\Git\bin\bash.exe' `
   'modbus/rtu/tests/hardware/h7s/build.sh'
 
@@ -160,7 +175,11 @@ name into every JSONL record. This prevents two accidental flashes of the same
 image from being accepted as an A/B comparison. Unless `-LeaveAtLastBaud` is
 given, the matrix restores and smoke-tests `Bitwise` at 115200.
 
-## Audited result
+## Historical audited results
+
+The following measurements predate the nine-policy benchmark and its
+precomputed/fixed-rate host traffic. Keep those comparisons within their own
+recorded workloads; use [CRC_BENCHMARK.md](CRC_BENCHMARK.md) for the new matrix.
 
 Both accepted rates passed vectors, four corruption/recovery cases, TX
 backpressure, deterministic RX exhaustion, and stress. The runner then

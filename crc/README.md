@@ -155,6 +155,7 @@ Run the host and Cortex-M checks with:
 ```bash
 sh crc/tests/run.sh
 sh crc/tests/check_arm_codegen.sh
+python -B crc/tests/check_arm_matrix.py
 ```
 
 The host suite checks the four named models against their standard check
@@ -176,3 +177,15 @@ emits zero lookup symbols; the complete `NoCrc` verify path folds to a constant
 Modbus RTU is currently the only consumer. COBS remains independent for now;
 the CRC policy module was deliberately extracted so a later COBS integrity
 format can use it without depending on Modbus.
+
+For a wider CPU check, `check_arm_matrix.py` queries the installed GNU Arm
+compiler's full CPU list and builds every named target: all nine policies,
+Os/O2/O3, little/big-endian, and explicit strict-alignment codec probes.
+It inspects the actual object disassembly and read-only table symbols.
+The scope is AArch32 (M-profile/STAR-MC1 in Thumb, other targets in ARM state),
+soft-float, no LTO; it does not claim AArch64 or execution on those CPUs.
+See the [ARM audit report](tests/ARM_AUDIT.md).
+
+Real Cortex-M7 results for all nine policies, including pure calculation
+cycles, integrated CPU, exact flashed-image disassembly and table sizes, are
+in the [NUCLEO-H7S3L8 benchmark](../modbus/rtu/tests/hardware/h7s/CRC_BENCHMARK.md).

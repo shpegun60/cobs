@@ -36,10 +36,17 @@ case "${MODBUS_HW_LTO:-0}" in
     ;;
 esac
 case "$CRC_POLICY" in
-  bitwise) CRC_DEFINE="-DMODBUS_HW_CRC_TABLE=0" ;;
-  table) CRC_DEFINE="-DMODBUS_HW_CRC_TABLE=1" ;;
+  bitwise|crc16-bitwise) CRC_DEFINE="-DMODBUS_HW_CRC_POLICY_ID=0" ;;
+  table|crc16-table) CRC_DEFINE="-DMODBUS_HW_CRC_POLICY_ID=1" ;;
+  nocrc) CRC_DEFINE="-DMODBUS_HW_CRC_POLICY_ID=2" ;;
+  crc8-bitwise) CRC_DEFINE="-DMODBUS_HW_CRC_POLICY_ID=3" ;;
+  crc8-table) CRC_DEFINE="-DMODBUS_HW_CRC_POLICY_ID=4" ;;
+  crc32-bitwise) CRC_DEFINE="-DMODBUS_HW_CRC_POLICY_ID=5" ;;
+  crc32-table) CRC_DEFINE="-DMODBUS_HW_CRC_POLICY_ID=6" ;;
+  crc64-bitwise) CRC_DEFINE="-DMODBUS_HW_CRC_POLICY_ID=7" ;;
+  crc64-table) CRC_DEFINE="-DMODBUS_HW_CRC_POLICY_ID=8" ;;
   *)
-    echo "Unsupported MODBUS_HW_CRC_POLICY: $CRC_POLICY (expected bitwise or table)"
+    echo "Unsupported MODBUS_HW_CRC_POLICY: $CRC_POLICY"
     exit 1
     ;;
 esac

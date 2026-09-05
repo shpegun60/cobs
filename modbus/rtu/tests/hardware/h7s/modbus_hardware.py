@@ -12,13 +12,13 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import random
+import statistics
 import struct
 import time
 
 import serial
 
 
-MAX_DATA_SIZE = 252
 MAX_ADU_SIZE = 256
 UART_CHUNK_SIZE = 256
 UART_CHUNK_COUNT = 4
@@ -28,14 +28,14 @@ TX_BLOCKS = 2
 CONTROL_ADDRESS = 0xF7
 CONTROL_FUNCTION = 0x41
 MAGIC = b"MRTU"
-PROTOCOL_VERSION = 2
-CRC_POLICIES = {"bitwise": 0, "table": 1}
+PROTOCOL_VERSION = 3
 
 CMD_HELLO = 1
 CMD_STATS = 2
 CMD_RESET = 3
 CMD_HOLD = 4
 CMD_SELFTEST = 5
+CMD_CRC_BENCHMARK = 6
 
 STATS_FIELDS = (
     "version",
@@ -81,37 +81,123 @@ COUNTER_NAMES = (
     "rtu_tx_release",
 )
 
+@dataclass(frozen=True)
+class IntegrityPolicy:
+    identifier: int
+    wire_size: int
+    width: int
+    polynomial: int
+    initial: int
+    xor_out: int
+    reflected: bool
+    wire_order: str
+    check_value: int
 
-def make_crc_table() -> tuple[int, ...]:
-    table = []
-    for byte in range(256):
-        value = byte
-        for _ in range(8):
-            value = (value >> 1) ^ (0xA001 if value & 1 else 0)
-        table.append(value)
-    return tuple(table)
+    @property
+    def max_data_size(self) -> int:
+        return MAX_ADU_SIZE - 2 - self.wire_size
+
+    def calculate(self, data: bytes) -> int:
+        if self.width == 0:
+            return 0
+        mask = (1 << self.width) - 1
+        value = self.initial
+        for byte in data:
+            if self.reflected:
+                value ^= byte
+                for _ in range(8):
+                    value = (value >> 1) ^ (
+                        self.polynomial if value & 1 else 0
+                    )
+            else:
+                value ^= byte << (self.width - 8)
+                for _ in range(8):
+                    value = ((value << 1) & mask) ^ (
+                        self.polynomial
+                        if value & (1 << (self.width - 1)) else 0
+                    )
+        return (value ^ self.xor_out) & mask
+
+    def append(self, body: bytes) -> bytes:
+        if self.wire_size == 0:
+            return body
+        trailer = self.calculate(body).to_bytes(
+            self.wire_size, byteorder=self.wire_order
+        )
+        return body + trailer
+
+    def verify(self, wire: bytes) -> bool:
+        if len(wire) < self.wire_size:
+            return False
+        if self.wire_size == 0:
+            return True
+        body = wire[:-self.wire_size]
+        received = int.from_bytes(
+            wire[-self.wire_size:], byteorder=self.wire_order
+        )
+        return received == self.calculate(body)
 
 
-CRC_TABLE = make_crc_table()
+CRC16_BITWISE = IntegrityPolicy(
+    0, 2, 16, 0xA001, 0xFFFF, 0, True, "little", 0x4B37
+)
+CRC16_TABLE = IntegrityPolicy(
+    1, 2, 16, 0xA001, 0xFFFF, 0, True, "little", 0x4B37
+)
+NO_CRC = IntegrityPolicy(2, 0, 0, 0, 0, 0, False, "little", 0)
+CRC8_BITWISE = IntegrityPolicy(
+    3, 1, 8, 0x07, 0, 0, False, "big", 0xF4
+)
+CRC8_TABLE = IntegrityPolicy(
+    4, 1, 8, 0x07, 0, 0, False, "big", 0xF4
+)
+CRC32_BITWISE = IntegrityPolicy(
+    5, 4, 32, 0xEDB88320, 0xFFFFFFFF, 0xFFFFFFFF,
+    True, "little", 0xCBF43926
+)
+CRC32_TABLE = IntegrityPolicy(
+    6, 4, 32, 0xEDB88320, 0xFFFFFFFF, 0xFFFFFFFF,
+    True, "little", 0xCBF43926
+)
+CRC64_BITWISE = IntegrityPolicy(
+    7, 8, 64, 0x42F0E1EBA9EA3693, 0, 0,
+    False, "big", 0x6C40DF5F0B497347
+)
+CRC64_TABLE = IntegrityPolicy(
+    8, 8, 64, 0x42F0E1EBA9EA3693, 0, 0,
+    False, "big", 0x6C40DF5F0B497347
+)
+
+CRC_POLICIES = {
+    "crc16-bitwise": CRC16_BITWISE,
+    "crc16-table": CRC16_TABLE,
+    "nocrc": NO_CRC,
+    "crc8-bitwise": CRC8_BITWISE,
+    "crc8-table": CRC8_TABLE,
+    "crc32-bitwise": CRC32_BITWISE,
+    "crc32-table": CRC32_TABLE,
+    "crc64-bitwise": CRC64_BITWISE,
+    "crc64-table": CRC64_TABLE,
+    # Backward-compatible command-line spellings.
+    "bitwise": CRC16_BITWISE,
+    "table": CRC16_TABLE,
+}
+
+# Identical application payload distribution for every performance run. The
+# widest trailer (CRC64) still leaves 246 useful bytes in the 256-byte ADU.
+STRESS_DATA_SIZES = (0, 1, 2, 31, 32, 63, 64, 127, 128, 245, 246)
 
 
-def crc16(data: bytes) -> int:
-    value = 0xFFFF
-    for byte in data:
-        value = (value >> 8) ^ CRC_TABLE[(value ^ byte) & 0xFF]
-    return value
-
-
-def make_adu(address: int, function: int, data: bytes = b"") -> bytes:
+def make_adu(policy: IntegrityPolicy, address: int,
+             function: int, data: bytes = b"") -> bytes:
     if not 0 <= address <= 0xFF:
         raise ValueError("address must fit one byte")
     if not 0 <= function <= 0xFF:
         raise ValueError("function must fit one byte")
-    if len(data) > MAX_DATA_SIZE:
-        raise ValueError("function data exceeds the Modbus PDU limit")
+    if len(data) > policy.max_data_size:
+        raise ValueError("function data exceeds the selected policy limit")
     body = bytes((address, function)) + data
-    checksum = crc16(body)
-    return body + bytes((checksum & 0xFF, checksum >> 8))
+    return policy.append(body)
 
 
 @dataclass(frozen=True)
@@ -122,47 +208,49 @@ class Adu:
     wire: bytes
 
 
-def parse_adu(wire: bytes) -> Adu:
-    if not 4 <= len(wire) <= MAX_ADU_SIZE:
+def parse_adu(policy: IntegrityPolicy, wire: bytes) -> Adu:
+    minimum = 2 + policy.wire_size
+    if not minimum <= len(wire) <= MAX_ADU_SIZE:
         raise AssertionError(f"invalid ADU size from board: {len(wire)}")
-    expected = crc16(wire[:-2])
-    received = wire[-2] | (wire[-1] << 8)
-    if received != expected:
-        raise AssertionError(
-            f"board response CRC mismatch: {received:04X} != {expected:04X}"
-        )
-    return Adu(wire[0], wire[1], wire[2:-2], wire)
+    if not policy.verify(wire):
+        raise AssertionError("board response integrity trailer mismatch")
+    data_end = len(wire) - policy.wire_size \
+        if policy.wire_size else len(wire)
+    return Adu(wire[0], wire[1], wire[2:data_end], wire)
 
 
-def reference_self_check() -> None:
+def reference_self_check(policy: IntegrityPolicy) -> None:
+    if policy.calculate(b"123456789") != policy.check_value:
+        raise AssertionError("PC integrity oracle failed its named check value")
     known = bytes((0x01, 0x03, 0x00, 0x00, 0x00, 0x0A))
-    if crc16(known) != 0xCDC5:
-        raise AssertionError("PC CRC oracle failed the canonical C5 CD vector")
-    known_adu = known + b"\xC5\xCD"
-    if parse_adu(known_adu).wire != known_adu:
-        raise AssertionError("PC ADU parser rejected the canonical vector")
-    for byte_index in range(len(known_adu)):
-        for bit in range(8):
-            damaged = bytearray(known_adu)
-            damaged[byte_index] ^= 1 << bit
-            try:
-                parse_adu(bytes(damaged))
-            except AssertionError:
-                continue
-            raise AssertionError("PC CRC oracle accepted a single-bit mutation")
-    for size in range(MAX_DATA_SIZE + 1):
+    known_adu = make_adu(policy, 0x01, 0x03, known[2:])
+    if parse_adu(policy, known_adu).wire != known_adu:
+        raise AssertionError("PC ADU parser rejected its own canonical vector")
+    if policy.wire_size:
+        for byte_index in range(len(known_adu)):
+            for bit in range(8):
+                damaged = bytearray(known_adu)
+                damaged[byte_index] ^= 1 << bit
+                try:
+                    parse_adu(policy, bytes(damaged))
+                except AssertionError:
+                    continue
+                raise AssertionError(
+                    "PC integrity oracle accepted a single-bit mutation"
+                )
+    for size in range(policy.max_data_size + 1):
         data = bytes((index * 37 + size) & 0xFF for index in range(size))
-        wire = make_adu(0x11, 0xA7, data)
-        parsed = parse_adu(wire)
-        if parsed.data != data or len(wire) != size + 4:
+        wire = make_adu(policy, 0x11, 0xA7, data)
+        parsed = parse_adu(policy, wire)
+        if parsed.data != data or len(wire) != size + 2 + policy.wire_size:
             raise AssertionError(f"PC ADU round trip failed at data size {size}")
 
 
 class HardwareLink:
-    def __init__(self, port: serial.Serial, expected_crc_policy: int):
+    def __init__(self, port: serial.Serial, policy: IntegrityPolicy):
         self.port = port
         self.token = 0
-        self.expected_crc_policy = expected_crc_policy
+        self.policy = policy
 
     def write_candidate(self, wire: bytes, gap_after: float = 0.0) -> None:
         written = self.port.write(wire)
@@ -199,9 +287,11 @@ class HardwareLink:
 
     def echo(self, address: int, function: int, data: bytes,
              timeout: float = 5.0) -> Adu:
-        request = make_adu(address, function, data)
+        request = make_adu(self.policy, address, function, data)
         self.write_candidate(request)
-        response = parse_adu(self.read_exact(len(request), timeout))
+        response = parse_adu(
+            self.policy, self.read_exact(len(request), timeout)
+        )
         if response.wire != request:
             raise AssertionError(
                 "echo mismatch: "
@@ -209,17 +299,33 @@ class HardwareLink:
             )
         return response
 
+    def echo_wire(self, request: bytes) -> None:
+        """Timed traffic uses a precomputed independent-oracle wire image."""
+        self.write_candidate(request)
+        response = self.read_exact(len(request), timeout=8.0)
+        if response != request:
+            raise AssertionError(
+                f"echo mismatch: sent={request.hex()} received={response.hex()}"
+            )
+
     def control(self, command: int, payload_size: int,
-                argument: int | None = None,
+                arguments: tuple[int, ...] = (),
                 timeout: float = 5.0) -> bytes:
         self.token = (self.token + 1) & 0xFFFFFFFF
         data = MAGIC + bytes((command,)) + struct.pack("<I", self.token)
-        if argument is not None:
+        for argument in arguments:
             data += struct.pack("<I", argument)
-        request = make_adu(CONTROL_ADDRESS, CONTROL_FUNCTION, data)
+        request = make_adu(
+            self.policy, CONTROL_ADDRESS, CONTROL_FUNCTION, data
+        )
         self.write_candidate(request)
         expected_data_size = 9 + payload_size
-        response = parse_adu(self.read_exact(expected_data_size + 4, timeout))
+        response = parse_adu(
+            self.policy,
+            self.read_exact(
+                expected_data_size + 2 + self.policy.wire_size, timeout
+            ),
+        )
         if response.address != CONTROL_ADDRESS or \
                 response.function != CONTROL_FUNCTION:
             raise AssertionError("control response metadata mismatch")
@@ -253,14 +359,14 @@ class HardwareLink:
             "version": PROTOCOL_VERSION,
             "baud": self.port.baudrate,
             "core_clock": 600_000_000,
-            "max_receive": MAX_DATA_SIZE,
-            "max_send": MAX_DATA_SIZE,
+            "max_receive": self.policy.max_data_size,
+            "max_send": self.policy.max_data_size,
             "max_frame": MAX_ADU_SIZE,
             "uart_chunk_size": UART_CHUNK_SIZE,
             "uart_chunk_count": UART_CHUNK_COUNT,
             "rx_blocks": RX_BLOCKS,
             "tx_blocks": TX_BLOCKS,
-            "crc_policy": self.expected_crc_policy,
+            "crc_policy": self.policy.identifier,
         }
         if hello != expected:
             raise AssertionError(f"unexpected board geometry: {hello}")
@@ -268,7 +374,8 @@ class HardwareLink:
 
     def ack(self, command: int, argument: int | None = None,
             timeout: float = 5.0) -> tuple[int, int]:
-        payload = self.control(command, 8, argument, timeout)
+        arguments = () if argument is None else (argument,)
+        payload = self.control(command, 8, arguments, timeout)
         return struct.unpack("<2I", payload)
 
     def reset_metrics(self) -> None:
@@ -297,6 +404,81 @@ class HardwareLink:
             }
         result["counters"] = counters
         return result
+
+    def crc_benchmark(self, size: int = 246,
+                      iterations: int = 8) -> dict:
+        if not 0 <= size <= 256:
+            raise ValueError("CRC benchmark size must be in 0..256")
+        if not 1 <= iterations <= 8:
+            raise ValueError("CRC benchmark iterations must be in 1..8")
+        payload = self.control(
+            CMD_CRC_BENCHMARK, 48, (size, iterations), timeout=10.0
+        )
+        status, returned_size, returned_iterations, cycles, checksum_mix, \
+            returned_checksum, dwt_ctrl, ccr, cpuid = struct.unpack(
+                "<IIIQQQIII", payload
+            )
+        if status != 0 or returned_size != size or \
+                returned_iterations != iterations:
+            raise AssertionError(
+                "CRC benchmark response mismatch: "
+                f"status={status} size={returned_size} "
+                f"iterations={returned_iterations}"
+            )
+
+        data = bytes(
+            (index * 37 + 0xA5) & 0xFF
+            for index in range(size)
+        )
+        checksum = self.policy.calculate(data)
+        expected_mix = sum(checksum ^ iteration for iteration in range(iterations)) \
+            & 0xFFFFFFFFFFFFFFFF
+        if returned_checksum != checksum or checksum_mix != expected_mix:
+            raise AssertionError(
+                f"CRC benchmark oracle mismatch: checksum={returned_checksum:#x} "
+                f"expected={checksum:#x}, mix={checksum_mix:#x}/{expected_mix:#x}"
+            )
+        if not (dwt_ctrl & 1) or dwt_ctrl & (1 << 25):
+            raise AssertionError("DWT cycle counter is not available/enabled")
+        if ccr & (3 << 16) != (3 << 16):
+            raise AssertionError("benchmark requires both I-cache and D-cache")
+        if (cpuid >> 4) & 0xFFF != 0xC27:
+            raise AssertionError(f"benchmark target is not Cortex-M7: {cpuid:#x}")
+        if not 0 < cycles < 600_000:
+            raise AssertionError(f"invalid or >= 1 ms IRQ-off cycle window: {cycles}")
+        return {
+            "size": size,
+            "iterations": iterations,
+            "cycles": cycles,
+            "checksum": checksum,
+            "checksum_mix": checksum_mix,
+            "dwt_ctrl": dwt_ctrl,
+            "scb_ccr": ccr,
+            "scb_cpuid": cpuid,
+        }
+
+
+def suite_crc_benchmark(link: HardwareLink) -> dict:
+    measurements = []
+    for size in (0, 1, 8, 32, 64, 128, 246, 256):
+        samples = [link.crc_benchmark(size, 8) for _ in range(9)]
+        per_call = [sample["cycles"] / sample["iterations"] for sample in samples]
+        median = statistics.median(per_call)
+        measurements.append({
+            "size": size,
+            "median_cycles_per_call": median,
+            "min_cycles_per_call": min(per_call),
+            "max_cycles_per_call": max(per_call),
+            "cycles_per_byte": median / size if size else None,
+            # NoCrc does not read input: timings are a harness floor, not
+            # fictitious memory/checksum throughput.
+            "calculation_mib_s": (
+                600_000_000.0 * size / median / (1024 * 1024)
+                if size and link.policy.wire_size else None
+            ),
+            "samples": samples,
+        })
+    return {"suite": "crc_benchmark", "measurements": measurements}
 
 
 def pattern(name: str, size: int, seed: int) -> bytes:
@@ -394,7 +576,14 @@ def assert_plain_accounting(stats: dict, frames: int,
 
 def suite_vectors(link: HardwareLink) -> dict:
     link.reset_metrics()
-    sizes = (0, 1, 2, 31, 32, 63, 64, 127, 128, 251, 252)
+    sizes = tuple(sorted(set(
+        size for size in (
+            0, 1, 2, 31, 32, 63, 64, 127, 128,
+            link.policy.max_data_size - 1,
+            link.policy.max_data_size,
+        )
+        if 0 <= size <= link.policy.max_data_size
+    )))
     names = ("zero", "alternating", "random")
     addresses = (1, 0x11, 0xF7)
     functions = (0x03, 0x10, 0x43, 0x64, 0xA7)
@@ -431,8 +620,38 @@ def suite_vectors(link: HardwareLink) -> dict:
 
 def suite_faults(link: HardwareLink) -> dict:
     link.reset_metrics()
-    base = make_adu(1, 0x03, b"\x00\x10\x00\x02")
+    base = make_adu(link.policy, 1, 0x03, b"\x00\x10\x00\x02")
     mutation_indices = (0, 1, 2, len(base) - 1)
+
+    if link.policy.wire_size == 0:
+        for byte_index in mutation_indices:
+            damaged = bytearray(base)
+            damaged[byte_index] ^= 0x01
+            link.write_candidate(bytes(damaged))
+            echoed = parse_adu(
+                link.policy, link.read_exact(len(damaged), 8.0)
+            )
+            if echoed.wire != bytes(damaged):
+                raise AssertionError("NoCrc did not echo altered data verbatim")
+        stats = link.stats()
+        healthy_failures(stats)
+        accepted = len(mutation_indices)
+        assert_fields(
+            stats,
+            echo_frames=accepted,
+            echo_data_bytes=accepted * 4,
+            control_frames=1,
+            rtu_candidates=accepted + 1,
+            rtu_frames_received=accepted + 1,
+            rtu_crc_errors=0,
+            rtu_frames_sent=accepted,
+        )
+        return {
+            "suite": "faults",
+            "accepted_corruptions": accepted,
+            "stats": stats,
+        }
+
     for sequence, byte_index in enumerate(mutation_indices):
         damaged = bytearray(base)
         damaged[byte_index] ^= 0x01
@@ -529,13 +748,16 @@ def suite_pool(link: HardwareLink) -> dict:
         raise AssertionError(f"packet hold refused: {status}/{value}")
     time.sleep(0.08)
 
-    requests = [make_adu(0x11, 0x43, pool_data(index)) for index in range(16)]
+    requests = [
+        make_adu(link.policy, 0x11, 0x43, pool_data(index))
+        for index in range(16)
+    ]
     for wire in requests:
         # This explicit silence is part of the v1 physical-burst contract.
         link.write_candidate(wire, gap_after=0.003)
 
     time.sleep(hold_ms / 1000.0 + 0.15)
-    echoed = [parse_adu(link.read_exact(len(wire), 8.0)).wire
+    echoed = [parse_adu(link.policy, link.read_exact(len(wire), 8.0)).wire
               for wire in requests[:RX_BLOCKS]]
     if echoed != requests[:RX_BLOCKS]:
         raise AssertionError("RX pool did not retain the first eight ADUs in order")
@@ -598,19 +820,33 @@ def stress_data(sequence: int, size: int) -> bytes:
     return bytes(data)
 
 
-def suite_stress(link: HardwareLink, seconds: float) -> dict:
-    link.reset_metrics()
-    sizes = (0, 1, 2, 31, 32, 63, 64, 127, 128, 251, 252)
+def suite_stress(link: HardwareLink, seconds: float,
+                 frame_rate: float = 0) -> dict:
+    sizes = STRESS_DATA_SIZES
     functions = (0x03, 0x10, 0x43, 0x64, 0xA7)
+    # Outside both the wall-clock interval and the board metric baseline.
+    # Every length occurs equally often; no Python CRC runs in the timed loop.
+    requests = [make_adu(
+        link.policy, 1 + (index % 247), functions[index % len(functions)],
+        stress_data(index, sizes[index % len(sizes)]),
+    ) for index in range(len(sizes) * 100)]
+    link.reset_metrics()
     sequence = 0
     data_bytes = 0
+    max_lateness = 0.0
     started = time.monotonic()
     deadline = started + seconds
     while time.monotonic() < deadline:
+        if frame_rate:
+            scheduled = started + sequence / frame_rate
+            if scheduled >= deadline:
+                break
+            remaining = scheduled - time.monotonic()
+            if remaining > 0:
+                time.sleep(remaining)
+            max_lateness = max(max_lateness, time.monotonic() - scheduled)
         size = sizes[sequence % len(sizes)]
-        data = stress_data(sequence, size)
-        function = functions[sequence % len(functions)]
-        link.echo(1 + (sequence % 247), function, data, timeout=8.0)
+        link.echo_wire(requests[sequence % len(requests)])
         data_bytes += size
         sequence += 1
 
@@ -633,12 +869,18 @@ def suite_stress(link: HardwareLink, seconds: float) -> dict:
     board_seconds = max(stats["window_ms"], 1) / 1000.0
     cpu_percent = 100.0 * cycles / (600_000_000.0 * board_seconds)
     return {
-        "suite": "stress",
+        "suite": "paced" if frame_rate else "stress",
+        "target_frames_s": frame_rate or None,
+        "frames_s": sequence / elapsed,
+        "max_schedule_lateness_ms": 1000 * max_lateness if frame_rate else None,
         "frames": sequence,
         "data_bytes": data_bytes,
         "seconds": elapsed,
         "data_mib_s": data_bytes / elapsed / (1024 * 1024),
         "integrated_cpu_percent": cpu_percent,
+        "instrumented_cycles": cycles,
+        "cycles_per_frame": cycles / sequence,
+        "normalized_cpu_percent_300fps": 100 * cycles / sequence * 300 / 600_000_000,
         "stats": stats,
     }
 
@@ -655,11 +897,18 @@ def suite_smoke(link: HardwareLink) -> dict:
 
 def print_result(result: dict) -> None:
     suite = result["suite"]
-    if suite == "stress":
+    if suite in ("stress", "paced"):
         print(
-            f"PASS stress: {result['frames']} frames, {result['data_bytes']} B, "
+            f"PASS {suite}: {result['frames']} frames, {result['data_bytes']} B, "
             f"{result['data_mib_s']:.3f} MiB/s data, "
             f"{result['integrated_cpu_percent']:.3f}% measured CPU"
+        )
+    elif suite == "crc_benchmark":
+        measurement = next(m for m in result["measurements"] if m["size"] == 246)
+        print(
+            f"PASS CRC benchmark: 8 lengths x 9 samples x 8 calls; 246 B: "
+            f"{measurement['median_cycles_per_call']:.1f} cycles/call, "
+            f"{measurement['cycles_per_byte']:.3f} cycles/B (gross)"
         )
     elif suite == "vectors":
         print(
@@ -675,7 +924,7 @@ def print_result(result: dict) -> None:
 
 
 def append_result(path: str | None, baud: int,
-                  crc_policy: str, result: dict) -> None:
+                  crc_policy: str, result: dict, image: dict | None = None) -> None:
     if not path:
         return
     record = {
@@ -683,6 +932,7 @@ def append_result(path: str | None, baud: int,
         "baud": baud,
         "crc_policy": crc_policy,
         "status": result.get("status", "passed"),
+        "image": image,
         **result,
     }
     with Path(path).open("a", encoding="utf-8") as output:
@@ -700,24 +950,31 @@ def main() -> None:
     parser.add_argument(
         "--suite",
         choices=("smoke", "vectors", "faults", "selftest", "pool",
-                 "stress", "all"),
+                 "crc_benchmark", "stress", "paced", "all"),
         default="smoke",
     )
     parser.add_argument("--seconds", type=float, default=5.0)
+    parser.add_argument("--frame-rate", type=float, default=300.0)
+    parser.add_argument("--image", help="manifest of the exact inspected/flashed ELF")
     parser.add_argument("--output", help="append one compact JSON object per suite")
     args = parser.parse_args()
-    if args.seconds <= 0:
-        parser.error("--seconds must be positive")
+    if args.seconds <= 0 or args.frame_rate <= 0:
+        parser.error("--seconds and --frame-rate must be positive")
 
-    reference_self_check()
-    print("PASS independent PC CRC/ADU oracle")
+    policy = CRC_POLICIES[args.crc_policy]
+    image = json.loads(Path(args.image).read_text(encoding="utf-8")) \
+        if args.image else None
+    if image and (image["policy_id"] != policy.identifier or image["baud"] != args.baud):
+        parser.error("image manifest does not match selected policy/baud")
+    reference_self_check(policy)
+    print("PASS independent PC integrity/ADU oracle")
 
     with serial.Serial(args.port, args.baud, timeout=0.02,
                        write_timeout=10) as port:
         time.sleep(0.3)
         port.reset_input_buffer()
         port.reset_output_buffer()
-        link = HardwareLink(port, CRC_POLICIES[args.crc_policy])
+        link = HardwareLink(port, policy)
         hello = link.hello()
         print("HELLO", json.dumps(hello, sort_keys=True))
 
@@ -727,9 +984,14 @@ def main() -> None:
             "faults": lambda: suite_faults(link),
             "selftest": lambda: suite_selftest(link),
             "pool": lambda: suite_pool(link),
+            "crc_benchmark": lambda: suite_crc_benchmark(link),
             "stress": lambda: suite_stress(link, args.seconds),
+            "paced": lambda: suite_stress(link, args.seconds, args.frame_rate),
         }
-        selected = ("vectors", "faults", "selftest", "pool", "stress") \
+        selected = (
+            "vectors", "faults", "selftest", "pool",
+            "crc_benchmark", "stress", "paced",
+        ) \
             if args.suite == "all" else (args.suite,)
         for name in selected:
             try:
@@ -744,11 +1006,11 @@ def main() -> None:
                     failure["stats"] = link.stats()
                 except Exception as stats_error:
                     failure["stats_error"] = str(stats_error)
-                append_result(args.output, args.baud, args.crc_policy, failure)
+                append_result(args.output, args.baud, args.crc_policy, failure, image)
                 print("FAIL", json.dumps(failure, sort_keys=True))
                 raise
             print_result(result)
-            append_result(args.output, args.baud, args.crc_policy, result)
+            append_result(args.output, args.baud, args.crc_policy, result, image)
 
 
 if __name__ == "__main__":

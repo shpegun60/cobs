@@ -20,8 +20,16 @@ param(
     [ValidateRange(0, 3600)]
     [int]$ExtendedSeconds = 15,
 
-    [ValidateSet('bitwise', 'table')]
+    [ValidateSet('bitwise', 'table', 'nocrc', 'crc8-bitwise', 'crc8-table',
+        'crc16-bitwise', 'crc16-table', 'crc32-bitwise', 'crc32-table',
+        'crc64-bitwise', 'crc64-table')]
     [string[]]$CrcPolicies = @('bitwise'),
+
+    [ValidateSet('Os', 'O2', 'O3')]
+    [string]$Optimization = 'Os',
+
+    [ValidateSet(0, 1)]
+    [int]$Lto = 0,
 
     [string]$Output,
 
@@ -42,8 +50,10 @@ $here = $PSScriptRoot
 $repo = (Resolve-Path -LiteralPath (Join-Path $here '..\..\..\..\..')).Path
 $buildScript = Join-Path $here 'build.sh'
 $runner = Join-Path $here 'modbus_hardware.py'
+$inspector = Join-Path $here 'inspect_image.py'
 $elf = Join-Path $repo `
     'stm32_cube_test\h7s_cobs_test\out\modbus-hardware\modbus_hardware_bench.elf'
+$image = [System.IO.Path]::ChangeExtension($elf, '.image.json')
 
 if (-not (Test-Path -LiteralPath $CubeProgrammer -PathType Leaf)) {
     throw "STM32CubeProgrammer not found: $CubeProgrammer"
@@ -77,6 +87,8 @@ if ($policies.Count -eq 0) {
 }
 $previousBaud = $env:MODBUS_HW_BAUD
 $previousCrcPolicy = $env:MODBUS_HW_CRC_POLICY
+$previousOptimization = $env:MODBUS_HW_OPT
+$previousLto = $env:MODBUS_HW_LTO
 
 function Assert-NativeSuccess([string]$Operation) {
     if ($LASTEXITCODE -ne 0) {
@@ -88,8 +100,20 @@ function Build-And-Flash([int]$Baud, [string]$CrcPolicy) {
     Write-Host "`n=== BUILD + FLASH $Baud baud / $CrcPolicy CRC ==="
     $env:MODBUS_HW_BAUD = [string]$Baud
     $env:MODBUS_HW_CRC_POLICY = $CrcPolicy
+    $env:MODBUS_HW_OPT = "-$Optimization"
+    $env:MODBUS_HW_LTO = [string]$Lto
     & $GitBash $buildScript
     Assert-NativeSuccess "ARM build at $Baud baud"
+
+    & $Python -B $inspector $elf --policy $CrcPolicy --baud $Baud --optimization $Optimization --lto $Lto
+    Assert-NativeSuccess "ELF disassembly and load-image identity"
+
+    # Keep each exact ELF/bin/map/manifest in the ignored build directory.
+    $snapshot = Join-Path (Split-Path $elf) "$CrcPolicy-$Baud-$Optimization-lto$Lto"
+    New-Item -ItemType Directory -Force -Path $snapshot | Out-Null
+    foreach ($extension in @('.elf', '.bin', '.map', '.image.json')) {
+        Copy-Item -LiteralPath ([System.IO.Path]::ChangeExtension($elf, $extension)) -Destination $snapshot
+    }
 
     & $CubeProgrammer `
         -c port=SWD "sn=$StLinkSerial" mode=UR reset=HWrst freq=4000 `
@@ -108,9 +132,10 @@ function Run-Suite(
         '--baud', [string]$Baud,
         '--crc-policy', $CrcPolicy,
         '--suite', $Suite,
+        '--image', $image,
         '--output', $Output
     )
-    if ($Suite -eq 'all' -or $Suite -eq 'stress') {
+    if ($Suite -in @('all', 'stress', 'paced')) {
         $arguments += @('--seconds', [string]$Seconds)
     }
     & $Python @arguments
@@ -128,18 +153,23 @@ try {
         if ($ExtendedSeconds -gt 0) {
             Write-Host "`n=== EXTENDED $maximumBaud baud / $policy CRC ==="
             Run-Suite $maximumBaud $policy 'stress' $ExtendedSeconds
+            Run-Suite $maximumBaud $policy 'paced' $ExtendedSeconds
         }
     }
 
-    if (-not $LeaveAtLastBaud) {
-        Build-And-Flash 115200 'bitwise'
-        Run-Suite 115200 'bitwise' 'smoke' 1
-    }
-
-    Write-Host "`n=== MODBUS RTU MATRIX PASS ==="
-    Write-Host "Results: $Output"
 } finally {
-    $env:MODBUS_HW_BAUD = $previousBaud
-    $env:MODBUS_HW_CRC_POLICY = $previousCrcPolicy
-    Pop-Location
+    try {
+        if (-not $LeaveAtLastBaud) {
+            Build-And-Flash 115200 'bitwise'
+            Run-Suite 115200 'bitwise' 'smoke' 1
+        }
+    } finally {
+        $env:MODBUS_HW_BAUD = $previousBaud
+        $env:MODBUS_HW_CRC_POLICY = $previousCrcPolicy
+        $env:MODBUS_HW_OPT = $previousOptimization
+        $env:MODBUS_HW_LTO = $previousLto
+        Pop-Location
+    }
 }
+Write-Host "`n=== MODBUS RTU MATRIX PASS ==="
+Write-Host "Results: $Output"

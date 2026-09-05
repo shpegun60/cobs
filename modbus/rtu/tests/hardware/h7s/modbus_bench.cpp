@@ -36,13 +36,13 @@
 #ifndef MODBUS_HW_BAUD
 #define MODBUS_HW_BAUD 115200u
 #endif
-#ifndef MODBUS_HW_CRC_TABLE
-#define MODBUS_HW_CRC_TABLE 0
+#ifndef MODBUS_HW_CRC_POLICY_ID
+#define MODBUS_HW_CRC_POLICY_ID 0
 #endif
 
 static_assert(MODBUS_HW_BAUD > 0u, "Modbus hardware baud must be non-zero");
-static_assert(MODBUS_HW_CRC_TABLE == 0 || MODBUS_HW_CRC_TABLE == 1,
-	"MODBUS_HW_CRC_TABLE must be zero or one");
+static_assert(MODBUS_HW_CRC_POLICY_ID >= 0 && MODBUS_HW_CRC_POLICY_ID <= 8,
+	"MODBUS_HW_CRC_POLICY_ID must select one supported built-in policy");
 
 BenchCounter g_bench_usart_irq;
 BenchCounter g_bench_rx_dma_irq;
@@ -56,24 +56,46 @@ constexpr std::size_t kUartChunkSize = 256u;
 constexpr std::size_t kUartChunkCount = 4u;
 
 using Memory = modbus::rtu::Pool<kRxBlocks, kTxBlocks>;
-#if MODBUS_HW_CRC_TABLE
+#if MODBUS_HW_CRC_POLICY_ID == 0
+using Crc = ::crc::Crc16Bitwise;
+constexpr uint32_t kCrcPolicy = 0u;
+#elif MODBUS_HW_CRC_POLICY_ID == 1
 using Crc = modbus::rtu::crc::Table;
 constexpr uint32_t kCrcPolicy = 1u;
+#elif MODBUS_HW_CRC_POLICY_ID == 2
+using Crc = ::crc::NoCrc;
+constexpr uint32_t kCrcPolicy = 2u;
+#elif MODBUS_HW_CRC_POLICY_ID == 3
+using Crc = ::crc::Crc8Bitwise;
+constexpr uint32_t kCrcPolicy = 3u;
+#elif MODBUS_HW_CRC_POLICY_ID == 4
+using Crc = ::crc::Crc8Table;
+constexpr uint32_t kCrcPolicy = 4u;
+#elif MODBUS_HW_CRC_POLICY_ID == 5
+using Crc = ::crc::Crc32Bitwise;
+constexpr uint32_t kCrcPolicy = 5u;
+#elif MODBUS_HW_CRC_POLICY_ID == 6
+using Crc = ::crc::Crc32Table;
+constexpr uint32_t kCrcPolicy = 6u;
+#elif MODBUS_HW_CRC_POLICY_ID == 7
+using Crc = ::crc::Crc64Bitwise;
+constexpr uint32_t kCrcPolicy = 7u;
 #else
-using Crc = modbus::rtu::crc::Bitwise;
-constexpr uint32_t kCrcPolicy = 0u;
+using Crc = ::crc::Crc64Table;
+constexpr uint32_t kCrcPolicy = 8u;
 #endif
 using Link = modbus::rtu::Endpoint<Memory, Crc>;
 using Serial = Uart<kUartChunkSize, kUartChunkCount>;
 
-static_assert(Link::max_receive_size == 252u);
-static_assert(Link::max_send_size == 252u);
+static_assert(Link::max_receive_size ==
+	modbus::rtu::max_adu_size - 2u - Crc::wire_size);
+static_assert(Link::max_send_size == Link::max_receive_size);
 static_assert(Link::max_frame_size == 256u);
 
 constexpr uint8_t kControlAddress = 0xF7u;
 constexpr uint8_t kControlFunction = 0x41u;
 constexpr std::array<uint8_t, 4> kMagic{0x4Du, 0x52u, 0x54u, 0x55u};
-constexpr uint32_t kProtocolVersion = 2u;
+constexpr uint32_t kProtocolVersion = 3u;
 constexpr uint32_t kMaxActionMs = 5000u;
 constexpr std::size_t kControlPrefixSize = 9u;
 constexpr std::size_t kStatsScalarCount = 31u;
@@ -83,7 +105,7 @@ constexpr std::size_t kStatsDataSize = kControlPrefixSize +
 	(kStatsScalarCount * sizeof(uint32_t)) +
 	(kCounterCount * kCounterWireSize);
 static_assert(kStatsDataSize == 245u);
-static_assert(kStatsDataSize <= modbus::max_data_size);
+static_assert(kStatsDataSize <= Link::max_send_size);
 
 enum class Command : uint8_t {
 	Hello = 1u,
@@ -91,6 +113,7 @@ enum class Command : uint8_t {
 	ResetMetrics = 3u,
 	HoldPackets = 4u,
 	BackpressureSelfTest = 5u,
+	CrcBenchmark = 6u,
 };
 
 enum class PendingAction : uint8_t { None, ResetMetrics, HoldPackets };
@@ -121,6 +144,67 @@ PendingAction s_pending_action = PendingAction::None;
 uint32_t s_pending_ms = 0u;
 uint32_t s_hold_until = 0u;
 bool s_hold_active = false;
+
+#if defined(__GNUC__)
+#define MODBUS_BENCH_NOINLINE __attribute__((noipa, used))
+#else
+#define MODBUS_BENCH_NOINLINE
+#endif
+
+/*
+ * Stable symbol for both live DWT timing and exact linked-ELF disassembly.
+ * The empty compiler barrier prevents loop-invariant call elimination without
+ * adding an instruction to the target hot path.
+ */
+extern "C" MODBUS_BENCH_NOINLINE Crc::value_type modbus_crc_benchmark_probe(
+		const uint8_t* const bytes,
+		const std::size_t size) noexcept
+{
+#if defined(__GNUC__)
+	asm volatile("" : : "r"(bytes), "r"(size) : "memory");
+#endif
+	Crc policy{};
+	return policy.calculate(std::span<const uint8_t>{bytes, size});
+}
+
+#undef MODBUS_BENCH_NOINLINE
+
+volatile uint64_t s_crc_benchmark_sink = 0u;
+
+struct CrcBenchmarkResult final {
+	uint64_t cycles = 0u;
+	uint64_t checksum_mix = 0u;
+	uint64_t checksum = 0u;
+};
+
+[[nodiscard]] CrcBenchmarkResult benchmark_crc(
+		const std::span<const uint8_t> bytes,
+		const uint32_t iterations) noexcept
+{
+	CrcBenchmarkResult result;
+	/* Warm instruction/data cache before the timed hot loop. */
+	result.checksum = modbus_crc_benchmark_probe(bytes.data(), bytes.size());
+
+	const uint32_t primask = __get_PRIMASK();
+	__disable_irq();
+	__DSB();
+	__ISB();
+	const uint32_t started = DWT->CYCCNT;
+	uint64_t checksum_mix = 0u;
+	for (uint32_t iteration = 0u; iteration < iterations; ++iteration) {
+		checksum_mix += static_cast<uint64_t>(
+			modbus_crc_benchmark_probe(bytes.data(), bytes.size())) ^ iteration;
+	}
+	// Keep the complete call/mix loop between the two timer reads.
+	asm volatile("" : "+r"(checksum_mix) : : "memory");
+	const uint32_t stopped = DWT->CYCCNT;
+	__set_PRIMASK(primask);
+
+	s_crc_benchmark_sink = checksum_mix;
+	result.cycles = static_cast<uint64_t>(stopped - started);
+	result.checksum_mix = checksum_mix;
+	return result;
+}
 
 class Writer final {
 public:
@@ -172,7 +256,7 @@ public:
 	}
 
 private:
-	std::array<uint8_t, modbus::max_data_size> m_bytes{};
+	std::array<uint8_t, Link::max_send_size> m_bytes{};
 	std::size_t m_size = 0u;
 };
 
@@ -283,6 +367,37 @@ void reset_metrics() noexcept
 		writer.put_u32(static_cast<uint32_t>(kRxBlocks)) &&
 		writer.put_u32(static_cast<uint32_t>(kTxBlocks)) &&
 		writer.put_u32(kCrcPolicy) &&
+		send_writer(writer);
+}
+
+[[nodiscard]] bool send_crc_benchmark(
+		const uint32_t token,
+		const uint32_t size,
+		const uint32_t iterations) noexcept
+{
+	if (size > 256u || iterations == 0u || iterations > 8u) {
+		return send_ack(Command::CrcBenchmark, token, 1u, size);
+	}
+
+	std::array<uint8_t, 256u> bytes{};
+	for (std::size_t index = 0u; index < size; ++index) {
+		bytes[index] = static_cast<uint8_t>(
+			(index * 37u + 0xA5u) & 0xFFu);
+	}
+	const CrcBenchmarkResult result = benchmark_crc(
+		std::span<const uint8_t>{bytes}.first(size), iterations);
+
+	Writer writer;
+	return begin_response(writer, Command::CrcBenchmark, token) &&
+		writer.put_u32(0u) &&
+		writer.put_u32(size) &&
+		writer.put_u32(iterations) &&
+		writer.put_u64(result.cycles) &&
+		writer.put_u64(result.checksum_mix) &&
+		writer.put_u64(result.checksum) &&
+		writer.put_u32(DWT->CTRL) &&
+		writer.put_u32(SCB->CCR) &&
+		writer.put_u32(SCB->CPUID) &&
 		send_writer(writer);
 }
 
@@ -409,6 +524,8 @@ void process_control(const std::span<const uint8_t> data) noexcept
 	const Command command = static_cast<Command>(data[4]);
 	const uint32_t token = read_le_u32(data, 5u);
 	const uint32_t argument = data.size() >= 13u ? read_le_u32(data, 9u) : 0u;
+	const uint32_t second_argument =
+		data.size() >= 17u ? read_le_u32(data, 13u) : 0u;
 
 	switch (command) {
 	case Command::Hello:
@@ -438,6 +555,13 @@ void process_control(const std::span<const uint8_t> data) noexcept
 		if (send_ack(command, token, 0u, 0u)) {
 			run_backpressure_selftest();
 		}
+		return;
+	case Command::CrcBenchmark:
+		if (data.size() < 17u) {
+			(void)send_ack(command, token, 1u, 0u);
+			return;
+		}
+		(void)send_crc_benchmark(token, argument, second_argument);
 		return;
 	}
 	(void)send_ack(command, token, 2u, 0u);
