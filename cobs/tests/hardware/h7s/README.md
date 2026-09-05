@@ -34,8 +34,12 @@ for the CPU/throughput tables, including the distinction between measured
 
 The current harness defaults to the real `cobs::Format<>`: CRC16 Bitwise,
 253 useful bytes, one-byte length, `Endpoint<wire::Pool<8,2>, Format<>>`.
-Its harness protocol is version 2; STATS is a two-page coherent snapshot so
-the control response does not require an enlarged application payload.
+Its harness protocol is version 3: STATS is a two-page coherent snapshot so
+the control response does not require an enlarged application payload, and
+HELLO ends with the `COBS_HW_CRC` selector (`crc_policy`: 0 NoCrc, 1 CRC16
+Bitwise, 2 CRC16 Table) so a record's policy label is the board's own
+statement rather than only the flashed image's hash; the trailer width alone
+cannot tell Bitwise from Table.
 
 All three configurations passed the full 115200/1M/3M/6M/10M matrix:
 

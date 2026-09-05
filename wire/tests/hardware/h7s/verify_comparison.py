@@ -70,15 +70,22 @@ def validate_selection(selection):
 
 def check_hello(run):
     """The board's own statement of what was built in must agree with the run's
-    policy label. RTU reports the CRC policy identifier, so a Bitwise/Table swap
-    is caught here; COBS reports only the trailer width, so for COBS only a
-    NoCrc swap is caught here and Bitwise/Table rests on the image (--nm)."""
+    policy label. Both harnesses report their CRC policy selector in HELLO
+    (COBS since harness protocol 3), so a Bitwise/Table swap is caught here.
+    Returns False for a COBS run recorded by the older harness, whose HELLO
+    carries only the trailer width: there a NoCrc swap is still caught, but
+    Bitwise/Table rests on the flashed image (--nm)."""
     hello = run["hello"]
     if run["protocol"] == "rtu":
         expected = bench.rtu.CRC_POLICIES["nocrc" if run["policy"] == "none" else f"crc16-{run['policy']}"].identifier
         assert hello["crc_policy"] == expected, f"RTU {run['policy']} run reports CRC policy {hello['crc_policy']}, expected {expected}"
-    else:
-        assert hello["crc_size"] == (0 if run["policy"] == "none" else 2), f"COBS {run['policy']} run reports crc_size {hello['crc_size']}"
+        return True
+    assert hello["crc_size"] == (0 if run["policy"] == "none" else 2), f"COBS {run['policy']} run reports crc_size {hello['crc_size']}"
+    if "crc_policy" not in hello:
+        return False
+    expected = bench.cobs.CRC_POLICY_IDS[run["policy"]]
+    assert hello["crc_policy"] == expected, f"COBS {run['policy']} run reports CRC policy {hello['crc_policy']}, expected {expected}"
+    return True
 
 
 def run_uart(run):
@@ -304,9 +311,14 @@ def main():
     print(f"PASS {len(core)} core groups / {sum(len(g['samples']) for g in core.values())} windows; {len(uart)} UART rows; {len(data['probes'])} framing probes; restored firmware")
     if args.nm:
         verify_images(data, args.nm)
-    elif any(run["protocol"] == "cobs" and run["policy"] != "none" for run in (*data["uart"], *data["probes"])) or data["core"]:
-        print("CAVEAT flashed images not inspected (no --nm): COBS Bitwise/Table labels rest on the recorded ELF hashes; "
-              "RTU labels are confirmed by the board's HELLO")
+    else:
+        unconfirmed = [run for run in (*data["uart"], *data["probes"])
+                       if run["protocol"] == "cobs" and run["policy"] != "none" and not check_hello(run)]
+        if unconfirmed:
+            print(f"CAVEAT flashed images not inspected (no --nm): {len(unconfirmed)} COBS runs predate HELLO crc_policy, "
+                  "their Bitwise/Table labels rest on the recorded ELF hashes")
+        if data["core"]:
+            print("CAVEAT flashed images not inspected (no --nm): core-bench policy labels rest on the recorded ELF hashes")
     if args.check_doc:
         output = io.StringIO()
         with redirect_stdout(output): tables(core, uart, data["probes"], selection_of(data))

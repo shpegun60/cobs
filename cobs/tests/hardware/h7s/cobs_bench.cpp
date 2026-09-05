@@ -88,7 +88,11 @@ static_assert(Link::max_receive_size == kMaxPayload);
 static_assert(Link::max_send_size == kMaxPayload);
 
 constexpr std::array<uint8_t, 4> kMagic{0xC7u, 0x43u, 0x42u, 0x53u};
-constexpr uint32_t kProtocolVersion = 2u; // harness version, not on-wire COBS negotiation
+// Harness version, not on-wire COBS negotiation. Version 3 appends the built-in
+// CRC policy selector to HELLO so a record's Bitwise/Table label is the board's
+// own statement, not only the ELF hash; the trailer width alone cannot tell
+// Bitwise from Table.
+constexpr uint32_t kProtocolVersion = 3u;
 constexpr uint32_t kMaxActionMs = 5000u;
 
 enum class Command : uint8_t {
@@ -286,6 +290,7 @@ void resetMetrics() noexcept
 		writer.putU32(static_cast<uint32_t>(kRxBlocks)) &&
 		writer.putU32(static_cast<uint32_t>(kTxBlocks)) &&
 		writer.putU32(static_cast<uint32_t>(Link::crc_size)) &&
+		writer.putU32(static_cast<uint32_t>(COBS_HW_CRC)) &&
 		sendWriter(writer);
 }
 

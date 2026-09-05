@@ -72,6 +72,32 @@ class ComparisonTests(unittest.TestCase):
             with self.assertRaises(AssertionError, msg=str(broken)):
                 verifier.selection_of(dict(selection={**good, **broken}))
 
+    def test_hello_confirms_policy_labels(self):
+        import verify_comparison as verifier
+
+        def cobs_run(policy, crc_policy=None):
+            hello = {"crc_size": 0 if policy == "none" else 2}
+            if crc_policy is not None:
+                hello["crc_policy"] = crc_policy
+            return {"protocol": "cobs", "policy": policy, "hello": hello}
+
+        def rtu_run(policy, crc_policy):
+            return {"protocol": "rtu", "policy": policy, "hello": {"crc_policy": crc_policy}}
+
+        self.assertTrue(verifier.check_hello(rtu_run("bitwise", 0)))
+        self.assertTrue(verifier.check_hello(rtu_run("table", 1)))
+        self.assertTrue(verifier.check_hello(rtu_run("none", 2)))
+        with self.assertRaises(AssertionError): verifier.check_hello(rtu_run("table", 0))
+        # harness protocol 3: the board names its policy
+        self.assertTrue(verifier.check_hello(cobs_run("bitwise", 1)))
+        self.assertTrue(verifier.check_hello(cobs_run("table", 2)))
+        with self.assertRaises(AssertionError): verifier.check_hello(cobs_run("table", 1))
+        with self.assertRaises(AssertionError): verifier.check_hello(cobs_run("none", 1))
+        # harness protocol 2 records: only the trailer width is available
+        self.assertFalse(verifier.check_hello(cobs_run("bitwise")))
+        self.assertFalse(verifier.check_hello(cobs_run("table")))
+        with self.assertRaises(AssertionError): verifier.check_hello({"protocol": "cobs", "policy": "bitwise", "hello": {"crc_size": 0}})
+
     def test_provenance_never_accepts_an_older_version(self):
         import contextlib, hashlib, io, subprocess, sys, tempfile
         from pathlib import Path

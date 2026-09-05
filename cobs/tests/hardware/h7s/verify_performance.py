@@ -50,6 +50,8 @@ def verify(records, repeats, check_sources=True):
         assert h["core_clock"] == 600000000 and h["baud"] == r["baud"]
         assert h["max_send"] == h["max_receive"] == r["max_payload"]
         assert h["crc_size"] == (0 if r["crc"] == "none" else 2)
+        if "crc_policy" in h:  # harness protocol 3: the board names its CRC policy
+            assert h["crc_policy"] == perf.peer.CRC_POLICY_IDS[r["crc"]], (h["crc_policy"], r["crc"])
         assert h["length_size"] == (1 if r["max_payload"] == 253 else 2)
         if check_sources:
             # Hashes must be committed versions at or after the record's base

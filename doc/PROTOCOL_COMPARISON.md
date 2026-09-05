@@ -387,6 +387,11 @@ measured it. A record made before its harness was committed is verified
 against the working tree and says so with a `CAVEAT` line; the shared rule
 lives in `wire/tests/provenance.py` and also governs the COBS performance and
 migration verifiers.
+Policy labels are checked against the board's own HELLO: RTU has always
+reported its CRC policy identifier, COBS reports it since harness protocol 3.
+The records in this document were taken with COBS harness protocol 2, whose
+HELLO carries only the trailer width, so their COBS Bitwise/Table labels are
+confirmed only by the flashed images; without `--nm` the verifier says so.
 Optional `--nm <arm-none-eabi-nm.exe>` checks all retained ELF identities,
 read-only lookup size/placement, flash verification logs and restored backup.
 Optional `--check-doc doc/PROTOCOL_COMPARISON.md` checks that every generated

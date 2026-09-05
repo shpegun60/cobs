@@ -32,7 +32,14 @@ RX_BLOCKS = 8
 TX_BLOCKS = 2
 UART_CHUNK_SIZE = 128
 UART_CHUNK_COUNT = 8
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
+# HELLO crc_policy: the firmware's COBS_HW_CRC selector, so a Bitwise/Table
+# label is confirmed by the board itself, not only by the flashed image hash.
+CRC_POLICY_IDS = {"none": 0, "bitwise": 1, "table": 2}
+# STATS has the same layout in harness protocols 2 and 3 (3 only extends HELLO),
+# so recorded snapshots from either version stay verifiable; the live HELLO check
+# above pins the exact version of the board in front of the peer.
+STATS_VERSIONS = (2, 3)
 
 CMD_HELLO = 1
 CMD_STATS = 2
@@ -302,14 +309,14 @@ class HardwareLink:
 
     def hello(self) -> dict[str, int]:
         payload = self.control(CMD_HELLO)
-        if len(payload) != 44:
+        if len(payload) != 48:
             raise AssertionError(f"bad HELLO size: {len(payload)}")
         names = (
             "version", "baud", "core_clock", "max_receive", "max_send",
             "length_size", "uart_chunk_size", "uart_chunk_count",
-            "rx_blocks", "tx_blocks", "crc_size",
+            "rx_blocks", "tx_blocks", "crc_size", "crc_policy",
         )
-        hello = dict(zip(names, struct.unpack("<11I", payload), strict=True))
+        hello = dict(zip(names, struct.unpack("<12I", payload), strict=True))
         if hello != {
             "version": PROTOCOL_VERSION,
             "baud": self.port.baudrate,
@@ -322,6 +329,7 @@ class HardwareLink:
             "rx_blocks": RX_BLOCKS,
             "tx_blocks": TX_BLOCKS,
             "crc_size": CRC_SIZE,
+            "crc_policy": CRC_POLICY_IDS[CRC_MODE],
         }:
             raise AssertionError(f"unexpected board geometry: {hello}")
         return hello
@@ -404,9 +412,10 @@ def assert_observation_occupancy(stats: dict) -> None:
     # STATS is decoded from a real RX packet.  Its snapshot therefore owns
     # exactly that one RX block, while it is taken before allocating the STATS
     # response's TX block.  Any other occupancy here is a leaked owner.
+    if stats["version"] not in STATS_VERSIONS:
+        raise AssertionError(f"unsupported STATS version {stats['version']}")
     assert_fields(
         stats,
-        version=PROTOCOL_VERSION,
         rx_available=RX_BLOCKS - 1,
         rx_in_use=1,
         tx_available=TX_BLOCKS,
