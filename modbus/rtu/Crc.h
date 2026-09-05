@@ -13,6 +13,7 @@
 #include <concepts>
 #include <cstdint>
 #include <span>
+#include <type_traits>
 
 namespace modbus::rtu::crc {
 
@@ -39,7 +40,7 @@ template<Policy PolicyT>
 }
 
 template<Policy PolicyT>
-	requires std::default_initializable<PolicyT>
+	requires std::is_nothrow_default_constructible_v<PolicyT>
 [[nodiscard]] constexpr typename PolicyT::value_type calculate(
 		const std::span<const uint8_t> bytes) noexcept
 {
@@ -61,7 +62,7 @@ template<Policy PolicyT>
 }
 
 template<Policy PolicyT>
-	requires std::default_initializable<PolicyT>
+	requires std::is_nothrow_default_constructible_v<PolicyT>
 [[nodiscard]] constexpr bool verify(
 		const std::span<const uint8_t> frame) noexcept
 {

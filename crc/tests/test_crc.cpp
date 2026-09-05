@@ -76,6 +76,78 @@ static_assert(!crc::Policy<MissingCalculate>);
 static_assert(!crc::Policy<ThrowingCalculate>);
 static_assert(!crc::Policy<MissingCodec>);
 
+/* The register type is one of four fixed-width unsigned types, nothing else. */
+static_assert(crc::Value<uint8_t> && crc::Value<uint16_t> &&
+              crc::Value<uint32_t> && crc::Value<uint64_t>);
+static_assert(!crc::Value<bool>);
+static_assert(!crc::Value<char16_t> && !crc::Value<char32_t>);
+static_assert(!crc::Value<int> && !crc::Value<std::byte>);
+
+/*
+ * A policy whose default constructor may throw is a valid Policy, but the
+ * unconditionally-noexcept default-constructing helpers must refuse it
+ * instead of accepting it and terminating on the first throw.
+ */
+struct ThrowyCtor final : crc::Codec<uint16_t> {
+	ThrowyCtor() noexcept(false) {}
+	uint16_t calculate(std::span<const uint8_t>) noexcept { return 0u; }
+};
+
+template<class PolicyT>
+concept AcceptedByDefaultConstructingHelpers =
+	requires(const std::span<const uint8_t> bytes) {
+		crc::calculate<PolicyT>(bytes);
+		crc::verify<PolicyT>(bytes);
+	};
+
+static_assert(crc::Policy<ThrowyCtor>);
+static_assert(!AcceptedByDefaultConstructingHelpers<ThrowyCtor>);
+static_assert(AcceptedByDefaultConstructingHelpers<crc::Crc16Bitwise>);
+
+/*
+ * Catalogue models beyond the four defaults, chosen to cover what the
+ * defaults cannot: a non-reflected 16- and 32-bit path, non-zero Initial and
+ * XorOut in non-reflected mode, a reflected 8- and 64-bit path, and an
+ * ASYMMETRIC initial value in reflected mode. Parameters are in the register
+ * domain (see the note above the aliases in Crc.h): reflected models take the
+ * reflected polynomial AND the reflected initial value.
+ */
+using CcittFalse = crc::Crc16<crc::Bitwise, 0x1021u, 0xFFFFu, 0x0000u, false, std::endian::big>;
+using CcittFalseTable = crc::Crc16<crc::Table, 0x1021u, 0xFFFFu, 0x0000u, false, std::endian::big>;
+using Genibus = crc::Crc16<crc::Bitwise, 0x1021u, 0xFFFFu, 0xFFFFu, false, std::endian::big>;
+using GenibusTable = crc::Crc16<crc::Table, 0x1021u, 0xFFFFu, 0xFFFFu, false, std::endian::big>;
+using Bzip2 = crc::Crc32<crc::Bitwise, 0x04C11DB7u, 0xFFFFFFFFu, 0xFFFFFFFFu, false, std::endian::big>;
+using Bzip2Table = crc::Crc32<crc::Table, 0x04C11DB7u, 0xFFFFFFFFu, 0xFFFFFFFFu, false, std::endian::big>;
+using Iscsi = crc::Crc32<crc::Bitwise, 0x82F63B78u, 0xFFFFFFFFu, 0xFFFFFFFFu, true, std::endian::little>;
+using IscsiTable = crc::Crc32<crc::Table, 0x82F63B78u, 0xFFFFFFFFu, 0xFFFFFFFFu, true, std::endian::little>;
+using MaximDow = crc::Crc8<crc::Bitwise, 0x8Cu, 0x00u, 0x00u, true, std::endian::big>;
+using MaximDowTable = crc::Crc8<crc::Table, 0x8Cu, 0x00u, 0x00u, true, std::endian::big>;
+using Xz = crc::Crc64<crc::Bitwise, UINT64_C(0xC96C5795D7870F42),
+	UINT64_C(0xFFFFFFFFFFFFFFFF), UINT64_C(0xFFFFFFFFFFFFFFFF), true, std::endian::little>;
+using XzTable = crc::Crc64<crc::Table, UINT64_C(0xC96C5795D7870F42),
+	UINT64_C(0xFFFFFFFFFFFFFFFF), UINT64_C(0xFFFFFFFFFFFFFFFF), true, std::endian::little>;
+// CRC-16/ISO-IEC-14443-3-A: catalogue init 0xC6C6, register-domain 0x6363.
+using CrcA = crc::Crc16<crc::Bitwise, 0x8408u, 0x6363u, 0x0000u, true, std::endian::little>;
+using CrcATable = crc::Crc16<crc::Table, 0x8408u, 0x6363u, 0x0000u, true, std::endian::little>;
+using CrcAWrongInit = crc::Crc16<crc::Bitwise, 0x8408u, 0xC6C6u, 0x0000u, true, std::endian::little>;
+
+static_assert(CcittFalse{}.calculate(check_input) == 0x29B1u);
+static_assert(CcittFalseTable{}.calculate(check_input) == 0x29B1u);
+static_assert(Genibus{}.calculate(check_input) == 0xD64Eu);
+static_assert(GenibusTable{}.calculate(check_input) == 0xD64Eu);
+static_assert(Bzip2{}.calculate(check_input) == 0xFC891918u);
+static_assert(Bzip2Table{}.calculate(check_input) == 0xFC891918u);
+static_assert(Iscsi{}.calculate(check_input) == 0xE3069283u);
+static_assert(IscsiTable{}.calculate(check_input) == 0xE3069283u);
+static_assert(MaximDow{}.calculate(check_input) == 0xA1u);
+static_assert(MaximDowTable{}.calculate(check_input) == 0xA1u);
+static_assert(Xz{}.calculate(check_input) == UINT64_C(0x995DC9BBDF1939FA));
+static_assert(XzTable{}.calculate(check_input) == UINT64_C(0x995DC9BBDF1939FA));
+static_assert(CrcA{}.calculate(check_input) == 0xBF05u);
+static_assert(CrcATable{}.calculate(check_input) == 0xBF05u);
+static_assert(CrcAWrongInit{}.calculate(check_input) == 0x1480u,
+	"the catalogue init copied verbatim into a reflected engine is a different model");
+
 template<class ValueT>
 [[nodiscard]] ValueT independent_reflected(
 		const std::span<const uint8_t> bytes,
@@ -152,6 +224,30 @@ int main()
 	      crc::Crc64Table{}.calculate(check_input) ==
 	          UINT64_C(0x6C40DF5F0B497347),
 	      "CRC64 bitwise/table match CRC-64/ECMA-182 check value");
+
+	group("CatalogueModels");
+	check(CcittFalse{}.calculate(check_input) == 0x29B1u &&
+	      CcittFalseTable{}.calculate(check_input) == 0x29B1u,
+	      "CRC-16/CCITT-FALSE: non-reflected 16-bit path with Initial != 0");
+	check(Genibus{}.calculate(check_input) == 0xD64Eu &&
+	      GenibusTable{}.calculate(check_input) == 0xD64Eu,
+	      "CRC-16/GENIBUS: non-reflected with XorOut != 0");
+	check(Bzip2{}.calculate(check_input) == 0xFC891918u &&
+	      Bzip2Table{}.calculate(check_input) == 0xFC891918u,
+	      "CRC-32/BZIP2: non-reflected 32-bit path");
+	check(Iscsi{}.calculate(check_input) == 0xE3069283u &&
+	      IscsiTable{}.calculate(check_input) == 0xE3069283u,
+	      "CRC-32/ISCSI: reflected with a second polynomial");
+	check(MaximDow{}.calculate(check_input) == 0xA1u &&
+	      MaximDowTable{}.calculate(check_input) == 0xA1u,
+	      "CRC-8/MAXIM-DOW: reflected 8-bit path");
+	check(Xz{}.calculate(check_input) == UINT64_C(0x995DC9BBDF1939FA) &&
+	      XzTable{}.calculate(check_input) == UINT64_C(0x995DC9BBDF1939FA),
+	      "CRC-64/XZ: reflected 64-bit path, all-ones Initial and XorOut");
+	check(CrcA{}.calculate(check_input) == 0xBF05u &&
+	      CrcATable{}.calculate(check_input) == 0xBF05u &&
+	      CrcAWrongInit{}.calculate(check_input) == 0x1480u,
+	      "CRC-16/ISO-IEC-14443-3-A: reflected Initial 0x6363 gives 0xBF05, verbatim 0xC6C6 does not");
 
 	group("WireCodecs");
 	std::array<uint8_t, 8u> bytes{};

@@ -36,6 +36,17 @@ struct Bitwise final {};
 struct Table final {};
 
 /*
+ * The result widths this library models: exactly the four fixed-width
+ * unsigned types. std::unsigned_integral would also admit bool (a Codec<bool>
+ * compiles but load(0x02) -> store() yields 0x01, not a byte-exact round
+ * trip), the char types and platform-sized integers, none of which anyone
+ * means as a CRC register. Naming the four types keeps the accident out.
+ */
+template<class T>
+concept Value = std::same_as<T, uint8_t> || std::same_as<T, uint16_t> ||
+                std::same_as<T, uint32_t> || std::same_as<T, uint64_t>;
+
+/*
  * Reusable integer wire codec for custom policies.
  *
  * A hardware calculator or private checksum normally derives from Codec and
@@ -43,7 +54,7 @@ struct Table final {};
  * deliberately truncated check value is required, including zero bytes.
  */
 template<
-	std::unsigned_integral ValueT,
+	Value ValueT,
 	std::size_t WireSize = sizeof(ValueT),
 	std::endian WireOrder = std::endian::little>
 class Codec {
@@ -135,7 +146,7 @@ concept Method = std::same_as<MethodT, crc::Bitwise> ||
 	std::same_as<MethodT, crc::Table>;
 
 template<
-	std::unsigned_integral ValueT,
+	Value ValueT,
 	ValueT Polynomial,
 	bool Reflected>
 [[nodiscard]] constexpr ValueT update_bitwise(
@@ -174,7 +185,7 @@ template<
 
 template<
 	class MethodT,
-	std::unsigned_integral ValueT,
+	Value ValueT,
 	ValueT Polynomial,
 	ValueT Initial,
 	ValueT XorOut,
@@ -184,7 +195,7 @@ template<
 class Engine;
 
 template<
-	std::unsigned_integral ValueT,
+	Value ValueT,
 	ValueT Polynomial,
 	ValueT Initial,
 	ValueT XorOut,
@@ -211,7 +222,7 @@ public:
 };
 
 template<
-	std::unsigned_integral ValueT,
+	Value ValueT,
 	ValueT Polynomial,
 	ValueT Initial,
 	ValueT XorOut,
@@ -271,6 +282,28 @@ private:
 };
 
 } // namespace detail
+
+/*
+ * Parameter domain for the four alias templates below.
+ *
+ * Polynomial, Initial and XorOut are the REGISTER values of the selected
+ * implementation, not the catalogue (Rocksoft) model values. For a
+ * non-reflected model they coincide. For a reflected model (refin = refout =
+ * true) the engine keeps the register bit-reversed, so:
+ *
+ *     Polynomial  = reflect(catalogue poly)      e.g. 0x8005 -> 0xA001
+ *     Initial     = reflect(catalogue init)      e.g. 0xC6C6 -> 0x6363
+ *     XorOut      = catalogue xorout             applied after reflection, unchanged
+ *
+ * All four built-in defaults have bit-symmetric initial values, which is
+ * exactly why this is easy to miss: CRC-16/ISO-IEC-14443-3-A (init 0xC6C6)
+ * yields its check value 0xBF05 only with Initial = 0x6363, and 0x1480 with
+ * the catalogue value copied verbatim. test_crc.cpp locks both numbers.
+ *
+ * Not expressible here, by design: models with refin != refout, and widths
+ * other than 8/16/32/64 (CRC-24, CRC-15/CAN, CRC-7 ...). A CRC-24 polynomial
+ * handed to Crc32 compiles and computes something that is not CRC-24.
+ */
 
 /* CRC-8/SMBUS defaults: poly 0x07, init 0, xorout 0, non-reflected. */
 template<
@@ -350,8 +383,14 @@ template<Policy PolicyT>
 	return policy.calculate(bytes);
 }
 
+/*
+ * The default-constructing conveniences are unconditionally noexcept, so a
+ * policy whose default constructor may throw is refused here rather than
+ * accepted and terminated at the first throw. Such a policy is still a valid
+ * crc::Policy; construct it yourself and use the overloads taking a reference.
+ */
 template<Policy PolicyT>
-	requires std::default_initializable<PolicyT>
+	requires std::is_nothrow_default_constructible_v<PolicyT>
 [[nodiscard]] constexpr typename PolicyT::value_type calculate(
 		const std::span<const uint8_t> bytes) noexcept
 {
@@ -380,7 +419,7 @@ template<Policy PolicyT>
 }
 
 template<Policy PolicyT>
-	requires std::default_initializable<PolicyT>
+	requires std::is_nothrow_default_constructible_v<PolicyT>
 [[nodiscard]] constexpr bool verify(
 		const std::span<const uint8_t> frame) noexcept
 {

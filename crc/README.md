@@ -40,7 +40,10 @@ const bool valid = crc::verify<crc::Crc16Bitwise>(complete_frame);
 
 The free `calculate/verify` helpers are generic orchestration only. Calculation
 state and all wire serialization remain owned by the policy class; there are
-no free fixed-width `store/load` functions.
+no free fixed-width `store/load` functions. The overloads that default-construct
+the policy are unconditionally `noexcept` and therefore accept only policies
+whose default constructor cannot throw; any other policy is constructed by the
+caller and passed by reference.
 
 Every `Bitwise` policy is table-free. A `Table` policy owns one private static
 256-entry lookup specialized for its exact width and parameters. Including the
@@ -62,7 +65,7 @@ values:
 
 `Crc8`, `Crc16`, `Crc32`, and `Crc64` are configurable alias templates. Their
 parameters are method, polynomial, initial value, final XOR, reflection, and
-wire byte order. For a reflected algorithm, pass the reflected polynomial.
+wire byte order.
 
 ```cpp
 using FastModbus = crc::Crc16<crc::Table>;
@@ -75,6 +78,30 @@ using PrivateCrc32 = crc::Crc32<
     true,
     std::endian::little>;
 ```
+
+The parameters are the **register values of the implementation**, not the
+catalogue (Rocksoft) model values. For a non-reflected model they are the
+same. For a reflected model the engine keeps its register bit-reversed, so
+both the polynomial **and the initial value** must be reflected, while the
+final XOR is applied after reflection and stays as catalogued:
+
+| Catalogue parameter | Reflected model | Non-reflected model |
+|---|---|---|
+| `poly` | `reflect(poly)` | `poly` |
+| `init` | `reflect(init)` | `init` |
+| `xorout` | `xorout` | `xorout` |
+
+The four defaults all have bit-symmetric initial values, so the rule only
+bites on models such as CRC-16/ISO-IEC-14443-3-A (catalogue init `0xC6C6`,
+register `0x6363`): only the reflected value reproduces its check `0xBF05`;
+the verbatim value computes `0x1480`. The host suite locks both. Two model
+families are deliberately not expressible: `refin != refout`, and widths other
+than 8/16/32/64 (CRC-24, CRC-15/CAN, CRC-7). A CRC-24 polynomial passed to
+`Crc32` compiles and computes something that is not CRC-24.
+
+The register type is constrained by `crc::Value` to exactly `uint8_t`,
+`uint16_t`, `uint32_t` and `uint64_t`. `bool`, the char types and
+platform-sized integers are rejected at the `Codec` and engine boundary.
 
 ## Policy contract
 
@@ -96,8 +123,8 @@ polynomial, compare against a built-in, or require the result to be a CRC. A
 peer may intentionally use a wrapping sum as long as both ends select the same
 policy and wire codec.
 
-For integer results, derive from `crc::Codec<Value, WireSize, WireOrder>` and
-implement only `calculate()`:
+For fixed-width unsigned results, derive from
+`crc::Codec<Value, WireSize, WireOrder>` and implement only `calculate()`:
 
 ```cpp
 struct Sum32 : crc::Codec<uint32_t, 4, std::endian::little> {
@@ -158,11 +185,17 @@ sh crc/tests/check_arm_codegen.sh
 python -B crc/tests/check_arm_matrix.py
 ```
 
-The host suite checks the four named models against their standard check
-values and 20,000 random inputs per width against independent bit-level
-oracles. It also covers both wire orders, a three-byte/truncated codec,
-stateful custom calculation, corruption, and `NoCrc` under ASan+UBSan and
-`-O3 -DNDEBUG`.
+The host suite checks the four default models plus CRC-16/CCITT-FALSE,
+CRC-16/GENIBUS, CRC-32/BZIP2, CRC-32/ISCSI, CRC-8/MAXIM-DOW, CRC-64/XZ and
+CRC-16/ISO-IEC-14443-3-A against their catalogue check values, at compile time
+and at run time, in both Bitwise and Table form. The defaults are additionally
+compared with bit-level oracles on 20,000 random inputs per width. It also
+covers both wire orders, a three-byte/truncated codec, stateful custom
+calculation, corruption, `NoCrc`, the `crc::Value` boundary and the refusal
+of a throwing default constructor by the default-constructing helpers. The
+`-O1` build runs under ASan+UBSan only where the toolchain provides the
+runtime (WSL g++ does, MinGW does not); `run.sh` prints which build it made.
+The `-O3 -DNDEBUG` build runs everywhere.
 
 The ARM guard compiles 24 Bitwise and 24 Table algorithm objects (four widths,
 three optimization levels, and both CPU byte orders). Every calculation loop
