@@ -96,7 +96,8 @@ static_assert(!framing::Framer<int>);
 // compile time.
 static_assert(framing::standard_layout(kReq, 0x03u) == Layout::fixed(4u));
 static_assert(framing::standard_layout(kResp, 0x03u) == Layout::byte_count_at(0u));
-static_assert(!framing::standard_layout(kReq, 0x08u).supported());
+static_assert(framing::standard_layout(kReq, 0x08u) == Layout::fixed(4u));
+static_assert(!framing::standard_layout(kReq, 0x2Bu).supported());
 static_assert(MyFramer::layout(kReq, 0x41u).reserved() == 2u);
 static_assert(MyFramer::layout(kReq, 0x03u) == Layout::fixed(4u));
 
@@ -164,6 +165,10 @@ int main()
 		{"06 Write Single Register response", 0x06u, kResp, {0x00u, 0x01u, 0x00u, 0x03u}, 0u},
 		{"07 Read Exception Status request", 0x07u, kReq, {}, 0u},
 		{"07 Read Exception Status response", 0x07u, kResp, {0x6Du}, 0u},
+		{"08 Diagnostics request (Return Query Data, two bytes)", 0x08u, kReq, {0x00u, 0x00u, 0xA5u, 0x37u}, 0u},
+		{"08 Diagnostics response (Return Query Data echo)", 0x08u, kResp, {0x00u, 0x00u, 0xA5u, 0x37u}, 0u},
+		{"08 Diagnostics request (Clear Counters)", 0x08u, kReq, {0x00u, 0x0Au, 0x00u, 0x00u}, 0u},
+		{"08 Diagnostics response (Return Bus Message Count)", 0x08u, kResp, {0x00u, 0x0Bu, 0x01u, 0x2Cu}, 0u},
 		{"0B Get Comm Event Counter request", 0x0Bu, kReq, {}, 0u},
 		{"0B Get Comm Event Counter response", 0x0Bu, kResp, {0xFFu, 0xFFu, 0x01u, 0x08u}, 0u},
 		{"0C Get Comm Event Log request", 0x0Cu, kReq, {}, 0u},
@@ -198,8 +203,11 @@ int main()
 		verify_example(example);
 	}
 	check(!framing::standard_layout(kReq, 0x83u).supported(), "there is no exception request");
-	check(!framing::standard_layout(kReq, 0x08u).supported() && !framing::standard_layout(kResp, 0x08u).supported(),
-	      "08 Diagnostics carries no length indicator");
+	check(framing::standard_layout(kReq, 0x08u) == Layout::fixed(4u) &&
+	      framing::standard_layout(kResp, 0x08u) == Layout::fixed(4u),
+	      "08 Diagnostics is four bytes both ways, as in Qt Serial Bus");
+	check(!framing::standard_layout(kReq, 0x08u).matches(std::array<uint8_t, 6>{0u, 0u, 1u, 2u, 3u, 4u}),
+	      "a Return Query Data echo longer than two bytes does not frame (documented limitation)");
 	check(!framing::standard_layout(kReq, 0x2Bu).supported() && !framing::standard_layout(kResp, 0x2Bu).supported(),
 	      "2B Encapsulated Interface Transport carries no length indicator");
 	check(!framing::standard_layout(kReq, 0x00u).supported() && !framing::standard_layout(kReq, 0x41u).supported() &&
@@ -228,7 +236,7 @@ int main()
 	      "private function 0x42 has its own per-direction sizes");
 	check(MyFramer::layout(kResp, 0x03u) == Layout::byte_count_at(0u), "standard functions fall through to the base");
 	check(MyFramer::layout(kResp, 0xC1u) == Layout::fixed(1u), "the exception form of a private function is standard");
-	check(!MyFramer::layout(kReq, 0x08u).supported(), "the base's unsupported functions stay unsupported");
+	check(!MyFramer::layout(kReq, 0x2Bu).supported(), "the base's unsupported functions stay unsupported");
 
 	return finish();
 }

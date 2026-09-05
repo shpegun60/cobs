@@ -132,7 +132,8 @@ const std::vector<uint8_t> kStatusReq = make_adu(0x11u, 0x07u);
 const std::vector<uint8_t> kReadResp = make_adu(0x11u, 0x03u,
 	std::array<uint8_t, 7>{0x06u, 0x02u, 0x2Bu, 0x00u, 0x00u, 0x00u, 0x64u});
 const std::vector<uint8_t> kExceptionResp = make_adu(0x11u, 0x83u, std::array<uint8_t, 1>{0x02u});
-const std::vector<uint8_t> kDiagnosticsReq = make_adu(0x11u, 0x08u, std::array<uint8_t, 4>{0x00u, 0x00u, 0xA5u, 0x37u});
+// 0x2B Encapsulated Interface Transport has no layout in the standard table.
+const std::vector<uint8_t> kUnsupportedReq = make_adu(0x11u, 0x2Bu, std::array<uint8_t, 4>{0x0Eu, 0x01u, 0x00u, 0x00u});
 
 } // namespace
 
@@ -186,16 +187,16 @@ int main()
 	group("UnsupportedFunctionDropsTheRestOfTheChunk");
 	{
 		Server server;
-		server.consume(concat({kDiagnosticsReq, kReadReq}));
+		server.consume(concat({kUnsupportedReq, kReadReq}));
 		check(!server.has_packet(), "the frame after an unknown function is lost with the chunk");
 		check(server.framing_stats().unsupported_function == 1u && server.framing_stats().resyncs == 1u,
 		      "counted as unsupported plus one resync");
 		server.consume(kReadReq);
 		check(drain(server).size() == 1u, "the next chunk starts a frame");
-		server.consume(kDiagnosticsReq);
+		server.consume(kUnsupportedReq);
 		check(server.framing_stats().unsupported_function == 2u && server.framing_stats().resyncs == 2u,
 		      "the offending frame's own remainder is dropped and counted");
-		server.consume(std::span<const uint8_t>{kDiagnosticsReq}.first(2u));
+		server.consume(std::span<const uint8_t>{kUnsupportedReq}.first(2u));
 		check(server.framing_stats().unsupported_function == 3u && server.framing_stats().resyncs == 2u,
 		      "an error on the last byte of a chunk drops nothing else");
 		// Exception frames are responses: a request-side receiver has no layout.
@@ -289,12 +290,14 @@ int main()
 		server.receive_adu(make_adu(0x11u, 0x03u, std::array<uint8_t, 5>{0u, 1u, 2u, 3u, 4u}));
 		check(!server.has_packet() && server.framing_stats().length_mismatch == 1u,
 		      "a valid-CRC candidate of the wrong length is refused");
-		server.receive_adu(kDiagnosticsReq);
+		server.receive_adu(kUnsupportedReq);
 		check(server.framing_stats().unsupported_function == 1u, "an unsupported function is refused");
+		server.receive_adu(make_adu(0x11u, 0x08u, std::array<uint8_t, 4>{0x00u, 0x0Au, 0x00u, 0x00u}));
+		check(drain(server).size() == 1u, "a four-byte Diagnostics request is accepted");
 		const std::array<uint8_t, 3> short_frame{0x11u, 0x03u, 0x00u};
 		server.receive_adu(short_frame);
 		check(server.stats().rx.too_short == 1u, "too-short candidates are still classified by the base");
-		check(server.stats().rx.candidates == 4u, "every candidate counted once");
+		check(server.stats().rx.candidates == 5u, "every candidate counted once");
 	}
 
 	group("ResponseDirection");
@@ -366,8 +369,8 @@ int main()
 		transport.busy_state = false;
 		server.poll();
 
-		Server::Message diagnostics = server.make_message(0x11u, 0x08u);
-		check(diagnostics.append_be<uint32_t>(0xA537u) && server.send(diagnostics) == modbus::SendResult::Sent,
+		Server::Message encapsulated = server.make_message(0x11u, 0x2Bu);
+		check(encapsulated.append_be<uint32_t>(0x0E010000u) && server.send(encapsulated) == modbus::SendResult::Sent,
 		      "a function the policy has no layout for is sent as the application built it");
 		transport.busy_state = false;
 		server.poll();

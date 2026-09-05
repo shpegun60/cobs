@@ -47,7 +47,7 @@ def selection_of(data):
                      protocols=tuple(s.get("protocols", ("cobs", "rtu"))),
                      policies=tuple(s.get("policies", bench.POLICIES)),
                      bauds=tuple(s.get("bauds", bench.DEFAULT_BAUDS)),
-                     cases=tuple(s.get("cases", [c[0] for c in bench.CASES])),
+                     cases=tuple(s.get("cases", [c[0] for c in bench.DEFAULT_CASES])),
                      cobs_uart=tuple(tuple(c) for c in s.get("cobs_uart", [list(bench.DEFAULT_COBS_UART)])))
     validate_selection(selection)
     return selection
@@ -58,7 +58,7 @@ def validate_selection(selection):
     one known value, nothing is repeated, and the two narrowing modes exclude
     each other. Without this an empty selection is 'complete' with zero rows."""
     assert not (selection["core_only"] and selection["uart_only"]), "core_only and uart_only exclude each other"
-    for axis, known in (("protocols", ("cobs", "rtu")), ("policies", bench.POLICIES),
+    for axis, known in (("protocols", bench.PROTOCOLS), ("policies", bench.POLICIES),
                         ("cases", tuple(c[0] for c in bench.CASES))):
         values = selection[axis]
         assert values and set(values) <= set(known) and len(set(values)) == len(values), f"invalid {axis} selection {values}"
@@ -76,9 +76,14 @@ def check_hello(run):
     carries only the trailer width: there a NoCrc swap is still caught, but
     Bitwise/Table rests on the flashed image (--nm)."""
     hello = run["hello"]
-    if run["protocol"] == "rtu":
+    if run["protocol"] in ("rtu", "rtu-framed"):
         expected = bench.rtu.CRC_POLICIES["nocrc" if run["policy"] == "none" else f"crc16-{run['policy']}"].identifier
         assert hello["crc_policy"] == expected, f"RTU {run['policy']} run reports CRC policy {hello['crc_policy']}, expected {expected}"
+        if "framer" in hello:  # harness protocol 4: the board names its framing mode
+            assert bool(hello["framer"]) == (run["protocol"] == "rtu-framed"), \
+                f"{run['protocol']} run reports framer={hello['framer']}"
+        else:
+            assert run["protocol"] == "rtu", "a framed run needs a HELLO that reports the framing mode"
         return True
     assert hello["crc_size"] == (0 if run["policy"] == "none" else 2), f"COBS {run['policy']} run reports crc_size {hello['crc_size']}"
     if "crc_policy" not in hello:
@@ -154,6 +159,7 @@ def verify(data, core_only=False):
                 bench.cobs.assert_plain_echo_accounting(s, n, row["data_bytes"])
                 release = "cobs_tx_release"
             else:
+                bench.rtu.FRAMED = row["protocol"] == "rtu-framed"  # the peer's accounting is mode-dependent
                 bench.rtu.healthy_failures(s)
                 bench.rtu.assert_plain_accounting(s, n, row["data_bytes"])
                 release = "rtu_tx_release"
@@ -211,7 +217,8 @@ def verify_images(data, nm):
 
 
 def uart_label(protocol, built):
-    return f"{'COBS' if protocol == 'cobs' else 'RTU'} Uart<{built[0]},{built[1]}>"
+    name = {"cobs": "COBS", "rtu": "RTU", "rtu-framed": "RTU framed"}[protocol]
+    return f"{name} Uart<{built[0]},{built[1]}>"
 
 
 def chunk_table(uart, selection):
@@ -261,7 +268,8 @@ def tables(core, uart, probes, selection=None):
     if uart and any(key[5] is not None and key[5] != bench.DEFAULT_COBS_UART for key in uart) or (uart and selection["uart_only"]):
         chunk_table(uart, selection)
     full_uart = (selection["protocols"] == ("cobs", "rtu") and selection["policies"] == bench.POLICIES
-                 and selection["bauds"] == bench.DEFAULT_BAUDS and len(selection["cases"]) == len(bench.CASES)
+                 and selection["bauds"] == bench.DEFAULT_BAUDS
+                 and selection["cases"] == tuple(c[0] for c in bench.DEFAULT_CASES)
                  and selection["cobs_uart"] == (bench.DEFAULT_COBS_UART,))
     if uart and full_uart:
         uart = {key[:5]: row for key, row in uart.items()}
@@ -278,7 +286,7 @@ def tables(core, uart, probes, selection=None):
         print("\n### Actual UART echo at 1M, Bitwise, all scenarios\n")
         print("| Case | Frames/s | COBS CPU % | RTU CPU % | COBS cycles/echo | RTU cycles/echo |")
         print("|---|---:|---:|---:|---:|---:|")
-        for case in bench.CASES:
+        for case in bench.DEFAULT_CASES:
             metrics = []
             for proto in ("cobs", "rtu"):
                 rows = [uart[(proto, "bitwise", 1000000, case[0], r)] for r in (0, 1)]

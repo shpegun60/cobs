@@ -365,8 +365,15 @@ else from it:
   worked examples of the specification and tested against them in both
   directions. `Direction` is the side this endpoint RECEIVES: 0x03 is four
   fixed bytes as a request and a byte count plus data as a response. 0x08
-  Diagnostics and 0x2B Encapsulated Interface Transport carry no length
-  indicator and are `unsupported()`, as Qt Serial Bus also documents.
+  Diagnostics frames as four bytes both ways, exactly as Qt Serial Bus does;
+  its sub-function 0x00 Return Query Data with other than two data bytes
+  therefore misframes and fails CRC (Qt's server rejects it too). 0x2B
+  Encapsulated Interface Transport depends on bytes inside its data and is
+  `unsupported()`. The table was checked differentially against Qt's
+  `calculateDataSize` for every function code in both directions: the
+  standard functions agree byte for byte; the only differences are 0x2B (Qt
+  partially supports it) and exception codes in the request direction (Qt
+  accepts a one-byte "exception request", the specification has none).
 - **Private functions** extend the table by inheritance: override
   `layout(direction, function)` for your codes and forward the rest to
   `Base::layout`. `length_prefixed(2)` is the recommended shape for a

@@ -27,10 +27,14 @@
  * functions whose length follows from their own header. Direction is which
  * side of the exchange this endpoint RECEIVES: function 0x03 is 4 fixed bytes
  * as a request and a byte count plus data as a response, so the code alone
- * does not select a rule. Functions whose data carries no length indicator
- * (0x08 Diagnostics, 0x2B Encapsulated Interface Transport) are Unsupported:
- * they need context this layer does not have, exactly as Qt Serial Bus
- * documents for its own calculators.
+ * does not select a rule. 0x08 Diagnostics is four data bytes (sub-function
+ * and one 16-bit value) for every sub-function except 0x00 Return Query Data,
+ * whose echo has no length indicator; the table takes the four-byte rule, as
+ * Qt Serial Bus does, so a Return Query Data with other than two data bytes
+ * misframes and fails CRC. 0x2B Encapsulated Interface Transport depends on
+ * bytes inside its data and needs unbounded lookahead for the device
+ * identification response; it is Unsupported here, and Qt documents the
+ * same limitation for its stream reader.
  *
  * Private functions extend the table by inheritance:
  *
@@ -254,6 +258,11 @@ private:
 		return Layout::fixed(4u);
 	case 0x07u: // Read Exception Status (serial line only)
 		return request ? Layout::fixed(0u) : Layout::fixed(1u);
+	case 0x08u: // Diagnostics: sub-function + 16-bit data, both directions.
+		// Sub-function 0x00 Return Query Data may carry any length; it
+		// cannot be told from the header, so it frames as four bytes and a
+		// longer echo fails CRC. Qt Serial Bus frames it the same way.
+		return Layout::fixed(4u);
 	case 0x0Bu: // Get Comm Event Counter (serial line only)
 		return request ? Layout::fixed(0u) : Layout::fixed(4u);
 	case 0x0Cu: // Get Comm Event Log (serial line only)
@@ -272,8 +281,9 @@ private:
 		return request ? Layout::byte_count_at(8u) : Layout::byte_count_at(0u);
 	case 0x18u: // Read FIFO Queue: the response byte count is two bytes wide
 		return request ? Layout::fixed(2u) : Layout::byte_count_at(0u, 2u);
-	// 0x08 Diagnostics and 0x2B Encapsulated Interface Transport carry no
-	// length indicator covering their data.
+	// 0x2B Encapsulated Interface Transport: the request length depends on
+	// the MEI type byte and the device-identification response on a walk
+	// over its object list; neither is a function of the header alone.
 	default:
 		return Layout::unsupported();
 	}

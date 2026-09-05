@@ -30,6 +30,15 @@ class ComparisonTests(unittest.TestCase):
                     self.assertEqual(adu[2:2 + size], body)
                     self.assertTrue(bench.policy_for(policy).verify(adu))
                     self.assertEqual(len(adu), size + 2 + trailer)
+                    if size + 2 + trailer + 2 <= 256:
+                        framed = bench.wire("rtu-framed", policy, body)
+                        self.assertEqual(framed[:4], b"\x11\x41" + size.to_bytes(2, "big"))
+                        self.assertEqual(framed[4:4 + size], body)
+                        self.assertTrue(bench.policy_for(policy).verify(framed))
+                        self.assertEqual(len(framed), size + 4 + trailer)
+                    else:
+                        with self.assertRaises(AssertionError):
+                            bench.wire("rtu-framed", policy, body)
 
     def test_table_does_not_change_wire(self):
         for protocol in ("cobs", "rtu"):
@@ -47,6 +56,16 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(bench.image_tag("cobs", "bitwise", 1000000), "cobs-bitwise-1000000")
         self.assertEqual(bench.image_tag("cobs", "bitwise", 1000000, (256, 4)), "cobs-bitwise-1000000-256x4")
         self.assertEqual(bench.image_tag("rtu", "table", 115200, None), "rtu-table-115200")
+
+    def test_case_sets(self):
+        # Old records name no selection and mean the seven original scenarios;
+        # random250 exists only for the three-way comparison.
+        self.assertEqual(bench.CASES[:len(bench.DEFAULT_CASES)], bench.DEFAULT_CASES)
+        self.assertEqual([c[0] for c in bench.CASES if c not in bench.DEFAULT_CASES], ["random250"])
+        self.assertEqual(bench.PROTOCOLS, ("cobs", "rtu", "rtu-framed"))
+        for policy in bench.POLICIES:
+            self.assertEqual(len(bench.wire("rtu-framed", policy, bench.payload(250, 0))),
+                             256 - (2 if policy == "none" else 0))
 
     def test_cadence_budget_for_worst_frame(self):
         for case in bench.CASES:

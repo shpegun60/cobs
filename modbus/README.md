@@ -429,9 +429,9 @@ server.send(reply);
 
 `framing::Standard<Direction>` covers the standard functions whose length
 follows from their own header (01–07, 0B, 0C, 0F, 10, 11, 14–18 and every
-exception response); 0x08 Diagnostics and 0x2B Encapsulated Interface
-Transport carry no length indicator and are refused
-(`framing_stats().unsupported_function`). `Direction` is what this endpoint
+exception response, and 0x08 Diagnostics as four bytes, like Qt Serial Bus);
+0x2B Encapsulated Interface Transport depends on bytes inside its data and
+is refused (`framing_stats().unsupported_function`). `Direction` is what this endpoint
 receives — a client uses `Direction::Response`.
 
 Private functions extend the table; a variable-length one should carry its

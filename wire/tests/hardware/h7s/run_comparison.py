@@ -22,12 +22,22 @@ import modbus_hardware as rtu
 import serial
 
 POLICIES = ("none", "bitwise", "table")
+# "rtu-framed" is the RTU harness built with MODBUS_HW_FRAMER=1: the same
+# Uart<256,4> and Pool<8,2>, the endpoint carrying the framing policy, every
+# function length-prefixed ([N: BE16][body]) so its useful body is two bytes
+# shorter (250 in a 256-byte ADU with CRC16).
+PROTOCOLS = ("cobs", "rtu", "rtu-framed")
+FRAMED_PREFIX = 2
 PATTERNS = ("random", "zero", "nonzero", "alternating", "boundary")
 SIZES = (8, 32, 128, 252, 1024)
-CASES = (("random8", (8,), 0), ("random32", (32,), 0),
-         ("random128", (128,), 0), ("random252", (252,), 0),
-         ("zero252", (252,), 1), ("nonzero252", (252,), 2),
-         ("mixed", (8, 32, 128, 252), -1))
+# The seven original scenarios are the default and the "full run"; random250
+# is the largest body all three links can carry and exists for the
+# three-way comparison.
+DEFAULT_CASES = (("random8", (8,), 0), ("random32", (32,), 0),
+                 ("random128", (128,), 0), ("random252", (252,), 0),
+                 ("zero252", (252,), 1), ("nonzero252", (252,), 2),
+                 ("mixed", (8, 32, 128, 252), -1))
+CASES = DEFAULT_CASES + (("random250", (250,), 0),)
 DEFAULT_BAUDS = (115200, 1000000)
 PROBE_BAUDS = (3000000, 6000000, 10000000)
 # The COBS harness's Uart<ChunkSize, ChunkCount>; the RTU harness is fixed at 256x4.
@@ -76,6 +86,9 @@ def wire(protocol, policy, body, maximum=253):
         # Permit the explicitly labelled private wide geometry too; keep the
         # independent polynomial oracle, not the standard-256 make_adu guard.
         return policy_for(policy).append(b"\x11\x41" + body)
+    if protocol == "rtu-framed":
+        assert len(body) <= 256 - 2 - FRAMED_PREFIX - policy_for(policy).wire_size, "body exceeds the framed ADU"
+        return policy_for(policy).append(b"\x11\x41" + len(body).to_bytes(FRAMED_PREFIX, "big") + body)
     checksum = b"" if policy == "none" else policy_for(policy).append(body)[len(body):]
     width = 1 if maximum + len(checksum) <= 255 else 2
     raw = (len(body) + len(checksum)).to_bytes(width, "little") + body + checksum
@@ -145,7 +158,10 @@ def collect_core(port, policy):
 
 
 def link_for(port, protocol, policy, cobs_uart=DEFAULT_COBS_UART):
-    if protocol == "rtu":
+    if protocol in ("rtu", "rtu-framed"):
+        # The peer module's framing mode is process state; set it for THIS link.
+        rtu.FRAMED = protocol == "rtu-framed"
+        rtu.FRAME_PREFIX = FRAMED_PREFIX if rtu.FRAMED else 0
         return rtu.HardwareLink(port, policy_for(policy))
     cobs.CRC_MODE = policy
     cobs.CRC_SIZE = 0 if policy == "none" else 2
@@ -245,7 +261,7 @@ def collect_probe(port, protocol):
     try:
         result["hello"] = link.hello()
         link.reset_metrics()
-        for size in (8, 32, 128, 252):
+        for size in (8, 32, 128, 250 if protocol == "rtu-framed" else 252):
             frame = wire(protocol, "bitwise", payload(size, 0))
             for repeat in range(3):
                 port.reset_input_buffer()
@@ -271,10 +287,10 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--core-only", action="store_true", help="endpoint-only cycles, no UART traffic or probes")
     parser.add_argument("--uart-only", action="store_true", help="UART traffic only, no endpoint-only cycles or probes")
-    parser.add_argument("--protocols", default="cobs,rtu", help="subset of cobs,rtu for the UART traffic and probes")
+    parser.add_argument("--protocols", default="cobs,rtu", help="subset of cobs,rtu,rtu-framed for the UART traffic and probes")
     parser.add_argument("--policies", default=",".join(POLICIES), help="subset of none,bitwise,table")
     parser.add_argument("--bauds", default=",".join(map(str, DEFAULT_BAUDS)), help="UART traffic bauds")
-    parser.add_argument("--cases", default=",".join(c[0] for c in CASES), help="UART traffic scenarios")
+    parser.add_argument("--cases", default=",".join(c[0] for c in DEFAULT_CASES), help="UART traffic scenarios")
     parser.add_argument("--cobs-uart", default="128x8",
                         help="COBS harness Uart<ChunkSize,ChunkCount> geometries, e.g. 128x8,256x4; each is a separate build")
     parser.add_argument("--programmer", default=r"C:\ST\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe")
@@ -283,14 +299,14 @@ def main():
     output = args.output.resolve()
     if output.exists(): parser.error("refusing to overwrite existing evidence")
     if args.core_only and args.uart_only: parser.error("--core-only and --uart-only exclude each other")
-    protocols = tuple(p for p in ("cobs", "rtu") if p in set(args.protocols.split(",")))
+    protocols = tuple(p for p in PROTOCOLS if p in set(args.protocols.split(",")))
     policies = tuple(p for p in POLICIES if p in set(args.policies.split(",")))
     bauds = tuple(int(b) for b in args.bauds.split(","))
     cases = tuple(c for c in CASES if c[0] in set(args.cases.split(",")))
     cobs_uart = parse_cobs_uart(args.cobs_uart)
     if not (protocols and policies and bauds and cases): parser.error("an empty selection measures nothing")
     full = (not args.core_only and not args.uart_only and protocols == ("cobs", "rtu") and policies == POLICIES
-            and bauds == DEFAULT_BAUDS and len(cases) == len(CASES) and cobs_uart == (DEFAULT_COBS_UART,))
+            and bauds == DEFAULT_BAUDS and cases == DEFAULT_CASES and cobs_uart == (DEFAULT_COBS_UART,))
     # A narrowed run records exactly what it measured, so the verifier expects
     # that and nothing more; a full run records no selection, like the
     # original evidence files.
@@ -342,7 +358,8 @@ def main():
         else:
             script = REPO / "modbus/rtu/tests/hardware/h7s/build.sh"
             environment.update(MODBUS_HW_BAUD=str(baud), MODBUS_HW_CRC_POLICY="nocrc" if policy == "none" else policy,
-                               MODBUS_HW_OPT="-Os", MODBUS_HW_LTO="0")
+                               MODBUS_HW_OPT="-Os", MODBUS_HW_LTO="0",
+                               MODBUS_HW_FRAMER="1" if kind == "rtu-framed" else "0")
             elf = REPO / "stm32_cube_test/h7s_cobs_test/out/modbus-hardware/modbus_hardware_bench.elf"
         tag = image_tag(kind, policy, baud, uart)
         print(f"BUILD + FLASH {tag}", flush=True)
@@ -373,7 +390,7 @@ def main():
         if not args.core_only:
             for baud in bauds:
                 for policy in policies:
-                    for protocol in ("rtu", "cobs") if policy == "bitwise" else ("cobs", "rtu"):
+                    for protocol in ("rtu", "rtu-framed", "cobs") if policy == "bitwise" else ("cobs", "rtu", "rtu-framed"):
                         if protocol not in protocols: continue
                         # One image per COBS UART geometry; the RTU harness has one.
                         for uart in (cobs_uart if protocol == "cobs" else (None,)):
