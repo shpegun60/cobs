@@ -465,6 +465,13 @@ skips exactly the declared frame and keeps the stream in step. With
 `framing::None` (the default) nothing described in this section is compiled
 in, and the endpoint is the one documented everywhere else in this file.
 
+Measured on the NUCLEO-H7S3L8 through the ST-Link bridge, which splits
+frames from 3 Mbaud up: the framed endpoint echoed every single, split and
+glued frame at 1M, 3M, 6M and 10M and passed the full vector suite at each,
+where the default endpoint loses every split frame and, above 3M, most
+single ones. See
+[the record](rtu/tests/hardware/h7s/README.md#framing-policy-at-high-baud-2026-09-05).
+
 ## qmake
 
 ```qmake

@@ -28,7 +28,15 @@ TX_BLOCKS = 2
 CONTROL_ADDRESS = 0xF7
 CONTROL_FUNCTION = 0x41
 MAGIC = b"MRTU"
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
+# STATS has the same layout in harness protocols 3 and 4 (4 only extends
+# HELLO), so recorded snapshots from either stay verifiable; the live HELLO
+# check pins the exact version of the board in front of the peer.
+STATS_VERSIONS = (3, 4)
+# Set from --framer: the board was built with MODBUS_HW_FRAMER=1 and every
+# function carries a two-byte big-endian body length in front of its body.
+FRAMED = False
+FRAME_PREFIX = 0
 
 CMD_HELLO = 1
 CMD_STATS = 2
@@ -194,10 +202,20 @@ def make_adu(policy: IntegrityPolicy, address: int,
         raise ValueError("address must fit one byte")
     if not 0 <= function <= 0xFF:
         raise ValueError("function must fit one byte")
-    if len(data) > policy.max_data_size:
+    if len(data) > max_body(policy):
         raise ValueError("function data exceeds the selected policy limit")
-    body = bytes((address, function)) + data
+    body = bytes((address, function)) + frame_prefix(data) + data
     return policy.append(body)
+
+
+def max_body(policy: IntegrityPolicy) -> int:
+    """Application bytes one ADU carries: the policy's data limit minus the
+    framing prefix when the board was built with MODBUS_HW_FRAMER=1."""
+    return policy.max_data_size - FRAME_PREFIX
+
+
+def frame_prefix(data: bytes) -> bytes:
+    return len(data).to_bytes(2, "big") if FRAMED else b""
 
 
 @dataclass(frozen=True)
@@ -216,7 +234,12 @@ def parse_adu(policy: IntegrityPolicy, wire: bytes) -> Adu:
         raise AssertionError("board response integrity trailer mismatch")
     data_end = len(wire) - policy.wire_size \
         if policy.wire_size else len(wire)
-    return Adu(wire[0], wire[1], wire[2:data_end], wire)
+    data = wire[2:data_end]
+    if FRAMED:
+        if len(data) < 2 or int.from_bytes(data[:2], "big") != len(data) - 2:
+            raise AssertionError("board response length prefix disagrees with its data")
+        data = data[2:]
+    return Adu(wire[0], wire[1], data, wire)
 
 
 def reference_self_check(policy: IntegrityPolicy) -> None:
@@ -238,11 +261,11 @@ def reference_self_check(policy: IntegrityPolicy) -> None:
                 raise AssertionError(
                     "PC integrity oracle accepted a single-bit mutation"
                 )
-    for size in range(policy.max_data_size + 1):
+    for size in range(max_body(policy) + 1):
         data = bytes((index * 37 + size) & 0xFF for index in range(size))
         wire = make_adu(policy, 0x11, 0xA7, data)
         parsed = parse_adu(policy, wire)
-        if parsed.data != data or len(wire) != size + 2 + policy.wire_size:
+        if parsed.data != data or len(wire) != size + 2 + FRAME_PREFIX + policy.wire_size:
             raise AssertionError(f"PC ADU round trip failed at data size {size}")
 
 
@@ -323,7 +346,7 @@ class HardwareLink:
         response = parse_adu(
             self.policy,
             self.read_exact(
-                expected_data_size + 2 + self.policy.wire_size, timeout
+                expected_data_size + FRAME_PREFIX + 2 + self.policy.wire_size, timeout
             ),
         )
         if response.address != CONTROL_ADDRESS or \
@@ -340,7 +363,7 @@ class HardwareLink:
         return response.data[9:]
 
     def hello(self) -> dict[str, int]:
-        payload = self.control(CMD_HELLO, 44)
+        payload = self.control(CMD_HELLO, 48)
         names = (
             "version",
             "baud",
@@ -353,8 +376,9 @@ class HardwareLink:
             "rx_blocks",
             "tx_blocks",
             "crc_policy",
+            "framer",
         )
-        hello = dict(zip(names, struct.unpack("<11I", payload), strict=True))
+        hello = dict(zip(names, struct.unpack("<12I", payload), strict=True))
         expected = {
             "version": PROTOCOL_VERSION,
             "baud": self.port.baudrate,
@@ -367,6 +391,7 @@ class HardwareLink:
             "rx_blocks": RX_BLOCKS,
             "tx_blocks": TX_BLOCKS,
             "crc_policy": self.policy.identifier,
+            "framer": int(FRAMED),
         }
         if hello != expected:
             raise AssertionError(f"unexpected board geometry: {hello}")
@@ -512,9 +537,10 @@ def assert_zero(stats: dict, names: Iterable[str]) -> None:
 def assert_observation_occupancy(stats: dict) -> None:
     # The STATS request itself owns one RX Packet. The snapshot is taken before
     # allocating its response Message, so no TX block may still be owned.
+    if stats["version"] not in STATS_VERSIONS:
+        raise AssertionError(f"unsupported STATS version {stats['version']}")
     assert_fields(
         stats,
-        version=PROTOCOL_VERSION,
         rx_available=RX_BLOCKS - 1,
         rx_in_use=1,
         tx_available=TX_BLOCKS,
@@ -565,6 +591,14 @@ def assert_plain_accounting(stats: dict, frames: int,
         "rtu_tx_release": frames,
         "tx_dma_irq": frames,
     }
+    if FRAMED:
+        # With the framing policy the RX callback is consume(): once per UART
+        # chunk, and a frame the bridge splits arrives in several chunks. One
+        # call per frame is the floor, not the count.
+        minimum = expected_calls.pop("rtu_receive")
+        if stats["counters"]["rtu_receive"]["calls"] < minimum:
+            raise AssertionError(
+                f"fewer RX callbacks than frames: {stats['counters']['rtu_receive']['calls']} < {minimum}")
     wrong = {
         name: (stats["counters"][name]["calls"], expected)
         for name, expected in expected_calls.items()
@@ -579,10 +613,10 @@ def suite_vectors(link: HardwareLink) -> dict:
     sizes = tuple(sorted(set(
         size for size in (
             0, 1, 2, 31, 32, 63, 64, 127, 128,
-            link.policy.max_data_size - 1,
-            link.policy.max_data_size,
+            max_body(link.policy) - 1,
+            max_body(link.policy),
         )
-        if 0 <= size <= link.policy.max_data_size
+        if 0 <= size <= max_body(link.policy)
     )))
     names = ("zero", "alternating", "random")
     addresses = (1, 0x11, 0xF7)
@@ -919,8 +953,61 @@ def print_result(result: dict) -> None:
         print(
             f"PASS pool: sent={result['sent']} retained={result['retained']}"
         )
+    elif suite == "framing":
+        print("PASS framing (recorded): " + ", ".join(
+            f"{shape} {count}" for shape, count in result["summary"].items()))
     else:
         print(f"PASS {suite}")
+
+
+def suite_framing(link: HardwareLink) -> dict:
+    """Frame-boundary probes that RECORD outcomes instead of asserting them.
+
+    The default endpoint is expected to lose frames the ST-Link bridge splits
+    at high baud and to reject two frames glued into one burst; the framed
+    endpoint must deliver both. Three shapes per size, three repeats each:
+    one frame in one write, one frame split into two writes with a pause
+    between them, two frames in one write."""
+    link.reset_metrics()
+    sizes = (8, 32, 128, max_body(link.policy))
+    trials: list[dict] = []
+
+    def attempt(shape: str, size: int, repeat: int,
+                writes: list[bytes], expected: bytes) -> None:
+        link.port.reset_input_buffer()
+        for index, chunk in enumerate(writes):
+            if index:
+                time.sleep(0.005)
+            link.write_candidate(chunk)
+        deadline = time.monotonic() + 0.3
+        received = bytearray()
+        while len(received) < len(expected) and time.monotonic() < deadline:
+            piece = link.port.read(len(expected) - len(received))
+            if piece:
+                received.extend(piece)
+        time.sleep(0.02)
+        link.port.reset_input_buffer()  # a late or partial echo must not leak into the next trial
+        trials.append({"shape": shape, "size": size, "repeat": repeat,
+                       "exact": bytes(received) == expected,
+                       "expected_bytes": len(expected), "received_bytes": len(received)})
+
+    for size in sizes:
+        for repeat in range(3):
+            first = make_adu(link.policy, 0x11, 0x43,
+                             pattern("random", size, 0x46520000 ^ size ^ repeat))
+            second = make_adu(link.policy, 0x11, 0x64,
+                              pattern("random", size, 0x47550000 ^ size ^ repeat))
+            attempt("single", size, repeat, [first], first)
+            half = len(first) // 2
+            attempt("split", size, repeat, [first[:half], first[half:]], first)
+            attempt("glued", size, repeat, [first + second], first + second)
+    time.sleep(0.1)
+    link.port.reset_input_buffer()
+    summary = {shape: f"{sum(t['exact'] for t in trials if t['shape'] == shape)}"
+                      f"/{sum(1 for t in trials if t['shape'] == shape)}"
+               for shape in ("single", "split", "glued")}
+    return {"suite": "framing", "trials": trials, "summary": summary,
+            "stats": link.stats()}
 
 
 def append_result(path: str | None, baud: int,
@@ -931,6 +1018,7 @@ def append_result(path: str | None, baud: int,
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "baud": baud,
         "crc_policy": crc_policy,
+        "framer": FRAMED,
         "status": result.get("status", "passed"),
         "image": image,
         **result,
@@ -950,9 +1038,12 @@ def main() -> None:
     parser.add_argument(
         "--suite",
         choices=("smoke", "vectors", "faults", "selftest", "pool",
-                 "crc_benchmark", "stress", "paced", "all"),
+                 "crc_benchmark", "stress", "paced", "framing", "all"),
         default="smoke",
     )
+    parser.add_argument("--framer", action="store_true",
+                        help="the board was built with MODBUS_HW_FRAMER=1: "
+                             "every function carries a two-byte length prefix")
     parser.add_argument("--seconds", type=float, default=5.0)
     parser.add_argument("--frame-rate", type=float, default=300.0)
     parser.add_argument("--image", help="manifest of the exact inspected/flashed ELF")
@@ -960,12 +1051,16 @@ def main() -> None:
     args = parser.parse_args()
     if args.seconds <= 0 or args.frame_rate <= 0:
         parser.error("--seconds and --frame-rate must be positive")
+    global FRAMED, FRAME_PREFIX
+    FRAMED = bool(args.framer)
+    FRAME_PREFIX = 2 if FRAMED else 0
 
     policy = CRC_POLICIES[args.crc_policy]
     image = json.loads(Path(args.image).read_text(encoding="utf-8")) \
         if args.image else None
-    if image and (image["policy_id"] != policy.identifier or image["baud"] != args.baud):
-        parser.error("image manifest does not match selected policy/baud")
+    if image and (image["policy_id"] != policy.identifier or image["baud"] != args.baud
+                  or bool(image.get("framer", False)) != FRAMED):
+        parser.error("image manifest does not match selected policy/baud/framer")
     reference_self_check(policy)
     print("PASS independent PC integrity/ADU oracle")
 
@@ -987,6 +1082,7 @@ def main() -> None:
             "crc_benchmark": lambda: suite_crc_benchmark(link),
             "stress": lambda: suite_stress(link, args.seconds),
             "paced": lambda: suite_stress(link, args.seconds, args.frame_rate),
+            "framing": lambda: suite_framing(link),
         }
         selected = (
             "vectors", "faults", "selftest", "pool",

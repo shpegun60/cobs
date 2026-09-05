@@ -32,6 +32,9 @@ optional third parameter, `Framer = framing::None`: a
 `framing::Standard<Direction>` policy (or a user type derived from it) adds
 `consume()` for arbitrary stream chunks and a builder-owned length prefix
 for private functions; with the default nothing changes (`modbus/ARCHITECTURE.md` §8).
+The RTU hardware harness builds either endpoint (`MODBUS_HW_FRAMER`), and
+`modbus/rtu/tests/hardware/h7s/run_framing.py` / `verify_framing.py` produce
+and recheck the framed-versus-burst record.
 
 A Qt Widgets application (qmake, C++20) intended as a desktop host/testbed for a reusable UART + COBS communication stack. The Qt GUI itself is currently a bare scaffold (`main.cpp`, `mainwindow.*`), but `COBS.pro` includes `cobs/cobs.pri` (which includes `wire/wire.pri`) and therefore compiles the real non-template COBS core. The separate console consumers under `cobs/tests/qmake_consumer/` and `modbus/rtu/tests/qmake_consumer/` instantiate and execute the full public APIs over both built-in storage specifications. The STM32 implementation remains in `uart/Uart.h` (not part of the Qt build — it needs an STM32 HAL).
 

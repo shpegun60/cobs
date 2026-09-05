@@ -12,7 +12,14 @@
  *
  *   independent PC RTU codec <-> ST-Link VCP <-> USART3/GPDMA
  *                            <-> Uart<256,4>
- *                            <-> Endpoint<Pool<8,2>, selected CRC policy>
+ *                            <-> Endpoint<Pool<8,2>, selected CRC policy
+ *                                         [, HarnessFramer]>
+ *
+ * MODBUS_HW_FRAMER=1 selects the optional framing policy: every function of
+ * the harness protocol becomes length-prefixed ([N: BE16][body]) so frame
+ * ends are found from the bytes, and the UART callback feeds arbitrary
+ * chunks to consume() instead of one burst candidate to receive_adu(). HELLO
+ * reports the mode and the PC peer prepends the same prefix.
  *
  * Ordinary CRC-valid ADUs are echoed with the same address, function and
  * function data. A reserved address/function/data envelope carries harness
@@ -36,6 +43,13 @@
 #ifndef MODBUS_HW_BAUD
 #define MODBUS_HW_BAUD 115200u
 #endif
+#ifndef MODBUS_HW_FRAMER
+#define MODBUS_HW_FRAMER 0
+#endif
+static_assert(MODBUS_HW_FRAMER == 0 || MODBUS_HW_FRAMER == 1,
+	"MODBUS_HW_FRAMER selects the framing policy: 0 or 1");
+// Data bytes owned by the framing policy in front of every body.
+constexpr std::size_t kFramePrefix = MODBUS_HW_FRAMER ? 2u : 0u;
 #ifndef MODBUS_HW_CRC_POLICY_ID
 #define MODBUS_HW_CRC_POLICY_ID 0
 #endif
@@ -84,7 +98,26 @@ constexpr uint32_t kCrcPolicy = 7u;
 using Crc = ::crc::Crc64Table;
 constexpr uint32_t kCrcPolicy = 8u;
 #endif
-using Link = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<Crc>>;
+#if MODBUS_HW_FRAMER
+// The harness protocol is not standard Modbus: every function carries an
+// arbitrary body, so every function is declared length-prefixed. Direction is
+// irrelevant to such a table but the policy contract still names one.
+struct HarnessFramer {
+	static constexpr modbus::rtu::framing::Direction rx =
+		modbus::rtu::framing::Direction::Request;
+
+	[[nodiscard]] static constexpr modbus::rtu::framing::Layout layout(
+			modbus::rtu::framing::Direction,
+			uint8_t) noexcept
+	{
+		return modbus::rtu::framing::Layout::length_prefixed(2u);
+	}
+};
+using Framer = HarnessFramer;
+#else
+using Framer = modbus::rtu::framing::None;
+#endif
+using Link = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<Crc>, Framer>;
 using Serial = Uart<kUartChunkSize, kUartChunkCount>;
 
 static_assert(Link::max_receive_size ==
@@ -95,7 +128,8 @@ static_assert(Link::max_frame_size == 256u);
 constexpr uint8_t kControlAddress = 0xF7u;
 constexpr uint8_t kControlFunction = 0x41u;
 constexpr std::array<uint8_t, 4> kMagic{0x4Du, 0x52u, 0x54u, 0x55u};
-constexpr uint32_t kProtocolVersion = 3u;
+// Harness protocol, not Modbus: version 4 appends the framing mode to HELLO.
+constexpr uint32_t kProtocolVersion = 4u;
 constexpr uint32_t kMaxActionMs = 5000u;
 constexpr std::size_t kControlPrefixSize = 9u;
 constexpr std::size_t kStatsScalarCount = 31u;
@@ -105,7 +139,7 @@ constexpr std::size_t kStatsDataSize = kControlPrefixSize +
 	(kStatsScalarCount * sizeof(uint32_t)) +
 	(kCounterCount * kCounterWireSize);
 static_assert(kStatsDataSize == 245u);
-static_assert(kStatsDataSize <= Link::max_send_size);
+static_assert(kStatsDataSize + kFramePrefix <= Link::max_send_size);
 
 enum class Command : uint8_t {
 	Hello = 1u,
@@ -305,7 +339,9 @@ template<class Counter>
 		const uint8_t function,
 		const std::span<const uint8_t> data) noexcept
 {
-	auto message = s_link.make_message(address, function, data.size());
+	// With a framer the message already holds its reserved prefix; the hint
+	// covers the body that follows it.
+	auto message = s_link.make_message(address, function, data.size() + kFramePrefix);
 	if (!message || !message.append_bytes(data) ||
 			s_link.send(message) != modbus::SendResult::Sent) {
 		++s_app.response_failures;
@@ -367,6 +403,7 @@ void reset_metrics() noexcept
 		writer.put_u32(static_cast<uint32_t>(kRxBlocks)) &&
 		writer.put_u32(static_cast<uint32_t>(kTxBlocks)) &&
 		writer.put_u32(kCrcPolicy) &&
+		writer.put_u32(static_cast<uint32_t>(MODBUS_HW_FRAMER)) &&
 		send_writer(writer);
 }
 
@@ -509,9 +546,17 @@ void run_backpressure_selftest() noexcept
 	return true;
 }
 
+// The application body of a received packet: function data without the
+// framing policy's length prefix (which the policy has already verified
+// against the frame length).
+[[nodiscard]] std::span<const uint8_t> body_of(const Link::Packet& packet) noexcept
+{
+	return packet.data().subspan(kFramePrefix);
+}
+
 [[nodiscard]] bool has_control_magic(const Link::Packet& packet) noexcept
 {
-	const std::span<const uint8_t> data = packet.data();
+	const std::span<const uint8_t> data = body_of(packet);
 	return packet.address() == kControlAddress &&
 		packet.function() == kControlFunction &&
 		data.size() >= kControlPrefixSize &&
@@ -577,12 +622,12 @@ void process_one_packet() noexcept
 		auto packet = s_link.pop_packet();
 		if (packet) {
 			if (has_control_magic(packet)) {
-				process_control(packet.data());
+				process_control(body_of(packet));
 			} else if (send_data(packet.address(), packet.function(),
-			                          packet.data())) {
+			                          body_of(packet))) {
 				++s_app.echo_frames;
 				s_app.echo_data_bytes +=
-					static_cast<uint32_t>(packet.size());
+					static_cast<uint32_t>(body_of(packet).size());
 			}
 		}
 	}
@@ -637,7 +682,11 @@ Transport s_transport;
 void on_rx(const std::span<const uint8_t> bytes) noexcept
 {
 	const uint32_t started = DWT->CYCCNT;
+#if MODBUS_HW_FRAMER
+	s_link.consume(bytes);
+#else
 	s_link.receive_adu(bytes);
+#endif
 	bench_counter_add(&s_rtu_receive, DWT->CYCCNT - started);
 }
 

@@ -8,7 +8,9 @@ SPDX-License-Identifier: MIT
 The [direct comparison with COBS](../../../../../doc/PROTOCOL_COMPARISON.md)
 has matched endpoint-only DWT measurements and equal-work UART results.
 Its 3M/6M/10M probes retain incomplete-ADU failures separately from valid
-CPU comparisons; no framing logic or production code was changed.
+CPU comparisons. Those failures are the reason the endpoint now has an
+optional framing policy; [its measurement](#framing-policy-at-high-baud-2026-09-05)
+on the same bridge is the newest record here.
 
 Current shared-storage validation: [127 records](results_shared_storage_2026-09-05.jsonl)
 cover all nine policies at 115200 and 1M, with exact image/source identities,
@@ -26,6 +28,11 @@ including CRC-policy A/B, 2026-09-05.
 
 Raw evidence:
 
+- [`results_framing_2026-09-05.jsonl`](results_framing_2026-09-05.jsonl)
+  — the default burst endpoint against the optional framing policy at 1M,
+  3M, 6M and 10M: single, split and glued frames, smoke and the full vector
+  suite, with every image manifest and the restored-firmware receipt
+  (`verify_framing.py`);
 - [Nine-policy CRC benchmark](CRC_BENCHMARK.md) and
   [raw results](results_crc_all_2026-09-05.jsonl): CRC8/16/32/64 Bitwise/Table
   and NoCrc, live calculation cycles, fixed-rate CPU comparison and the
@@ -105,7 +112,13 @@ and repeat the token. `HELLO`, `STATS`, `RESET_METRICS`, `HOLD_PACKETS`, and
 Pool, `send()`, UART borrow and `poll()` paths as ordinary traffic.
 Protocol version 3 also has `CRC_BENCHMARK`: two arguments select input length
 and iterations. It returns cycles, independently checkable checksum/mix,
-DWT state, cache state and CPU identity.
+DWT state, cache state and CPU identity. Protocol version 4 appends the
+framing mode to `HELLO`: with `MODBUS_HW_FRAMER=1` the board is built with
+the framing policy, every function's data starts with a two-byte big-endian
+body length that the library owns on both sides, the UART callback feeds
+`consume()` instead of `receive_adu()`, and the PC peer must be run with
+`--framer`; a peer started in the wrong mode is refused by `HELLO`. STATS
+keeps its layout, so records of either version stay verifiable.
 
 ## Suites
 
@@ -119,8 +132,10 @@ DWT state, cache state and CPU identity.
 | `stress` | repeated full-duplex standard/custom requests and exact echoes over every important size, with DWT/IRQ accounting and zero unexpected failures |
 | `paced` | same precomputed traffic at a target average 300 frames/s, with achieved cadence and DWT/IRQ accounting |
 | `crc_benchmark` | eight equal input lengths, nine samples of eight calls, live DWT cycles and an independent PC checksum oracle |
+| `framing` | records, without asserting, whether one frame in one write, one frame split into two writes 5 ms apart, and two frames in one write come back exactly, three repeats at 8, 32, 128 and maximum body bytes; the default endpoint is expected to lose the split and glued shapes |
 
-`all` runs vectors, faults, selftest, pool, crc_benchmark, stress and paced.
+`all` runs vectors, faults, selftest, pool, crc_benchmark, stress and paced;
+`framing` is run explicitly by `run_framing.py`.
 Statistics are captured
 while the STATS request owns exactly one RX block and before its response owns
 a TX block, so the runner requires `rx_in_use=1` and `tx_in_use=0` at that
@@ -137,6 +152,7 @@ $env:MODBUS_HW_BAUD = '115200'
 $env:MODBUS_HW_OPT = '-Os'       # accepted: -Os, -O2, -O3
 $env:MODBUS_HW_LTO = '0'         # accepted: 0 or 1
 $env:MODBUS_HW_CRC_POLICY = 'bitwise' # aliases bitwise/table or the nine named policies
+$env:MODBUS_HW_FRAMER = '0'      # 1 builds the framing-policy endpoint (peer needs --framer)
 & 'C:\Program Files\Git\bin\bash.exe' `
   'modbus/rtu/tests/hardware/h7s/build.sh'
 
@@ -313,4 +329,62 @@ Modbus t1.5 threshold. Streaming COBS tolerates such fragmentation; this
 constrained burst adapter does not. Therefore 3M is not claimed as a reliable
 full-size result, while the complete 1M matrix is. Any adapter with a different
 boundary contract remains outside Endpoint and supplies only complete
-candidates to `receive_adu()`.
+candidates to `receive_adu()` — or the endpoint is given the framing policy
+measured next.
+
+## Framing policy at high baud, 2026-09-05
+
+The same bridge, the same `Uart<256,4>` and the same CRC16 Bitwise format,
+with the endpoint built twice: `framing::None` (the default, one burst
+candidate per `receive_adu()`) and the optional framing policy (`consume()`
+on every chunk, every function length-prefixed). `run_framing.py` built,
+inspected and flashed each of the eight images, drove `smoke`, `framing`
+and `vectors` against it, and restored the board's original flash with
+programmer verification and a byte-exact read-back:
+
+```powershell
+python -B modbus/rtu/tests/hardware/h7s/run_framing.py --port COM6 `
+  --serial 002A001F3033510135393935 `
+  --output modbus/rtu/tests/hardware/h7s/results_framing_2026-09-05.jsonl
+python -B modbus/rtu/tests/hardware/h7s/verify_framing.py `
+  modbus/rtu/tests/hardware/h7s/results_framing_2026-09-05.jsonl `
+  --check-doc modbus/rtu/tests/hardware/h7s/README.md
+```
+
+### RTU frame boundaries on the H7S ST-Link bridge: default burst framing versus the framing policy
+
+| Baud | Endpoint | single-write echoes | split-write echoes | two frames in one write | smoke | vectors suite |
+|---:|---|---:|---:|---:|---|---|
+| 1000000 | framing::None (burst candidate) | 12/12 | 0/12 | 3/12 | passed | passed |
+| 1000000 | framing policy (length-prefixed) | 12/12 | 12/12 | 12/12 | passed | passed |
+| 3000000 | framing::None (burst candidate) | 12/12 | 0/12 | 0/12 | passed | FAILED at vector 24 (128 data bytes), no echo |
+| 3000000 | framing policy (length-prefixed) | 12/12 | 12/12 | 12/12 | passed | passed |
+| 6000000 | framing::None (burst candidate) | 4/12 | 0/12 | 0/12 | FAILED no HELLO response | FAILED at vector 7 (31 data bytes), no echo |
+| 6000000 | framing policy (length-prefixed) | 12/12 | 12/12 | 12/12 | passed | passed |
+| 10000000 | framing::None (burst candidate) | 5/12 | 0/12 | 0/12 | passed | FAILED at vector 8 (31 data bytes), no echo |
+| 10000000 | framing policy (length-prefixed) | 12/12 | 12/12 | 12/12 | passed | passed |
+
+Counts are exact echoes out of twelve attempts (three per body size). The
+default endpoint behaves as the 2026-09-02 probe predicted: a frame the host
+sends in two writes is never one candidate (`split` 0/12 at every baud), two
+frames in one write are one CRC-failing candidate unless the bridge happens
+to pause between them (`glued` 3/12 at 1M, then 0/12), and from 6M the bridge
+splits even single writes (`single` 4/12 and 5/12; at 6M the 21-byte smoke
+request itself got no answer). Its STATS at 6M counted 122 candidates for
+36 data frames plus control traffic, 114 CRC errors and 3 too-short
+candidates, with zero UART errors or overruns: the losses are frame-boundary
+losses, not line errors.
+
+The framed endpoint delivered every shape at every baud with zero CRC errors
+(49 candidates, 49 frames received in each `framing` snapshot) and passed the
+full 31-vector suite at 1M, 3M, 6M and 10M. The splitting is visible in its
+counters and harmless: the RX callback ran 33, 74 and 58 times for the 32
+frames of the vector suite at 3M, 6M and 10M. This is the first RTU result
+above 1M on this bridge that is a complete-load result rather than a probe.
+
+What it does not show: CPU cost of the framed endpoint (no paced or stress
+row was taken; the like-for-like CPU comparison with COBS remains the
+`framing::None` record in `doc/PROTOCOL_COMPARISON.md`), standard-function
+framing (the harness protocol is length-prefixed on every function; the
+standard table is verified on the host against the specification's worked
+examples), and Modbus t1.5/t3.5 timing, which the policy does not implement.

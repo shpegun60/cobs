@@ -178,6 +178,15 @@ are explicitly unavailable, while the captured echo bytes remain evidence.
 Consequently there is **no accepted equal-load UART CPU comparison at
 3M/6M/10M for this RTU adapter and VCP setup**. Do not put the CPU spent
 rejecting partial candidates in the same column as successful COBS traffic.
+
+This is the RTU endpoint with `framing::None`, the configuration compared
+throughout this document. The optional framing policy added afterwards
+(`modbus::rtu::Endpoint<Memory, Format, Framer>`, `modbus/ARCHITECTURE.md`
+§8) was measured on the same bridge: it echoed 12/12 single, split and
+glued frames at 3M, 6M and 10M with zero CRC errors and passed the full
+vector suite at every baud. Its CPU cost has not been measured, so it does
+not change any CPU row here; the record is
+[`results_framing_2026-09-05.jsonl`](../modbus/rtu/tests/hardware/h7s/README.md#framing-policy-at-high-baud-2026-09-05).
 The libraries and UART driver are left unchanged; no length-based or timed
 framer was quietly added to make a benchmark pass.
 

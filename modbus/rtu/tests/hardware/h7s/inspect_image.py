@@ -29,6 +29,8 @@ def main() -> None:
     parser.add_argument("--baud", type=int, required=True)
     parser.add_argument("--optimization", choices=("Os", "O2", "O3"), default="Os")
     parser.add_argument("--lto", type=int, choices=(0, 1), default=0)
+    parser.add_argument("--framer", type=int, choices=(0, 1), default=0,
+                        help="the image was built with MODBUS_HW_FRAMER=1")
     args = parser.parse_args()
     policy = CRC_POLICIES[args.policy]
     elf = args.elf.resolve()
@@ -69,6 +71,7 @@ def main() -> None:
         "baud": args.baud,
         "optimization": "-" + args.optimization,
         "lto": bool(args.lto),
+        "framer": bool(args.framer),
         "compiler": run(args.cxx, "--version").splitlines()[0],
         "source_base_commit": run("git", "-C", REPO, "rev-parse", "HEAD").strip(),
         "source_sha256": {

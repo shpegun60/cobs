@@ -930,7 +930,8 @@ Raw current hardware evidence:
 - [Modbus `-O3` + LTO silicon run](modbus/rtu/tests/hardware/h7s/results_paranoid_o3_lto_2026-09-02.jsonl);
 - [Modbus post-extraction CRC library 115200/1M matrix](modbus/rtu/tests/hardware/h7s/results_crc_library_2026-09-05.jsonl);
 - [Modbus Bitwise/Table CRC A/B](modbus/rtu/tests/hardware/h7s/results_crc_policy_2026-09-05.jsonl);
-- [Modbus 3M UART-IDLE boundary probe](modbus/rtu/tests/hardware/h7s/results_high_baud_probe_2026-09-02.jsonl).
+- [Modbus 3M UART-IDLE boundary probe](modbus/rtu/tests/hardware/h7s/results_high_baud_probe_2026-09-02.jsonl);
+- [Modbus framing policy versus burst framing at 1M/3M/6M/10M](modbus/rtu/tests/hardware/h7s/results_framing_2026-09-05.jsonl).
 
 The full post-refactor COBS H7S matrix passed at 115200, 1M, 3M, 6M, and 10M,
 including physical gap/recovery tests. Its extended 10 Mbaud/window-7 run

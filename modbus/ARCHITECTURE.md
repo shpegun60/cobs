@@ -390,6 +390,12 @@ else from it:
 - **`receive_adu()` stays available** and, under a policy, also refuses a
   candidate whose function has no layout (`unsupported_function`) or whose
   length disagrees with it (`length_mismatch`).
+- **Measured.** On the H7S ST-Link bridge that splits frames from 3 Mbaud
+  up, the framed endpoint echoed every single, split and glued frame at 1M,
+  3M, 6M and 10M (12/12 each, zero CRC errors) and passed the full vector
+  suite at every baud, where the default endpoint loses every split frame
+  and most single frames above 3M. Record and method:
+  [`rtu/tests/hardware/h7s/README.md`](rtu/tests/hardware/h7s/README.md#framing-policy-at-high-baud-2026-09-05).
 
 `Packet`, `Message`, `Storage` and the wire bytes of every accepted frame are
 identical with and without a policy; `Stats` is untouched and the

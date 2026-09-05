@@ -86,7 +86,14 @@ CXXFLAGS="$MCU -std=gnu++20 -DUSE_HAL_DRIVER -DSTM32H7S3xx -c \
   --specs=nano.specs"
 
 OBJS=""
-echo "CONFIG optimization=$OPT lto=${MODBUS_HW_LTO:-0} baud=${MODBUS_HW_BAUD:-115200} crc=$CRC_POLICY"
+case "${MODBUS_HW_FRAMER:-0}" in
+  0|1) ;;
+  *)
+    echo "Unsupported MODBUS_HW_FRAMER: ${MODBUS_HW_FRAMER} (expected 0 or 1)"
+    exit 1
+    ;;
+esac
+echo "CONFIG optimization=$OPT lto=${MODBUS_HW_LTO:-0} baud=${MODBUS_HW_BAUD:-115200} crc=$CRC_POLICY framer=${MODBUS_HW_FRAMER:-0}"
 for f in "$PROJECT"/Drivers/STM32H7RSxx_HAL_Driver/Src/*.c \
          "$PROJECT"/Boot/Core/Src/*.c; do
   o="$OUT/$(basename "$f" .c).o"
@@ -107,7 +114,7 @@ done
 
 echo "CXX modbus_bench.cpp"
 "$GXX" $CXXFLAGS -DMODBUS_HW_BAUD="${MODBUS_HW_BAUD:-115200}u" \
-  $CRC_DEFINE \
+  $CRC_DEFINE -DMODBUS_HW_FRAMER="${MODBUS_HW_FRAMER:-0}" \
   "$HERE/modbus_bench.cpp" -o "$OUT/modbus_bench.o"
 OBJS="$OBJS $OUT/modbus_bench.o"
 

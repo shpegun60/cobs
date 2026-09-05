@@ -181,6 +181,10 @@ remain, so it is not a universal processor-utilization guarantee. See the
 RTU still requires one complete candidate. CRC does not repair a split input,
 and NoCrc cannot identify one. These fresh tests do not broaden the documented
 burst-adapter guarantee to arbitrary RTU timing or high-baud host behavior.
+(Addendum: the optional framing policy added later as the endpoint's third
+template parameter removes that requirement for endpoints that select it;
+its H7S record is in
+[`modbus/rtu/tests/hardware/h7s/README.md`](../modbus/rtu/tests/hardware/h7s/README.md#framing-policy-at-high-baud-2026-09-05).)
 
 ## End state
 
