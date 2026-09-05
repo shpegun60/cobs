@@ -123,7 +123,7 @@ int main()
 	      "creating Endpoint accepts its Message");
 	check(!endpoint.unbind(), "transport cannot be unbound during an active borrow");
 	transport.busy_state = false;
-	endpoint.poll();
+	endpoint.poll(0u);
 	check(endpoint.unbind(), "transport unbinds after ownership is reclaimed");
 	auto unbound = endpoint.make_message(1u, 6u, 0u);
 	check(endpoint.send(unbound) == modbus::SendResult::Unbound && unbound,
@@ -159,7 +159,7 @@ int main()
 	      "the same table policy validates RX and publishes the packet");
 	table_packet.reset();
 	table_transport.busy_state = false;
-	table_endpoint.poll();
+	table_endpoint.poll(0u);
 
 	group("CustomChecksumPolicy");
 	using SumEndpoint = modbus::rtu::Endpoint<wire::Pool<2, 1>, modbus::rtu::Format<WrappingSum>>;
@@ -194,7 +194,7 @@ int main()
 	      "the same stateful custom calculator validates RX without an algorithm check");
 	sum_packet.reset();
 	sum_transport.busy_state = false;
-	sum_endpoint.poll();
+	sum_endpoint.poll(0u);
 
 	return finish();
 }

@@ -80,7 +80,7 @@ struct Fixture final {
 	void loop() noexcept
 	{
 		uart.proceed(fake::model().tick);
-		link.poll();
+		link.poll(0u);
 	}
 
 	void on_rx(const std::span<const uint8_t> bytes) noexcept

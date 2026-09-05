@@ -30,6 +30,7 @@ from provenance import Provenance  # noqa: E402
 
 SUITES = ("smoke", "framing", "vectors")
 SHAPES = ("single", "split", "glued")
+OPTIONAL_SHAPES = ("orphan",)  # added to the suite later; older records lack it
 
 
 def verify(results: Path):
@@ -53,7 +54,7 @@ def verify(results: Path):
         provenance.check(image["source_base_commit"], image["source_sha256"])
         if row["suite"] == "framing":
             assert row["status"] == "passed"  # the suite records, it does not assert
-            for shape in SHAPES:
+            for shape in SHAPES + tuple(s for s in OPTIONAL_SHAPES if s in row["summary"]):
                 trials = [t for t in row["trials"] if t["shape"] == shape]
                 assert len(trials) == 12 and row["summary"][shape] == f"{sum(t['exact'] for t in trials)}/12"
     exits = {(s["mode"], s["baud"], s["suite"]): s["exit_code"] for s in receipt["suites"]}
@@ -89,9 +90,12 @@ def brief(error):
 
 
 def table(receipt, seen):
+    orphan = all("orphan" in seen[(mode, baud, "framing")]["summary"]
+                 for mode in receipt["modes"] for baud in receipt["bauds"])
     print("\n### RTU frame boundaries on the H7S ST-Link bridge: default burst framing versus the framing policy\n")
-    print("| Baud | Endpoint | single-write echoes | split-write echoes | two frames in one write | smoke | vectors suite |")
-    print("|---:|---|---:|---:|---:|---|---|")
+    print("| Baud | Endpoint | single-write echoes | split-write echoes | two frames in one write |"
+          + (" orphan half then a whole frame |" if orphan else "") + " smoke | vectors suite |")
+    print("|---:|---|---:|---:|---:|" + ("---:|" if orphan else "") + "---|---|")
     for baud in receipt["bauds"]:
         for mode in receipt["modes"]:
             framing = seen[(mode, baud, "framing")]
@@ -101,7 +105,9 @@ def table(receipt, seen):
             outcome = "passed" if vectors["status"] == "passed" else "FAILED " + brief(vectors.get("error", ""))
             smoke_outcome = "passed" if smoke["status"] == "passed" else "FAILED " + brief(smoke.get("error", ""))
             print(f"| {baud} | {name} | {framing['summary']['single']} | {framing['summary']['split']} | "
-                  f"{framing['summary']['glued']} | {smoke_outcome} | {outcome} |")
+                  f"{framing['summary']['glued']} | "
+                  + (f"{framing['summary']['orphan']} | " if orphan else "")
+                  + f"{smoke_outcome} | {outcome} |")
 
 
 def main():

@@ -52,7 +52,7 @@ The API deliberately follows the established COBS ownership vocabulary:
 | raw bytes | `append_bytes` | `append_bytes` |
 | scalar reading | `cobs::read_native/read_be/read_le` | `modbus::read_native/read_be/read_le` |
 | byte reading | `cobs::read_bytes` | `modbus::read_bytes` |
-| completion | `tx_active` / `poll` | `tx_active` / `poll` |
+| completion | `tx_active` / `poll(now_ms)` | `tx_active` / `poll(now_ms)` |
 | observation | `stats` / `storage` | `stats` / `storage` |
 | protocol metadata/views | none in the application payload | `address` / `function` / `pdu` / `adu` |
 
@@ -173,7 +173,9 @@ Empty -> Building -> Finalized -> Sent
   private to `Endpoint`;
 - `Sent` moves the block into Endpoint;
 - `Busy`, `Unbound`, `Failed` and `Invalid` do not steal caller ownership;
-- `poll()` releases the sent block only after the bound busy query is false.
+- `poll(now_ms)` releases the sent block only after the bound busy query is
+  false and, with a framing policy, runs the stale-frame watchdog (§8); the
+  tick is the same the UART driver's `proceed(now_ms)` takes.
 
 Standard Modbus multi-byte function fields use `append_be`. `append_native`
 and `append_le` are explicit options for application/vendor-defined data; they
@@ -394,6 +396,18 @@ else from it:
   transport delivers chunks eventually aligned to an inter-frame pause — and
   not an implementation of t1.5/t3.5. `notify_gap()` releases an in-flight
   frame.
+- **Stale frames.** A frame whose sender died mid-frame would otherwise wait
+  for its remaining bytes forever, holding an RX block and gluing itself to
+  the next frame. `poll(now_ms)` watches the frame in flight the way the UART
+  driver watches a transmission: it does not predict when the frame should be
+  complete, it asks whether the frame has grown since the last poll, and
+  drops one that has not grown for `framing::stale_frame_ms`
+  (`framing_stats().stale_frames`, block returned). The limit is one
+  universal constant, 5 ms: legitimate bridge splits are tens of
+  microseconds, t3.5 at 9600 baud is 4 ms, and a longer pause inside a frame
+  is a protocol violation from any peer. `consume()` records no time; the
+  resolution is the poll period plus the tick. Every endpoint takes the tick
+  so the application's loop is the same with or without a framing policy.
 - **`receive_adu()` stays available** and, under a policy, also refuses a
   candidate whose function has no layout (`unsupported_function`) or whose
   length disagrees with it (`length_mismatch`).

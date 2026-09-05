@@ -118,11 +118,11 @@ int main()
 	      "Message appends a valid low-byte-first CRC automatically");
 	check(endpoint.storage().tx_available() == 1u && endpoint.tx_active(),
 	      "Endpoint owns the pool block while transport borrows it");
-	endpoint.poll();
+	endpoint.poll(0u);
 	check(endpoint.storage().tx_available() == 1u,
 	      "poll does not reclaim memory while busy() is true");
 	transport.finish();
-	endpoint.poll();
+	endpoint.poll(0u);
 	check(endpoint.storage().tx_available() == 2u && !endpoint.tx_active(),
 	      "poll reclaims memory only after transport releases the borrow");
 
@@ -160,7 +160,7 @@ int main()
 	      ::crc::verify<::crc::Crc16Bitwise>(transport.last),
 	      "every serializer produces exact bytes before the library-owned CRC");
 	transport.finish();
-	endpoint.poll();
+	endpoint.poll(0u);
 
 	group("SerializerTypeContract");
 	static_assert(CanAppendNative<Message, uint32_t> &&
@@ -193,7 +193,7 @@ int main()
 	check(endpoint.send(busy) == modbus::SendResult::Sent,
 	      "the same message sends after backpressure clears");
 	transport.finish();
-	endpoint.poll();
+	endpoint.poll(0u);
 
 	group("FailedRetryIdentity");
 	transport.accept = false;
@@ -211,7 +211,7 @@ int main()
 	check(transport.attempts.back() == first_attempt,
 	      "retry submits the byte-identical ADU including CRC");
 	transport.finish();
-	endpoint.poll();
+	endpoint.poll(0u);
 
 	group("GrowthAndStrongFailure");
 	modbus::rtu::Endpoint<> heap;
@@ -237,7 +237,7 @@ int main()
 	      heap_transport.last.size() == size_before + 4u,
 	      "the intact message still sends after a failed append");
 	heap_transport.finish();
-	heap.poll();
+	heap.poll(0u);
 
 	group("MaximumAndMove");
 	auto maximum = endpoint.make_message(0xF7u, 0x2Bu, modbus::max_data_size);
@@ -252,7 +252,7 @@ int main()
 	      transport.last.size() == 256u && ::crc::verify<::crc::Crc16Bitwise>(transport.last),
 	      "maximum Message becomes an exact valid 256-byte RTU ADU");
 	transport.finish();
-	endpoint.poll();
+	endpoint.poll(0u);
 	check(!endpoint.make_message(1u, 3u, modbus::max_data_size + 1u),
 	      "capacity hint above the RTU limit yields an empty Message");
 

@@ -88,7 +88,7 @@ void round_trip()
 			check(packet && std::ranges::equal(packet.data(), payload), "large payload and CRC decode contiguously");
 		}
 		capture.active = false;
-		endpoint.poll();
+		endpoint.poll(0u);
 		check(!endpoint.tx_active(), "transport release");
 	}
 	check(!endpoint.make_message(Maximum + 1u), "hint excludes CRC and obeys explicit payload ceiling");
@@ -161,7 +161,7 @@ void stateful()
 	check(packet && std::ranges::equal(packet.data(), payload) && state.calls == 2u && state.instance == instance,
 	      "RX uses the exact TX calculator object and exposes no checksum bytes");
 	capture.active = false;
-	endpoint.poll();
+	endpoint.poll(0u);
 }
 
 struct Counter { unsigned acquired = 0; std::size_t requested = 0; };

@@ -965,19 +965,23 @@ def suite_framing(link: HardwareLink) -> dict:
 
     The default endpoint is expected to lose frames the ST-Link bridge splits
     at high baud and to reject two frames glued into one burst; the framed
-    endpoint must deliver both. Three shapes per size, three repeats each:
-    one frame in one write, one frame split into two writes with a pause
-    between them, two frames in one write."""
+    endpoint must deliver both. Four shapes per size, three repeats each:
+    one frame in one write, one frame split into two writes 1 ms apart (a
+    bridge-like split, well inside the framed endpoint's 5 ms stale-frame
+    limit), two frames in one write, and an orphan: the first half of a
+    frame, 50 ms of silence, then a whole different frame, of which only the
+    whole frame may come back (the framed endpoint's stale-frame watchdog
+    must have dropped the half by then)."""
     link.reset_metrics()
     sizes = (8, 32, 128, max_body(link.policy))
     trials: list[dict] = []
 
     def attempt(shape: str, size: int, repeat: int,
-                writes: list[bytes], expected: bytes) -> None:
+                writes: list[bytes], expected: bytes, pause: float = 0.001) -> None:
         link.port.reset_input_buffer()
         for index, chunk in enumerate(writes):
             if index:
-                time.sleep(0.005)
+                time.sleep(pause)
             link.write_candidate(chunk)
         deadline = time.monotonic() + 0.3
         received = bytearray()
@@ -1001,11 +1005,12 @@ def suite_framing(link: HardwareLink) -> dict:
             half = len(first) // 2
             attempt("split", size, repeat, [first[:half], first[half:]], first)
             attempt("glued", size, repeat, [first + second], first + second)
+            attempt("orphan", size, repeat, [first[:half], second], second, pause=0.05)
     time.sleep(0.1)
     link.port.reset_input_buffer()
     summary = {shape: f"{sum(t['exact'] for t in trials if t['shape'] == shape)}"
                       f"/{sum(1 for t in trials if t['shape'] == shape)}"
-               for shape in ("single", "split", "glued")}
+               for shape in ("single", "split", "glued", "orphan")}
     return {"suite": "framing", "trials": trials, "summary": summary,
             "stats": link.stats()}
 

@@ -362,8 +362,15 @@ public:
 	// tx_busy() == false means only that the transport stopped borrowing the
 	// buffer — never that the frame was delivered (§8.2). Delivery outcome is
 	// the transport's business, reported through its own counters.
-	void poll() noexcept
+	//
+	// `now_ms` is the application's monotonic millisecond tick, the same one
+	// the UART driver's proceed(now_ms) and modbus::rtu::Endpoint::poll(now_ms)
+	// take: one slow-path signature for every layer. COBS does not time
+	// anything with it today — a partial frame resynchronizes at the next
+	// delimiter on its own — and it is reserved for slow-path supervision.
+	void poll(const uint32_t now_ms) noexcept
 	{
+		(void)now_ms;
 		if (m_activeTx.memory != nullptr && !m_transport.busy()) {
 			// The descriptor goes back exactly as storage granted it, so a
 			// strategy that segregates by size knows where the block belongs

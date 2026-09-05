@@ -308,7 +308,7 @@ Call both service methods from the same main-loop context:
 
 ```cpp
 uart.proceed(HAL_GetTick());
-link.poll();
+link.poll(HAL_GetTick());   // the same tick the UART driver takes; the framing policy times stale frames with it
 ```
 
 ## Read function data
@@ -417,6 +417,10 @@ Server server;
 // UART callback: any cut of the stream, several ADUs per chunk, all fine.
 void on_rx(std::span<const uint8_t> chunk) noexcept { server.consume(chunk); }
 void on_gap() noexcept { server.notify_gap(); }
+// Slow loop: releases sent blocks and drops a frame that stopped growing
+// 5 ms ago (a sender that died mid-frame), so it cannot glue itself to the
+// next frame or hold its RX block forever.
+void loop_step() noexcept { uart.proceed(HAL_GetTick()); server.poll(HAL_GetTick()); }
 
 // The builder knows the same table: a response to 0x03 is a byte count plus
 // data, and a count that disagrees with the data is refused before the wire.
@@ -461,7 +465,11 @@ cannot find a frame start on its own. After an unsupported function, an
 oversize declaration or a CRC failure it drops the remainder of the current
 chunk (`framing_stats().resyncs`) and starts fresh on the next chunk, which
 the UART adapter delivers at the next IDLE pause. An RX allocation failure
-skips exactly the declared frame and keeps the stream in step. With
+skips exactly the declared frame and keeps the stream in step. A frame that
+stops arriving is dropped by `poll(now_ms)` after `framing::stale_frame_ms`
+(5 ms, one universal constant: bridge splits are microseconds, t3.5 at 9600
+baud is 4 ms) and counted in `framing_stats().stale_frames`; `assembling()`
+tells whether a frame is in flight. With
 `framing::None` (the default) nothing described in this section is compiled
 in, and the endpoint is the one documented everywhere else in this file.
 

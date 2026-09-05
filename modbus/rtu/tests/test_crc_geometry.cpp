@@ -82,7 +82,7 @@ void round_trip(const char* const name)
 	      "Endpoint geometry is a compile-time function of policy wire_size");
 
 	capture.borrowed = false;
-	endpoint.poll();
+	endpoint.poll(0u);
 }
 
 struct Sum24 final : ::crc::Codec<
@@ -228,7 +228,7 @@ int main()
 	      "RX reuses the exact same stateful peripheral policy instance");
 	hardware_packet.reset();
 	hardware_capture.borrowed = false;
-	hardware.poll();
+	hardware.poll(0u);
 
 	group("NoCrcSemantics");
 	using NoCrcEndpoint = modbus::rtu::Endpoint<wire::Pool<2, 1>, modbus::rtu::Format<::crc::NoCrc>>;

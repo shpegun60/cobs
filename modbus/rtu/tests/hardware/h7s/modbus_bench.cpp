@@ -636,12 +636,19 @@ void process_one_packet() noexcept
 
 void poll_link() noexcept
 {
-	if (!s_link.tx_active() || s_uart.tx_busy()) {
-		return;
-	}
+	// poll(now) releases a finished transmission and, with the framer, runs the
+	// stale-frame watchdog, so it runs every iteration. Only a call that
+	// actually released a block is charged to the release counter: the peer
+	// requires exactly one such call per released frame, and deciding from a
+	// separate tx_busy() read would race with the transmission completing
+	// between that read and poll()'s own. The watchdog's cost with nothing in
+	// flight is a few cycles and stays in the uninstrumented idle loop.
+	const bool was_active = s_link.tx_active();
 	const uint32_t started = DWT->CYCCNT;
-	s_link.poll();
-	bench_counter_add(&s_rtu_tx_release, DWT->CYCCNT - started);
+	s_link.poll(HAL_GetTick());
+	if (was_active && !s_link.tx_active()) {
+		bench_counter_add(&s_rtu_tx_release, DWT->CYCCNT - started);
+	}
 }
 
 void apply_pending_action(const uint32_t now) noexcept

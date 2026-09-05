@@ -155,10 +155,10 @@ void runEngine(const char* name)
 		      "and the transport received exactly the canonical frame");
 
 		// poll() must not free the block while the transport still reads it.
-		cobs.poll();
+		cobs.poll(0u);
 		check(cobs.tx_active(), "poll does not reclaim it while the transport is busy");
 		t.finish();
-		cobs.poll();
+		cobs.poll(0u);
 		check(!cobs.tx_active(), "and reclaims it once the transport lets go");
 	}
 
@@ -168,7 +168,7 @@ void runEngine(const char* name)
 		FakeTransport t;
 		bind(cobs, t);
 		const int before = t.busy_queries;
-		for (int i = 0; i < 100; ++i) { cobs.poll(); }
+		for (int i = 0; i < 100; ++i) { cobs.poll(0u); }
 		check(t.busy_queries == before,
 		      "100 idle poll() calls never invoke the busy query (the null check wins)");
 	}
@@ -199,7 +199,7 @@ void runEngine(const char* name)
 		check(second.size() == payload.size() + 1, "which land after what was there");
 
 		t.finish();
-		cobs.poll();
+		cobs.poll(0u);
 		check(cobs.send(second) == cobs::SendResult::Sent, "it sends once the link frees up");
 		auto expected = payload;
 		expected.push_back(0x34);
@@ -288,7 +288,7 @@ void runEngine(const char* name)
 		check(!cobs.unbind(), "and cannot be unbound while that transfer is live");
 
 		t.finish();
-		cobs.poll();
+		cobs.poll(0u);
 		check(cobs.bind(sender_for<Engine>(other), busy_for<Engine>(other)),
 		      "and may be rebound once the link is idle");
 		check(cobs.unbind(), "explicit unbind succeeds once the link is idle");
@@ -314,7 +314,7 @@ void runEngine(const char* name)
 		check(got.size() == in.size(), "while a frame comes in on the same engine");
 
 		t.finish();
-		cobs.poll();
+		cobs.poll(0u);
 		const auto stats = cobs.stats();
 		check(!cobs.tx_active() && stats.rx.frames_delivered == 1 &&
 		          stats.tx.frames_sent == 1,
@@ -345,7 +345,7 @@ void testFixedExhaustion()
 	auto c = cobs.make_message(4);
 	check(!c, "the pool stays dry while the transport holds the block");
 	t.finish();
-	cobs.poll();
+	cobs.poll(0u);
 	auto d = cobs.make_message(4);
 	check(static_cast<bool>(d), "and refills once poll reclaims it");
 }
@@ -404,7 +404,7 @@ void testDefaultCapacityHint()
 			      t.sent.back() == cobs_test::frame({}, Engine::length_size),
 			      "and sent straight away it is the canonical empty frame");
 			t.finish();
-			cobs.poll();
+			cobs.poll(0u);
 		}
 		check(minimal.append_native(uint8_t{0x42}), "but it still accepts an append");
 		check(minimal.size() == 1 && minimal.capacity() >= 1,
@@ -515,7 +515,7 @@ void testGrantSurvivesTheEngine()
 	check(cobs.storage().frees == 0, "nothing is freed while the transport reads");
 
 	t.finish();
-	cobs.poll();
+	cobs.poll(0u);
 	check(cobs.storage().frees == 1, "poll reclaims the block");
 	check(cobs.storage().last_freed == kGranted,
 	      "returning it with the byte count the STORAGE granted, not the 14 requested "
@@ -535,7 +535,7 @@ void testGrantSurvivesTheEngine()
 		check(grown.capacity() == 125, "to 125 (asked for 60, granted 129 bytes)");
 		check(cobs.send(grown) == cobs::SendResult::Sent, "it sends");
 		t.finish();
-		cobs.poll();
+		cobs.poll(0u);
 		check(cobs.storage().last_freed == kGrown,
 		      "and comes back with the GROWN block's grant, not the original 17");
 	}
@@ -588,7 +588,7 @@ void testComplementaryPeers()
 		check(std::vector<uint8_t>(got.data().begin(), got.data().end()) == out,
 		      "byte for byte");
 		ta.finish();
-		a.poll();
+		a.poll(0u);
 	}
 	{	// B -> A, at a size only this direction allows: 300 bytes is legal for
 		// B to send and for A to receive, and illegal in the other direction.
@@ -608,7 +608,7 @@ void testComplementaryPeers()
 		check(too_big.append_bytes(std::span<const uint8_t>{over}) == false,
 		      "while A still refuses to SEND more than 64");
 		tb.finish();
-		b.poll();
+		b.poll(0u);
 	}
 	{	// And the limit that is not shared: 300 bytes arriving at B, whose
 		// rx_max_size is 64, is refused before any allocation.
@@ -623,7 +623,7 @@ void testComplementaryPeers()
 		      "B's own RX refuses a frame its TX side was free to build");
 		check(!b.has_packet(), "and nothing is delivered");
 		tb.finish();
-		b.poll();
+		b.poll(0u);
 	}
 }
 
@@ -659,8 +659,8 @@ void testStorageDoesNotChangeFormat()
 
 	heap_transport.finish();
 	pool_transport.finish();
-	heap.poll();
-	pool.poll();
+	heap.poll(0u);
+	pool.poll(0u);
 }
 
 /* =============== the chosen owning-delegate boundary =================== */
@@ -699,7 +699,7 @@ void testDelegateBindingModes()
 		check(endpoint.send(message) == cobs::SendResult::Sent && marker == 0x5A &&
 		          captured == cobs_test::frame(payload, Engine::length_size),
 		      "the endpoint still owns and invokes the move-only lambda");
-		endpoint.poll();
+		endpoint.poll(0u);
 		check(!endpoint.tx_active(), "the owned busy query remains callable too");
 	}
 
@@ -721,7 +721,7 @@ void testDelegateBindingModes()
 		          transport.sent.back() == cobs_test::frame(payload, Engine::length_size),
 		      "the endpoint invokes the bound transport methods");
 		transport.finish();
-		endpoint.poll();
+		endpoint.poll(0u);
 	}
 
 	{	// borrow() keeps observing the original callable objects, not copies.
@@ -747,7 +747,7 @@ void testDelegateBindingModes()
 		check(endpoint.send(message) == cobs::SendResult::Sent,
 		      "the same borrowed pair starts the transfer once external state changes");
 		transport.finish();
-		endpoint.poll();
+		endpoint.poll(0u);
 	}
 }
 

@@ -116,7 +116,7 @@ bool sendsAs(Engine& endpoint, CaptureTransport& transport,
 	const bool matches = transport.accepted.size() == before + 1u &&
 		transport.accepted.back() == cobs_test::frame(expected, Engine::length_size);
 	transport.finish();
-	endpoint.poll();
+	endpoint.poll(0u);
 	return matches && !endpoint.tx_active();
 }
 
@@ -653,7 +653,7 @@ void testCoordinatorEncoding()
 		      transport.accepted.back() == cobs_test::frame(expected, Engine::length_size),
 		      "and both attempts use one byte-identical canonical frame");
 		transport.finish();
-		endpoint.poll();
+		endpoint.poll(0u);
 	}
 	check(endpoint.storage().tx_available() == kTxBlocks,
 	      "every coordinated message released its block");

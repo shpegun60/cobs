@@ -68,7 +68,7 @@ application payload
   -> in-place [length + CRC + COBS + delimiter]
   -> Uart::send()
   -> DMA borrows the same block
-  -> Endpoint::poll() releases it after UART becomes idle
+  -> Endpoint::poll(now_ms) releases it after UART becomes idle
 ```
 
 ## Highlights
@@ -239,7 +239,7 @@ if (!message || !message.append_bytes(payload)) {
 
 switch (endpoint.send(message)) {
 case cobs::SendResult::Sent:
-    // message is now empty; Endpoint owns the block until poll() releases it.
+    // message is now empty; Endpoint owns the block until poll(now_ms) releases it.
     break;
 case cobs::SendResult::Busy:
     // message is unchanged and still belongs to the caller; retry later.
@@ -297,11 +297,11 @@ trailer through explicit `store/load` operations. The default CRC16 policy is
 low-byte-first. COBS code bytes and Modbus address/function are single-byte
 fields. Payload append calls cannot reorder any library-owned field.
 
-Call `poll()` regularly. It returns the active TX block to storage after the
+Call `poll(now_ms)` regularly with the application's millisecond tick (`HAL_GetTick()` on STM32; COBS does not use the time yet, RTU's framing policy does). It returns the active TX block to storage after the
 transport's busy query becomes false:
 
 ```cpp
-endpoint.poll();
+endpoint.poll(HAL_GetTick());
 ```
 
 ### Receive bytes and packets
@@ -412,7 +412,7 @@ it should remain zero in a correct integration.
 | `read_native` / `read_be` / `read_le` / `read_bytes` | parse packet data with an application-owned cursor and a strong failure guarantee |
 | `make_message(hint)` | create an empty exclusive TX message and optionally reserve payload capacity |
 | `send(message)` | start a frame or return an explicit retry/error result |
-| `tx_active()` / `poll()` | observe and reclaim the one transport-borrowed TX block |
+| `tx_active()` / `poll(now_ms)` | observe and reclaim the one transport-borrowed TX block; the tick feeds slow-path supervision (RTU stale frames) |
 | `stats()` / `storage()` | read protocol counters and storage-specific diagnostics |
 
 ## Modbus RTU quick start
@@ -730,7 +730,7 @@ public:
     void proceed(uint32_t now_ms) noexcept
     {
         uart_.proceed(now_ms); // invokes on_rx/on_gap in stream order
-        link_.poll();          // releases a completed UART TX block
+        link_.poll(HAL_GetTick()); // releases a completed UART TX block
 
         while (auto packet = link_.pop_packet()) {
             handle_packet(packet.data());

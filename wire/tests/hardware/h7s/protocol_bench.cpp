@@ -141,7 +141,7 @@ bool echo(Link& link, Borrow& borrow, const Bytes input, const Bytes body,
         std::memcmp(borrow.last.data(), input.data(), input.size()) == 0;
     const uint32_t releaseStart = tick();
     borrow.complete();
-    link.poll();
+    link.poll(0u);
     packet = {};
     cycles.release += tick() - releaseStart;
     return same && !link.tx_active() && !link.has_packet() &&
@@ -164,12 +164,12 @@ void runCase(const std::size_t size, const uint32_t pattern, const std::size_t c
     makePayload(size, pattern);
     const Bytes body{payload.data(), size};
     if (!sendBody<IsCobs>(link, body) || borrow.last.size() > candidate.size()) {
-        borrow.complete(); link.poll(); ++failures; return;
+        borrow.complete(); link.poll(0u); ++failures; return;
     }
     const std::size_t wireSize = borrow.last.size();
     std::memcpy(candidate.data(), borrow.last.data(), wireSize);
     borrow.complete();
-    link.poll();
+    link.poll(0u);
     const Bytes input{candidate.data(), wireSize};
     char line[160];
     (void)std::snprintf(line, sizeof(line), "G,%u,%u,%lu,%lu,%lu,%lu,%lu,",

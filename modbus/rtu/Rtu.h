@@ -267,12 +267,31 @@ public:
 		return m_active_tx.memory != nullptr;
 	}
 
-	void poll() noexcept
+	// The slow-path service call, from the same loop as the UART driver's
+	// proceed(now_ms): reclaims the transmitted block once the transport lets
+	// go and, with a framing policy, runs the stale-frame watchdog — a frame
+	// in flight that has not grown for framing::stale_frame_ms is dropped
+	// (Framing.h). `now_ms` is any monotonic millisecond tick, HAL_GetTick()
+	// on STM32; the default endpoint has nothing to time and ignores it, but
+	// every endpoint takes it so the application's loop is the same for both.
+	void poll(const uint32_t now_ms) noexcept
 	{
 		if (m_active_tx.memory != nullptr && !m_transport.busy()) {
 			m_storage.release_tx(m_active_tx);
 			m_active_tx = {};
 		}
+		if constexpr (framed) {
+			m_receiver.audit(now_ms);
+		} else {
+			(void)now_ms;
+		}
+	}
+
+	// Whether a frame is in flight in the stream receiver (framing policy only).
+	[[nodiscard]] bool assembling() const noexcept
+		requires framed
+	{
+		return m_receiver.assembling();
 	}
 
 	[[nodiscard]] modbus::rtu::Stats stats() const noexcept

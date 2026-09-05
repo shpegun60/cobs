@@ -137,7 +137,7 @@ void exercise()
 			packet.reset();
 			check(state.live == 2u, "shared packet retains RX allocation");
 			capture.borrowed = false;
-			endpoint.poll();
+			endpoint.poll(0u);
 			check(state.live == 1u && state.errors == 0u, "transport returns original large descriptor");
 			held.reset();
 		}
@@ -157,7 +157,7 @@ void exercise()
 			auto packet = endpoint.pop_packet();
 			check(packet && std::ranges::equal(packet.data(), payload), "growth preserves logical bytes at new offset");
 			capture.borrowed = false;
-			endpoint.poll();
+			endpoint.poll(0u);
 		}
 	}
 	check(state.live == 0u && state.acquired == state.released && state.errors == 0u,

@@ -51,6 +51,9 @@ struct FramingStats final {
 	uint32_t resyncs = 0;
 	// send(): message data disagrees with its function's layout.
 	uint32_t tx_layout_rejected = 0;
+	// poll(now_ms): a frame in flight that did not grow for
+	// framing::stale_frame_ms was dropped and its block returned.
+	uint32_t stale_frames = 0;
 };
 
 } // namespace modbus::rtu

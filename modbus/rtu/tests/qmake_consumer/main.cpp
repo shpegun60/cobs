@@ -76,7 +76,7 @@ bool exercise()
 	}
 
 	loopback.finish();
-	link.poll();
+	link.poll(0u);
 	const auto stats = link.stats();
 	return !link.tx_active() && link.unbind() &&
 	       stats.rx.frames_received == 1u && stats.tx.frames_sent == 1u;
@@ -140,8 +140,8 @@ bool exercise_framed()
 	}
 	client_wire.finish();
 	server_wire.finish();
-	client.poll();
-	server.poll();
+	client.poll(0u);
+	server.poll(0u);
 	return server.stats().rx.frames_received == 1u && client.stats().rx.frames_received == 1u;
 }
 

@@ -94,7 +94,7 @@ concept SharedEndpoint =
 		endpoint.send(message);
 		requires SharedSendResult<decltype(endpoint.send(message))>;
 		{ endpoint.tx_active() } -> std::same_as<bool>;
-		{ endpoint.poll() } -> std::same_as<void>;
+		{ endpoint.poll(uint32_t{}) } -> std::same_as<void>;
 		endpoint.stats();
 		endpoint.storage();
 	};

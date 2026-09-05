@@ -504,7 +504,7 @@ void pollLink() noexcept
 		return;
 	}
 	const uint32_t started = DWT->CYCCNT;
-	s_link.poll();
+	s_link.poll(HAL_GetTick());
 	bench_counter_add(&s_cobs_tx_release, DWT->CYCCNT - started);
 }
 

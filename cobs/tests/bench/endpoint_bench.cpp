@@ -134,7 +134,7 @@ void bench_tx(const std::vector<std::uint8_t>& body,
 				endpoint.send(message) != cobs::SendResult::Sent) {
 				std::abort();
 			}
-			endpoint.poll();
+			endpoint.poll(0u);
 		}
 		return transport.checksum;
 	});

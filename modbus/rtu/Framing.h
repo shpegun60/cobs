@@ -61,6 +61,18 @@
  * is a precondition, not a timing implementation of t1.5/t3.5. The one error
  * that keeps synchronization is an RX allocation failure: the length is known
  * by then, so exactly that frame is skipped.
+ *
+ * Stale frames. A frame that was started and never finished (the sender died
+ * or the line broke mid-frame) would otherwise wait for its remaining bytes
+ * forever, holding an RX block and gluing itself to the next frame. The
+ * endpoint's poll(now_ms) watches the frame in flight the way the UART
+ * driver watches a transmission: not by predicting when it should be done
+ * but by asking whether it has grown since the last poll. A frame that has
+ * not grown for stale_frame_ms is dropped (framing_stats().stale_frames).
+ * Five milliseconds is universal on purpose: a legitimate split by a serial
+ * bridge is tens of microseconds, t3.5 at 9600 baud is 4 ms, and a pause
+ * longer than that inside a frame is a protocol violation from any peer.
+ * consume() is untouched by this; the hot path records nothing.
  */
 
 #ifndef MODBUS_RTU_FRAMING_H_
@@ -77,6 +89,9 @@ namespace modbus::rtu::framing {
 
 // Which side of the exchange an endpoint RECEIVES. It transmits the opposite.
 enum class Direction : uint8_t { Request, Response };
+
+// A frame in flight that has not grown for this long is dropped by poll(now_ms).
+inline constexpr uint32_t stale_frame_ms = 5u;
 
 [[nodiscard]] constexpr Direction opposite(const Direction direction) noexcept
 {

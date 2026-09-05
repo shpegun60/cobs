@@ -343,7 +343,7 @@ int main()
 		check(server.send(response) == modbus::SendResult::Sent, "a consistent response is sent");
 		check(equal(transport.frame, kReadResp), "byte-identical to the reference frame");
 		transport.busy_state = false;
-		server.poll();
+		server.poll(0u);
 
 		Server::Message wrong = server.make_message(0x11u, 0x03u);
 		check(wrong.append_be<uint8_t>(6u) && wrong.append_be<uint16_t>(0x022Bu), "count 6, two bytes of data");
@@ -361,19 +361,19 @@ int main()
 		      "the refused message is still usable and is sent once complete");
 		check(equal(transport.frame, kCoilReq), "write single coil echo");
 		transport.busy_state = false;
-		server.poll();
+		server.poll(0u);
 
 		Server::Message exception = server.make_message(0x11u, 0x83u);
 		check(exception.append_be<uint8_t>(0x02u) && server.send(exception) == modbus::SendResult::Sent &&
 		      equal(transport.frame, kExceptionResp), "exception responses are fixed(1)");
 		transport.busy_state = false;
-		server.poll();
+		server.poll(0u);
 
 		Server::Message encapsulated = server.make_message(0x11u, 0x2Bu);
 		check(encapsulated.append_be<uint32_t>(0x0E010000u) && server.send(encapsulated) == modbus::SendResult::Sent,
 		      "a function the policy has no layout for is sent as the application built it");
 		transport.busy_state = false;
-		server.poll();
+		server.poll(0u);
 		check(server.framing_stats().tx_layout_rejected == 2u, "no further rejections");
 	}
 
@@ -401,7 +401,7 @@ int main()
 			      "the peer frames it from the prefix and data() shows [N][body]");
 		}
 		wire.busy_state = false;
-		device.poll();
+		device.poll(0u);
 
 		// The hazard the prefix removes: nobody can forget the length word,
 		// but a habitual extra one is just body and is counted as such.
@@ -411,7 +411,7 @@ int main()
 		      wire.frame[2] == 0u && wire.frame[3] == 7u,
 		      "an application-written length becomes two body bytes; the prefix says 7");
 		wire.busy_state = false;
-		device.poll();
+		device.poll(0u);
 
 		Device::Message empty = device.make_message(0x11u, 0x41u);
 		check(device.send(empty) == modbus::SendResult::Sent && wire.frame.size() == 6u &&
@@ -420,7 +420,7 @@ int main()
 		host.consume(wire.frame);
 		check(host.pop_packet().size() == 2u, "the peer sees exactly the prefix");
 		wire.busy_state = false;
-		device.poll();
+		device.poll(0u);
 
 		// Growth keeps the prefix.
 		Device::Message grown = device.make_message(0x11u, 0x41u, 2u);
@@ -432,7 +432,7 @@ int main()
 		host.consume(std::span<const uint8_t>{wire.frame}.subspan(3u));
 		check(host.pop_packet().size() == 202u, "a split prefix frames correctly");
 		wire.busy_state = false;
-		device.poll();
+		device.poll(0u);
 
 		// A retry after a transport failure neither rewrites the prefix nor
 		// re-checks: the finalized bytes are resent as they were.
@@ -457,6 +457,67 @@ int main()
 		check(retry_device.send(retried) == modbus::SendResult::Sent && refusing.frame[3] == 5u, "retry resends the same frame");
 
 		check(device.storage().tx_available() == 1u && host.storage().rx_available() == 4u, "no leaks");
+	}
+
+	group("StaleFrameWatchdog");
+	{
+		static_assert(framing::stale_frame_ms == 5u, "one universal limit, documented as such");
+		Server server;
+		const std::span<const uint8_t> write{kWriteReq};
+		// A half frame, then silence: the first poll only starts watching.
+		server.consume(write.first(7u));
+		check(server.assembling() && server.storage().rx_available() == 3u, "half a frame holds a block");
+		server.poll(1000u);
+		server.poll(1004u);
+		check(server.assembling() && server.framing_stats().stale_frames == 0u,
+		      "4 ms of silence is not stale");
+		server.poll(1005u);
+		check(!server.assembling() && server.storage().rx_available() == 4u &&
+		      server.framing_stats().stale_frames == 1u,
+		      "5 ms of silence drops the frame and returns its block");
+		server.consume(kReadReq);
+		check(drain(server).size() == 1u, "the next frame is delivered whole");
+		// Without the watchdog the orphan half would swallow the next frame.
+		{
+			Server naive;
+			naive.consume(write.first(7u));
+			naive.consume(kReadReq);  // no poll in between: nothing could have dropped the half
+			check(!naive.has_packet() && naive.stats().rx.crc_errors == 1u,
+			      "control: an orphan half plus a new frame is one CRC failure and a lost frame");
+		}
+		// Progress restarts the clock: a frame that keeps growing is never stale.
+		server.consume(write.first(3u));
+		server.poll(2000u);
+		server.consume(write.subspan(3u, 3u));
+		server.poll(2004u);                // grew since 2000: watched from 2004
+		server.poll(2008u);                // 4 ms without growth
+		check(server.assembling() && server.framing_stats().stale_frames == 1u, "growth restarted the clock");
+		server.consume(write.subspan(6u));
+		check(drain(server).size() == 1u, "the slow frame completes normally");
+		// Legitimate bridge splits (tens of microseconds) never reach the limit.
+		server.consume(write.first(9u));
+		server.poll(3000u);
+		server.consume(write.subspan(9u));
+		server.poll(3000u);
+		check(drain(server).size() == 1u && server.framing_stats().stale_frames == 1u, "a fast split is not stale");
+		// Wrap-around of the millisecond count is harmless.
+		server.consume(write.first(5u));
+		server.poll(0xFFFFFFFEu);
+		server.poll(0xFFFFFFFFu);
+		check(server.assembling(), "1 ms before the wrap: alive");
+		server.poll(3u);                   // 5 ms after 0xFFFFFFFE
+		check(!server.assembling() && server.framing_stats().stale_frames == 2u, "stale across the wrap");
+		// A stale skip (allocation failure, then silence) is dropped too.
+		using Tiny = modbus::rtu::Endpoint<wire::Pool<1, 1>, modbus::rtu::Format<>, framing::Standard<Direction::Request>>;
+		Tiny tiny;
+		tiny.consume(kReadReq);
+		const Tiny::Packet held = tiny.pop_packet();
+		tiny.consume(write.first(8u));     // header known, no block: skipping
+		check(tiny.assembling() && tiny.framing_stats().skipped_frames == 1u, "skipping counts as in flight");
+		tiny.poll(10u);
+		tiny.poll(15u);
+		check(!tiny.assembling() && tiny.framing_stats().stale_frames == 1u, "a stale skip is abandoned");
+		check(server.storage().rx_available() == 4u, "no leaks");
 	}
 
 	group("HeaderSplitAtEveryPosition");

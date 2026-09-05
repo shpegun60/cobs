@@ -35,7 +35,7 @@ Endpoint::make_message()
 Endpoint::send()
                -> in-place encoder
                -> sender delegate
-Endpoint::poll()
+Endpoint::poll(now_ms)
                -> busy-query delegate
                -> Storage::release_tx()
 ```
@@ -80,7 +80,7 @@ The stable application vocabulary is:
 | `cobs::read_native/read_be/read_le/read_bytes` | parses immutable packet data with a caller-owned cursor |
 | `Endpoint::make_message(hint)` | creates an empty TX builder |
 | `Endpoint::send(message)` | attempts to transfer the message block |
-| `Endpoint::poll()` | reclaims an accepted TX block after transport release |
+| `Endpoint::poll(now_ms)` | reclaims an accepted TX block after transport release; takes the application's millisecond tick like the UART driver's `proceed(now_ms)` and RTU's `poll(now_ms)`, unused by COBS today |
 | `Endpoint::stats()` | returns combined RX/TX counters by value |
 
 The following short example is application-shaped: it names no decoder,
@@ -339,7 +339,7 @@ a failed start therefore retains the exact encoded bytes for retry.
 
 On `Sent`, ownership moves from `Message` to `Endpoint::m_activeTx`. The
 transport borrows the returned byte span but never owns or frees it.
-`poll()` asks the paired busy delegate only while an active block exists.
+`poll(now_ms)` asks the paired busy delegate only while an active block exists.
 When it reports false, the endpoint returns the complete `TxBlock` descriptor
 to storage.
 
@@ -347,7 +347,7 @@ to storage.
 buffer. It is not proof of delivery. Hardware completion/error reporting
 belongs to the transport.
 
-The block is released from `poll()` rather than an ISR callback. Storage is
+The block is released from `poll(now_ms)` rather than an ISR callback. Storage is
 therefore not required to be interrupt-safe merely to reclaim TX memory.
 
 ## 7. Transport binding and delegate lifetime
@@ -377,7 +377,7 @@ The following are preconditions, not optional advice:
 1. An endpoint outlives every `Packet` and `Message` created from it. Both may
    later call its embedded storage object.
 2. An endpoint is not destroyed while `tx_active()` is true or while the
-   transport still borrows its frame. Drain with `poll()` first.
+   transport still borrows its frame. Drain with `poll(now_ms)` first.
 3. A message is sent only through the exact endpoint instance that created it.
    Two endpoints with the same `StorageT` are still different owners;
    `send()` detects the mismatch and returns `Invalid`.
@@ -389,7 +389,7 @@ The following are preconditions, not optional advice:
    moves decoding into discard-until-delimiter state even if it appeared to
    occur between known frames.
 7. Sender and busy-query delegate targets do not throw and do not re-enter
-   `bind()`, `unbind()`, `send()`, or `poll()` on the same endpoint. They run
+   `bind()`, `unbind()`, `send()`, or `poll(now_ms)` on the same endpoint. They run
    synchronously inside `noexcept` methods; throwing terminates, while
    re-entry can interrupt the TX ownership hand-off.
 8. A sender returns `true` only after borrowing the supplied span, and keeps

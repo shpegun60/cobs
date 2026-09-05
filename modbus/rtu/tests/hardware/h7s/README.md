@@ -132,7 +132,7 @@ keeps its layout, so records of either version stay verifiable.
 | `stress` | repeated full-duplex standard/custom requests and exact echoes over every important size, with DWT/IRQ accounting and zero unexpected failures |
 | `paced` | same precomputed traffic at a target average 300 frames/s, with achieved cadence and DWT/IRQ accounting |
 | `crc_benchmark` | eight equal input lengths, nine samples of eight calls, live DWT cycles and an independent PC checksum oracle |
-| `framing` | records, without asserting, whether one frame in one write, one frame split into two writes 5 ms apart, and two frames in one write come back exactly, three repeats at 8, 32, 128 and maximum body bytes; the default endpoint is expected to lose the split and glued shapes |
+| `framing` | records, without asserting, whether one frame in one write, one frame split into two writes 1 ms apart, two frames in one write, and an orphan half followed 50 ms later by a whole different frame come back exactly, three repeats at 8, 32, 128 and maximum body bytes; the default endpoint is expected to lose the split and glued shapes, and only the framed endpoint's stale-frame watchdog (`poll(now_ms)`) lets the whole frame survive the orphan (the earlier records used a 5 ms split pause, which the watchdog now correctly treats as a dead frame) |
 
 `all` runs vectors, faults, selftest, pool, crc_benchmark, stress and paced;
 `framing` is run explicitly by `run_framing.py`.
@@ -383,9 +383,40 @@ counters and harmless: the RX callback ran 33, 74 and 58 times for the 32
 frames of the vector suite at 3M, 6M and 10M. This is the first RTU result
 above 1M on this bridge that is a complete-load result rather than a probe.
 
-What it does not show: CPU cost of the framed endpoint (no paced or stress
-row was taken; the like-for-like CPU comparison with COBS remains the
-`framing::None` record in `doc/PROTOCOL_COMPARISON.md`), standard-function
-framing (the harness protocol is length-prefixed on every function; the
-standard table is verified on the host against the specification's worked
-examples), and Modbus t1.5/t3.5 timing, which the policy does not implement.
+What it does not show: standard-function framing (the harness protocol is
+length-prefixed on every function; the standard table is verified on the host
+against the specification's worked examples) and Modbus t1.5/t3.5 timing,
+which the policy does not implement. The framed endpoint's CPU was measured
+afterwards next to COBS and the default endpoint, at 1M and up to 10M
+(`doc/PROTOCOL_COMPARISON.md`).
+
+### Stale frames: an orphan half must not take the next frame with it
+
+A frame whose sender stops mid-frame would otherwise stay in flight in the
+framed endpoint, holding its RX block and gluing itself to the next frame,
+which then fails CRC and is lost with it. `poll(now_ms)` therefore carries a
+progress watchdog: a frame that has not grown for `framing::stale_frame_ms`
+(5 ms) is dropped and counted in `framing_stats().stale_frames`. The
+`framing` suite gained a fourth shape for it — the first half of a frame,
+50 ms of silence, then a whole different frame — and the split shape's pause
+was set to 1 ms, a bridge-like split well inside the limit (with the earlier
+5 ms pause the watchdog correctly treats the half as dead). Both endpoints
+were rerun at 1M
+([record](results_framing_stale_2026-09-05.jsonl), `verify_framing.py`):
+
+### RTU frame boundaries on the H7S ST-Link bridge: default burst framing versus the framing policy
+
+| Baud | Endpoint | single-write echoes | split-write echoes | two frames in one write | orphan half then a whole frame | smoke | vectors suite |
+|---:|---|---:|---:|---:|---:|---|---|
+| 1000000 | framing::None (burst candidate) | 12/12 | 0/12 | 2/12 | 12/12 | passed | passed |
+| 1000000 | framing policy (length-prefixed) | 12/12 | 12/12 | 12/12 | 12/12 | passed | passed |
+
+The framed endpoint echoed the whole frame after every orphan (12/12) with
+zero CRC errors; without the watchdog the same firmware echoed 0/12 there,
+each orphan costing one CRC failure and the frame behind it (that run was
+repeated with the fixed harness and is not kept). The default endpoint is
+unaffected by orphans by construction: the half is a separate burst that
+fails CRC on its own. The harness calls `poll(HAL_GetTick())` on every loop
+iteration and charges only a call that actually released a TX block to the
+`rtu_tx_release` counter, so that counter now includes the tick read and the
+watchdog's audit (about 110-170 cycles per release instead of about 80).
