@@ -5,6 +5,11 @@ SPDX-License-Identifier: MIT
 
 # NUCLEO-H7S3L8 Modbus RTU + UART hardware verification
 
+The [direct comparison with COBS](../../../../../doc/PROTOCOL_COMPARISON.md)
+has matched endpoint-only DWT measurements and equal-work UART results.
+Its 3M/6M/10M probes retain incomplete-ADU failures separately from valid
+CPU comparisons; no framing logic or production code was changed.
+
 Current shared-storage validation: [127 records](results_shared_storage_2026-09-05.jsonl)
 cover all nine policies at 115200 and 1M, with exact image/source identities,
 functional/fault/pool tests, CRC samples, stress and paced traffic.

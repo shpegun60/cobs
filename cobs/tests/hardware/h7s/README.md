@@ -7,6 +7,10 @@ SPDX-License-Identifier: MIT
 
 ## Matched performance comparison through 10M
 
+See also the [direct COBS/RTU comparison](../../../../doc/PROTOCOL_COMPARISON.md):
+identical useful data and CRC policies, endpoint-only live cycles, paired
+UART cadence, and separate high-baud physical-framing probes.
+
 The separate [matched-load benchmark](../../../../doc/COBS_PERFORMANCE.md)
 uses the unchanged v2 firmware to compare NoCrc / CRC16 Bitwise / Table with
 identical payload corpora, 253/H1 and 1024/H2 geometries, short/long/mixed

@@ -27,6 +27,8 @@ Current migration and its acceptance criteria: [shared policies plan](doc/SHARED
 Fresh verification: [shared policies validation](doc/SHARED_POLICIES_VALIDATION.md).
 Matched live performance: [COBS NoCrc / CRC16 Bitwise / Table through 10M](doc/COBS_PERFORMANCE.md)
 (300 measurements; actual wire throughput alongside instrumented CPU work).
+Direct comparison: [COBS versus Modbus RTU](doc/PROTOCOL_COMPARISON.md)
+(matched endpoint cycles, paired UART traffic, and explicit high-baud framing limits).
 
 ## What is in this repository?
 
