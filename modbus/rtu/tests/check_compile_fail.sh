@@ -53,5 +53,6 @@ expect_failure "$CASES/crc_oversize.cpp" \
 expect_failure "$CASES/framing_none_consume.cpp" "consume" "constraints not satisfied"
 expect_failure "$CASES/framing_bad_policy.cpp" \
 	"Endpoint framer must be framing::None or satisfy framing::Policy"
+expect_failure "$CASES/adapter_needs_rtu_endpoint.cpp" \n	"UartAdapter serves a modbus::rtu::Endpoint"
 
 echo "$count Modbus compile-fail contracts rejected with expected diagnostics"

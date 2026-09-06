@@ -31,6 +31,7 @@
 #include "Uart.h"
 
 #include "modbus/rtu/Rtu.h"
+#include "modbus/rtu/UartAdapter.h"
 #include "uart_bench.h"
 #include "usart.h"
 
@@ -634,18 +635,15 @@ void process_one_packet() noexcept
 	bench_counter_add(&s_packet_process, DWT->CYCCNT - started);
 }
 
-void poll_link() noexcept
+void poll_link(const uint32_t now) noexcept
 {
-	// poll(now) releases a finished transmission and, with the framer, runs the
-	// stale-frame watchdog, so it runs every iteration. Only a call that
-	// actually released a block is charged to the release counter: the peer
-	// requires exactly one such call per released frame, and deciding from a
-	// separate tx_busy() read would race with the transmission completing
-	// between that read and poll()'s own. The watchdog's cost with nothing in
-	// flight is a few cycles and stays in the uninstrumented idle loop.
+	// Only a call that actually released a block is charged to the release
+	// counter: the peer requires exactly one such call per released frame, and
+	// deciding from a separate tx_busy() read would race with the transmission
+	// completing between that read and poll()'s own.
 	const bool was_active = s_link.tx_active();
 	const uint32_t started = DWT->CYCCNT;
-	s_link.poll(HAL_GetTick());
+	s_link.poll(now);
 	if (was_active && !s_link.tx_active()) {
 		bench_counter_add(&s_rtu_tx_release, DWT->CYCCNT - started);
 	}
@@ -674,26 +672,18 @@ void apply_pending_action(const uint32_t now) noexcept
 	}
 }
 
-struct Transport final {
-	[[nodiscard]] bool send(
-			const std::span<const uint8_t> frame) noexcept
-	{
-		return s_uart.send(frame);
-	}
-
-	[[nodiscard]] bool busy() const noexcept { return s_uart.tx_busy(); }
-};
-
-Transport s_transport;
+// The production integration object: RX/gap routing, the endpoint's transport
+// binding and, with the framer, the stale-frame rule. The harness lets it
+// bind everything, then re-points the RX handler at a wrapper that measures
+// the adapter's on_rx() (consume()/receive_adu() plus the deadline
+// arithmetic) — that is the rtu_receive counter.
+using Adapter = modbus::rtu::UartAdapter<Serial, Link>;
+Adapter s_adapter{s_uart, s_link, MODBUS_HW_BAUD};
 
 void on_rx(const std::span<const uint8_t> bytes) noexcept
 {
 	const uint32_t started = DWT->CYCCNT;
-#if MODBUS_HW_FRAMER
-	s_link.consume(bytes);
-#else
-	s_link.receive_adu(bytes);
-#endif
+	s_adapter.on_rx(bytes);
 	bench_counter_add(&s_rtu_receive, DWT->CYCCNT - started);
 }
 
@@ -717,25 +707,25 @@ extern "C" void bench_init(void)
 		Error_Handler();
 	}
 
+	if (!s_adapter.bind() || !s_uart.init(&huart3)) {
+		Error_Handler();
+	}
+	// After bind(): the measuring wrapper replaces the adapter's direct RX
+	// binding; the gap handler and the transport binding stay the adapter's.
 	s_uart.setRxHandler([](const std::span<const uint8_t> bytes) noexcept {
 		on_rx(bytes);
 	});
-	s_uart.setRxGapHandler([]() noexcept { s_link.notify_gap(); });
-
-	if (!s_link.bind(
-			Link::Sender{tiny::bind<&Transport::send>(s_transport)},
-			Link::BusyQuery{tiny::bind<&Transport::busy>(s_transport)}) ||
-			!s_uart.init(&huart3)) {
-		Error_Handler();
-	}
 	reset_metrics();
 }
 
 extern "C" void bench_loop(void)
 {
+	// The adapter's proceed() is these three calls; the harness composes them
+	// itself to keep its DWT scopes around the driver and the release.
 	const uint32_t now = HAL_GetTick();
+	s_adapter.service(now);
 	s_uart.proceed(now);
-	poll_link();
+	poll_link(now);
 	apply_pending_action(now);
 
 	if (s_hold_active && deadline_pending(now, s_hold_until)) {

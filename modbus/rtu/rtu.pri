@@ -27,6 +27,7 @@ isEmpty(MODBUS_RTU_PRI_INCLUDED) {
         $$MODBUS_RTU_DIR/Framing.h \
         $$MODBUS_RTU_DIR/Stats.h \
         $$MODBUS_RTU_DIR/Rtu.h \
+        $$MODBUS_RTU_DIR/UartAdapter.h \
         $$MODBUS_RTU_DIR/detail/Message.h \
         $$MODBUS_RTU_DIR/detail/Packet.h \
         $$MODBUS_RTU_DIR/detail/Receiver.h \

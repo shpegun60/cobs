@@ -268,22 +268,18 @@ public:
 	}
 
 	// The slow-path service call, from the same loop as the UART driver's
-	// proceed(now_ms): reclaims the transmitted block once the transport lets
-	// go and, with a framing policy, runs the stale-frame watchdog — a frame
-	// in flight that has not grown for framing::stale_frame_ms is dropped
-	// (Framing.h). `now_ms` is any monotonic millisecond tick, HAL_GetTick()
-	// on STM32; the default endpoint has nothing to time and ignores it, but
-	// every endpoint takes it so the application's loop is the same for both.
+	// proceed(now_ms) — or through UartAdapter::proceed(now_ms), which calls
+	// both. Reclaims the transmitted block once the transport lets go. The
+	// tick is the application's monotonic millisecond count (HAL_GetTick() on
+	// STM32); the endpoint keeps no clock and does not use it today — every
+	// layer of the slow path takes the same argument so the loop is one call
+	// per layer and a future supervision step needs no API change.
 	void poll(const uint32_t now_ms) noexcept
 	{
+		(void)now_ms;
 		if (m_active_tx.memory != nullptr && !m_transport.busy()) {
 			m_storage.release_tx(m_active_tx);
 			m_active_tx = {};
-		}
-		if constexpr (framed) {
-			m_receiver.audit(now_ms);
-		} else {
-			(void)now_ms;
 		}
 	}
 
@@ -292,6 +288,16 @@ public:
 		requires framed
 	{
 		return m_receiver.assembling();
+	}
+
+	// Drops the frame in flight, if any (framing policy only): its RX block goes
+	// back and the next byte starts a new frame; counted in
+	// framing_stats().stale_frames. The transport adapter calls this when a
+	// frame stopped arriving — the endpoint holds no clock of its own.
+	void expire_incomplete() noexcept
+		requires framed
+	{
+		m_receiver.expire_incomplete();
 	}
 
 	[[nodiscard]] modbus::rtu::Stats stats() const noexcept

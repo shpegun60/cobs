@@ -1,0 +1,77 @@
+{
+  "backup_bytes": 65536,
+  "backup_sha256": "a5903024dba85fab5121150ca8ad13482f97384aa450aab67413881991fb9456",
+  "bauds": [
+    1000000
+  ],
+  "completed": true,
+  "images": [
+    {
+      "baud": 1000000,
+      "binary_sha256": "f9fe69083306619b13863d1412f53d6d01846a33e8f68f78e53671faa87350cc",
+      "elf_sha256": "64a061714c12ad1989f85c93d6b1b255437f718a12326f4b8f066ca5791125c4",
+      "flash_attempts": 1,
+      "mode": 0,
+      "tag": "rtu-bitwise-1000000-framer0"
+    },
+    {
+      "baud": 1000000,
+      "binary_sha256": "3341a1b994cccd74fe9b5be937d7466e119f171e78bc7e47bfa9b5ca03764187",
+      "elf_sha256": "114598fd39b68a1ffedca9609279cc0047833eee73b38950f4de978ddcd3534d",
+      "flash_attempts": 1,
+      "mode": 1,
+      "tag": "rtu-bitwise-1000000-framer1"
+    }
+  ],
+  "modes": [
+    0,
+    1
+  ],
+  "policy": "bitwise",
+  "port": "COM6",
+  "restored_and_verified": true,
+  "results_sha256": "f0d472df0c8794e3fdcbcb5ee713cebccbc79e5d13350187f4d4d182dc7f8490",
+  "schema": 1,
+  "serial": "002A001F3033510135393935",
+  "session": "C:\\Users\\admin\\Documents\\my_workspace\\Qt\\COBS\\stm32_cube_test\\h7s_cobs_test\\out\\rtu-framing-20260906T074756Z",
+  "source_base_commit": "552dfc347e43d0a66ae115f09d499cb8c79c60d8",
+  "started": "20260906T074756Z",
+  "suites": [
+    {
+      "baud": 1000000,
+      "exit_code": 0,
+      "mode": 0,
+      "suite": "smoke"
+    },
+    {
+      "baud": 1000000,
+      "exit_code": 0,
+      "mode": 0,
+      "suite": "framing"
+    },
+    {
+      "baud": 1000000,
+      "exit_code": 0,
+      "mode": 0,
+      "suite": "vectors"
+    },
+    {
+      "baud": 1000000,
+      "exit_code": 0,
+      "mode": 1,
+      "suite": "smoke"
+    },
+    {
+      "baud": 1000000,
+      "exit_code": 0,
+      "mode": 1,
+      "suite": "framing"
+    },
+    {
+      "baud": 1000000,
+      "exit_code": 0,
+      "mode": 1,
+      "suite": "vectors"
+    }
+  ]
+}

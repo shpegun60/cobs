@@ -174,8 +174,8 @@ Empty -> Building -> Finalized -> Sent
 - `Sent` moves the block into Endpoint;
 - `Busy`, `Unbound`, `Failed` and `Invalid` do not steal caller ownership;
 - `poll(now_ms)` releases the sent block only after the bound busy query is
-  false and, with a framing policy, runs the stale-frame watchdog (§8); the
-  tick is the same the UART driver's `proceed(now_ms)` takes.
+  false; the tick is the same the UART driver's `proceed(now_ms)` takes and
+  is not used by the endpoint today (§8: the endpoint holds no clock).
 
 Standard Modbus multi-byte function fields use `append_be`. `append_native`
 and `append_le` are explicit options for application/vendor-defined data; they
@@ -398,16 +398,14 @@ else from it:
   frame.
 - **Stale frames.** A frame whose sender died mid-frame would otherwise wait
   for its remaining bytes forever, holding an RX block and gluing itself to
-  the next frame. `poll(now_ms)` watches the frame in flight the way the UART
-  driver watches a transmission: it does not predict when the frame should be
-  complete, it asks whether the frame has grown since the last poll, and
-  drops one that has not grown for `framing::stale_frame_ms`
-  (`framing_stats().stale_frames`, block returned). The limit is one
-  universal constant, 5 ms: legitimate bridge splits are tens of
-  microseconds, t3.5 at 9600 baud is 4 ms, and a longer pause inside a frame
-  is a protocol violation from any peer. `consume()` records no time; the
-  resolution is the poll period plus the tick. Every endpoint takes the tick
-  so the application's loop is the same with or without a framing policy.
+  the next frame. The endpoint cannot decide when such a frame is dead: with
+  DMA reception the software sees silence for a whole chunk's transfer time
+  while the line is busy (a 256-byte chunk is 22 ms at 115200 and 294 ms at
+  9600), so any limit needs the transport's chunk geometry and whether the
+  line is still busy. The endpoint therefore holds no clock and exposes
+  `assembling()` and `expire_incomplete()` (block returned,
+  `framing_stats().stale_frames`); `UartAdapter` (§8a) owns the rule for the
+  STM32 driver. `consume()` records no time.
 - **`receive_adu()` stays available** and, under a policy, also refuses a
   candidate whose function has no layout (`unsupported_function`) or whose
   length disagrees with it (`length_mismatch`).
@@ -423,6 +421,47 @@ identical with and without a policy; `Stats` is untouched and the
 policy-only counters live in `FramingStats`. Client/server transaction logic
 (request/response matching, timeouts, retries, register maps) remains a layer
 above this one.
+
+### 8a. UartAdapter: the integration object
+
+`modbus/rtu/UartAdapter.h` is the whole glue between the STM32 driver
+(`uart/Uart.h`) and an RTU endpoint, for either endpoint kind:
+
+```cpp
+modbus::rtu::UartAdapter adapter{uart, link, huart3.Init.BaudRate};
+adapter.bind();                  // RX and gap handlers, the endpoint's transport binding
+adapter.proceed(HAL_GetTick());  // uart.proceed → expire an overdue frame → link.poll
+```
+
+It does not include the driver: `UartTraits<Uart<ChunkSize, ChunkCount>>`
+reads the chunk geometry from the type, so the adapter compiles against the
+host fake HAL exactly as against the silicon driver, and the driver stays
+frozen. The baud comes from the HAL handle, the single source of truth; the
+driver exposes no copy.
+
+The stale-frame rule lives here because only this layer has both facts. A
+chunk of `ChunkSize` bytes ended by DMA transfer-complete (or by an idle
+line exactly on the boundary, which the driver reports the same way and the
+adapter treats the same, conservatively): the line is still busy, the next
+chunk takes `ChunkSize` character times, so the deadline is that time
+(11-bit characters, rounded up) plus a 5 ms guard. A shorter chunk ended by
+IDLE while a frame is in flight: the line fell silent mid-frame, and 5 ms of
+silence — counted from the IDLE event, itself about one character after the
+last byte, so far beyond t1.5 at any usual Modbus baud — is a dead frame. A
+bridge that splits a frame resumes within microseconds and never reaches
+it. `on_rx()` stamps the deadline with the tick `proceed()` was given; no
+time is read in the receive path. A gap disarms the deadline and reaches
+`notify_gap()`. `deadline_in_ms(now)` tells a scheduler how long it may
+sleep. With `framing::None` the adapter routes bursts to `receive_adu()` and
+keeps no deadline.
+
+Measured: on the fake HAL a 700-byte private ADU crosses three 256-byte
+chunks at 9600 baud with 290 ms of software silence between them and
+arrives whole, a sender that dies on a chunk boundary is expired after
+299 ms, an orphan half after 5 ms, a 1 ms split is reassembled
+(`test_uart_integration`); on the H7S the harness runs through the adapter
+and the framed endpoint echoes 12/12 single, split, glued and orphan-then-
+whole frames (`rtu/tests/hardware/h7s/README.md`).
 
 ## 9. UART gaps
 

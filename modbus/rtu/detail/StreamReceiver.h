@@ -25,10 +25,10 @@
  * same layout table to the complete candidate before the burst receiver
  * validates it.
  *
- * audit(now_ms), called from the endpoint's poll(now_ms), is the stale-frame
- * watchdog (../Framing.h): it compares the frame's progress with what it saw
- * at the previous poll and drops a frame that has not grown for
- * framing::stale_frame_ms. Nothing in consume() records time.
+ * This receiver holds no clock. A frame that stopped arriving is dropped by
+ * expire_incomplete(), and WHEN that is due is decided by the transport
+ * adapter (../UartAdapter.h), which alone knows the driver's chunk geometry
+ * and how each chunk ended. Nothing in consume() records time.
  */
 
 #ifndef MODBUS_RTU_DETAIL_STREAM_RECEIVER_H_
@@ -158,27 +158,17 @@ public:
 		return m_stage != Stage::Prefix || m_filled != 0u;
 	}
 
-	// The slow-path watchdog. `now_ms` is any monotonic millisecond count; its
-	// wrap-around is harmless because only differences are used.
-	void audit(const uint32_t now_ms) noexcept
+	// Drops the frame in flight, if any: its block goes back and the next byte
+	// starts a new frame. A deterministic operation without a timing policy;
+	// the transport adapter decides when a frame that stopped arriving is dead.
+	void expire_incomplete() noexcept
 	{
 		if (!assembling()) {
-			m_watching = false;
 			return;
 		}
-		const uint32_t progress = (static_cast<uint32_t>(m_filled) << 16u) | m_remaining;
-		if (!m_watching || progress != m_watched_progress) {
-			// First look at this frame, or it grew since the last look.
-			m_watching = true;
-			m_watched_progress = progress;
-			m_progress_ms = now_ms;
-			return;
-		}
-		if (now_ms - m_progress_ms >= framing::stale_frame_ms) {
-			release_building();
-			reset();
-			++m_framing.stale_frames;
-		}
+		release_building();
+		reset();
+		++m_framing.stale_frames;
 	}
 
 private:
@@ -294,7 +284,6 @@ private:
 		m_filled = 0u;
 		m_remaining = 0u;
 		m_need = static_cast<uint8_t>(Layout::adu_prefix_size);
-		m_watching = false;
 	}
 
 	void release_building() noexcept
@@ -311,10 +300,7 @@ private:
 	uint16_t m_remaining = 0u;  // bytes still expected (Body) or to skip (Skip)
 	uint8_t m_need = static_cast<uint8_t>(Layout::adu_prefix_size);
 	Stage m_stage = Stage::Prefix;
-	bool m_watching = false;          // audit() has seen the frame in flight
 	std::array<uint8_t, prefix_capacity> m_prefix{};
-	uint32_t m_watched_progress = 0u; // (filled << 16 | remaining) at the last audit
-	uint32_t m_progress_ms = 0u;      // when that progress was first seen
 	modbus::rtu::FramingStats m_framing{};
 };
 

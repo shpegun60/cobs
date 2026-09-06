@@ -45,6 +45,19 @@ build_release() {
 		-I"$PROJ" -I"$PROJ/libs/delegate" "$@" -o "$OUT/$name.exe"
 }
 
+# The UART integration suite drives the real driver against the host fake HAL
+# (uart/tests/host), so it needs the driver's include paths and the fake.
+build_uart() {
+	name="$1"
+	shift
+	# shellcheck disable=SC2086
+	"$CXX" -std=gnu++20 -O1 -g $WARN $CHECKED_STL $SAN \
+		-I"$PROJ" -I"$PROJ/uart" -I"$PROJ/uart/tests/host" \
+		-isystem "$PROJ/libs/spsc" -isystem "$PROJ/libs/spsc/src" \
+		-isystem "$PROJ/libs/delegate" \
+		"$@" "$PROJ/uart/tests/host/fake_hal.cpp" -o "$OUT/$name.exe"
+}
+
 build test_pdu      "$HERE/test_pdu.cpp"
 build test_crc      "$HERE/test_crc.cpp"
 build test_crc_geometry "$HERE/test_crc_geometry.cpp"
@@ -55,6 +68,7 @@ build test_fuzz     "$HERE/test_fuzz.cpp"
 build test_framing  "$HERE/test_framing.cpp"
 build test_stream   "$HERE/test_stream.cpp"
 build test_layout   "$HERE/test_layout.cpp"
+build_uart test_uart_integration "$HERE/test_uart_integration.cpp"
 build_release test_fuzz_o3 "$HERE/test_fuzz.cpp"
 
 "$OUT/test_pdu.exe"
@@ -67,7 +81,7 @@ build_release test_fuzz_o3 "$HERE/test_fuzz.cpp"
 "$OUT/test_framing.exe"
 "$OUT/test_stream.exe"
 "$OUT/test_layout.exe"
-
+"$OUT/test_uart_integration.exe"
 
 echo "=== random/property suite under -O3/-DNDEBUG ==="
 "$OUT/test_fuzz_o3.exe"

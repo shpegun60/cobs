@@ -32,6 +32,11 @@ optional third parameter, `Framer = framing::None`: a
 `framing::Standard<Direction>` policy (or a user type derived from it) adds
 `consume()` for arbitrary stream chunks and a builder-owned length prefix
 for private functions; with the default nothing changes (`modbus/ARCHITECTURE.md` §8).
+`modbus/rtu/UartAdapter.h` is the integration object between `uart/Uart.h` and
+either RTU endpoint (RX/gap/transport binding, `proceed(now_ms)`
+orchestration, and the stale-frame rule for framed endpoints, which needs the
+driver's chunk geometry and the baud); it does not include the driver, so it
+compiles against the host fake HAL.
 The RTU hardware harness builds either endpoint (`MODBUS_HW_FRAMER`), and
 `modbus/rtu/tests/hardware/h7s/run_framing.py` / `verify_framing.py` produce
 and recheck the framed-versus-burst record.
@@ -111,7 +116,7 @@ sh modbus/rtu/tests/run.sh
 sh crc/tests/run.sh
 ```
 
-Each runner first compiles its public headers independently and (for the protocols) verifies intentional compile-fail translation units with boundary-specific diagnostic markers (nine for COBS, eleven for RTU): the `wire::Storage` contract, the CRC-in-Format limits, coordinator-only message/packet operations, serializer constraints, the physical absence of old API names, and for RTU the absence of `consume()` without a framing policy and the rejection of a half-written policy.
+Each runner first compiles its public headers independently and (for the protocols) verifies intentional compile-fail translation units with boundary-specific diagnostic markers (nine for COBS, twelve for RTU): the `wire::Storage` contract, the CRC-in-Format limits, coordinator-only message/packet operations, serializer constraints, the physical absence of old API names, and for RTU the absence of `consume()` without a framing policy, the rejection of a half-written policy and of a non-RTU endpoint handed to `UartAdapter`.
 
 `wire/tests/run.sh` (the shared layer):
 
@@ -130,7 +135,7 @@ Each runner first compiles its public headers independently and (for the protoco
 - `test_crc` — the CRC-bearing v2 frame: every built-in policy, sum and stateful policies, corruption of every payload/trailer bit, empty/maximum frames, the H1/H2 threshold, the explicit `Format<crc::NoCrc, 255>` legacy vectors, and the v1/v2 mixing hazard.
 - `test_layout` — exact ABI snapshots; `check_arm_layout.sh` compiles the same file for Cortex-M.
 
-`modbus/rtu/tests/run.sh` mirrors this for RTU (`test_crc`, `test_crc_geometry`, `test_packet`, `test_message`, `test_endpoint`, `test_fuzz`, `test_framing` — the `framing::Layout` rules and the standard function table against the specification's worked examples in both directions —, `test_stream` — the framed endpoint: every cut of a frame, several frames per chunk, every error class and its recovery, the builder-owned length prefix —, `test_layout`, `test_uart_integration`); `crc/tests/run.sh` checks the four default models and seven further catalogue models against their check values plus random inputs against bit-level oracles.
+`modbus/rtu/tests/run.sh` mirrors this for RTU (`test_crc`, `test_crc_geometry`, `test_packet`, `test_message`, `test_endpoint`, `test_fuzz`, `test_framing` — the `framing::Layout` rules and the standard function table against the specification's worked examples in both directions —, `test_stream` — the framed endpoint: every cut of a frame, several frames per chunk, every error class and its recovery, the builder-owned length prefix —, `test_layout`, `test_uart_integration` — the real UART driver on the host fake HAL, integrated through `UartAdapter` with both endpoint kinds, including the framed stale-frame rule at 9600 baud with multi-chunk frames); `crc/tests/run.sh` checks the four default models and seven further catalogue models against their check values plus random inputs against bit-level oracles.
 
 The scripts build with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` and add `-fsanitize=address,undefined` when the toolchain provides the runtime. MinGW does not, so for a sanitized run use WSL (the exact command is in each script header); every runner prints whether its build was sanitized. `WIRE_POOL_CHECKS` (on by default in EVERY build, `NDEBUG` included) compiles in the pool's double-free and foreign-pointer detection; a rejected free is counted and ignored rather than corrupting the free list. Set it to 0 explicitly, identically in every translation unit, to opt out.
 

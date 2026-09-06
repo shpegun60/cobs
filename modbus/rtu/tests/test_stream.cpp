@@ -459,64 +459,53 @@ int main()
 		check(device.storage().tx_available() == 1u && host.storage().rx_available() == 4u, "no leaks");
 	}
 
-	group("StaleFrameWatchdog");
+	group("ExpireIncomplete");
 	{
-		static_assert(framing::stale_frame_ms == 5u, "one universal limit, documented as such");
+		// The endpoint holds no clock: expire_incomplete() is the deterministic
+		// operation the transport adapter calls when its stale-frame rule says so.
 		Server server;
 		const std::span<const uint8_t> write{kWriteReq};
-		// A half frame, then silence: the first poll only starts watching.
+		server.expire_incomplete();
+		check(server.framing_stats().stale_frames == 0u, "nothing in flight: nothing to expire, nothing counted");
 		server.consume(write.first(7u));
 		check(server.assembling() && server.storage().rx_available() == 3u, "half a frame holds a block");
-		server.poll(1000u);
-		server.poll(1004u);
-		check(server.assembling() && server.framing_stats().stale_frames == 0u,
-		      "4 ms of silence is not stale");
-		server.poll(1005u);
+		server.expire_incomplete();
 		check(!server.assembling() && server.storage().rx_available() == 4u &&
 		      server.framing_stats().stale_frames == 1u,
-		      "5 ms of silence drops the frame and returns its block");
+		      "expiring returns the block and counts the frame");
 		server.consume(kReadReq);
 		check(drain(server).size() == 1u, "the next frame is delivered whole");
-		// Without the watchdog the orphan half would swallow the next frame.
+		// Without the expiry the orphan half would swallow the next frame.
 		{
 			Server naive;
 			naive.consume(write.first(7u));
-			naive.consume(kReadReq);  // no poll in between: nothing could have dropped the half
+			naive.consume(kReadReq);
 			check(!naive.has_packet() && naive.stats().rx.crc_errors == 1u,
 			      "control: an orphan half plus a new frame is one CRC failure and a lost frame");
 		}
-		// Progress restarts the clock: a frame that keeps growing is never stale.
+		// A frame still in its header (no block yet) expires too.
 		server.consume(write.first(3u));
-		server.poll(2000u);
-		server.consume(write.subspan(3u, 3u));
-		server.poll(2004u);                // grew since 2000: watched from 2004
-		server.poll(2008u);                // 4 ms without growth
-		check(server.assembling() && server.framing_stats().stale_frames == 1u, "growth restarted the clock");
-		server.consume(write.subspan(6u));
-		check(drain(server).size() == 1u, "the slow frame completes normally");
-		// Legitimate bridge splits (tens of microseconds) never reach the limit.
-		server.consume(write.first(9u));
-		server.poll(3000u);
-		server.consume(write.subspan(9u));
-		server.poll(3000u);
-		check(drain(server).size() == 1u && server.framing_stats().stale_frames == 1u, "a fast split is not stale");
-		// Wrap-around of the millisecond count is harmless.
-		server.consume(write.first(5u));
-		server.poll(0xFFFFFFFEu);
-		server.poll(0xFFFFFFFFu);
-		check(server.assembling(), "1 ms before the wrap: alive");
-		server.poll(3u);                   // 5 ms after 0xFFFFFFFE
-		check(!server.assembling() && server.framing_stats().stale_frames == 2u, "stale across the wrap");
-		// A stale skip (allocation failure, then silence) is dropped too.
+		check(server.assembling() && server.storage().rx_available() == 4u, "three header bytes, no block yet");
+		server.expire_incomplete();
+		check(!server.assembling() && server.framing_stats().stale_frames == 2u, "a header-stage frame is expired");
+		server.consume(kReadReq);
+		check(drain(server).size() == 1u, "clean start afterwards");
+		// A skip in progress (allocation failure) is abandoned the same way.
 		using Tiny = modbus::rtu::Endpoint<wire::Pool<1, 1>, modbus::rtu::Format<>, framing::Standard<Direction::Request>>;
 		Tiny tiny;
 		tiny.consume(kReadReq);
 		const Tiny::Packet held = tiny.pop_packet();
 		tiny.consume(write.first(8u));     // header known, no block: skipping
 		check(tiny.assembling() && tiny.framing_stats().skipped_frames == 1u, "skipping counts as in flight");
-		tiny.poll(10u);
-		tiny.poll(15u);
-		check(!tiny.assembling() && tiny.framing_stats().stale_frames == 1u, "a stale skip is abandoned");
+		tiny.expire_incomplete();
+		check(!tiny.assembling() && tiny.framing_stats().stale_frames == 1u, "an in-progress skip is abandoned");
+		// poll(now_ms) itself never expires anything: the endpoint has no clock.
+		server.consume(write.first(7u));
+		server.poll(0u);
+		server.poll(1000000u);
+		check(server.assembling() && server.framing_stats().stale_frames == 2u,
+		      "poll(now_ms) leaves the frame in flight alone");
+		server.expire_incomplete();
 		check(server.storage().rx_available() == 4u, "no leaks");
 	}
 

@@ -18,6 +18,7 @@ Its different streaming/MBAP framing contract is recorded in
 
 ```cpp
 #include "modbus/rtu/Rtu.h"
+#include "modbus/rtu/UartAdapter.h"
 #include "Uart.h"
 
 using Serial = Uart<256, 4>;
@@ -25,25 +26,21 @@ using Link = modbus::rtu::Endpoint<wire::Pool<8, 2>>;
 
 static Serial uart;
 static Link link;
+static modbus::rtu::UartAdapter adapter{uart, link, huart3.Init.BaudRate};
 ```
 
-Bind UART RX, ordered loss notification and borrowed TX:
+The adapter is the whole integration: UART RX and ordered loss notification
+into the endpoint, the endpoint's borrowed TX onto the driver.
 
 ```cpp
-uart.setRxHandler(Serial::RxHandler{
-    [](std::span<const uint8_t> candidate) noexcept {
-        link.receive_adu(candidate);
-    }});
-
-uart.setRxGapHandler(Serial::GapHandler{
-    []() noexcept {
-        link.notify_gap();
-    }});
-
-const bool bound = link.bind(
-    Link::Sender{tiny::bind<&Serial::send>(uart)},
-    Link::BusyQuery{tiny::bind<&Serial::tx_busy>(uart)});
+uart.init(&huart3);
+adapter.bind();
 ```
+
+Without the adapter the same wiring is three explicit bindings — RX to
+`receive_adu()`, gap to `notify_gap()`, `Sender`/`BusyQuery` to the driver's
+`send()`/`tx_busy()` — and, with a framing policy, the stale-frame deadline
+below; the adapter exists so that none of it lives in application code.
 
 `receive_adu()` deliberately means one complete physical UART receive burst,
 not arbitrary stream chunking. For the default MaxAdu use `Uart<256, N>` so filling a DMA chunk does not
@@ -304,11 +301,11 @@ of at least address+function length is accepted. The two bytes recovered from
 the default CRC16 slot become useful function data. This is intentionally not
 standard Modbus RTU and both peers must select the same private format.
 
-Call both service methods from the same main-loop context:
+One service call from the main loop (or one communication task):
 
 ```cpp
-uart.proceed(HAL_GetTick());
-link.poll(HAL_GetTick());   // the same tick the UART driver takes; the framing policy times stale frames with it
+adapter.proceed(HAL_GetTick());   // uart.proceed → stale-frame check → link.poll
+while (auto packet = link.pop_packet()) { handle(packet); }
 ```
 
 ## Read function data
@@ -414,13 +411,12 @@ using Server = modbus::rtu::Endpoint<wire::Pool<8, 2>, modbus::rtu::Format<>,
                                      framing::Standard<framing::Direction::Request>>;
 Server server;
 
-// UART callback: any cut of the stream, several ADUs per chunk, all fine.
-void on_rx(std::span<const uint8_t> chunk) noexcept { server.consume(chunk); }
-void on_gap() noexcept { server.notify_gap(); }
-// Slow loop: releases sent blocks and drops a frame that stopped growing
-// 5 ms ago (a sender that died mid-frame), so it cannot glue itself to the
-// next frame or hold its RX block forever.
-void loop_step() noexcept { uart.proceed(HAL_GetTick()); server.poll(HAL_GetTick()); }
+// The adapter feeds any cut of the stream to consume() — several ADUs per
+// chunk, a frame across chunks — and expires a frame whose sender died
+// mid-frame (UartAdapter.h explains the rule and why it needs the chunk
+// geometry and the baud).
+modbus::rtu::UartAdapter adapter{uart, server, huart3.Init.BaudRate};
+void loop_step() noexcept { adapter.proceed(HAL_GetTick()); }
 
 // The builder knows the same table: a response to 0x03 is a byte count plus
 // data, and a count that disagrees with the data is refused before the wire.
@@ -466,10 +462,12 @@ oversize declaration or a CRC failure it drops the remainder of the current
 chunk (`framing_stats().resyncs`) and starts fresh on the next chunk, which
 the UART adapter delivers at the next IDLE pause. An RX allocation failure
 skips exactly the declared frame and keeps the stream in step. A frame that
-stops arriving is dropped by `poll(now_ms)` after `framing::stale_frame_ms`
-(5 ms, one universal constant: bridge splits are microseconds, t3.5 at 9600
-baud is 4 ms) and counted in `framing_stats().stale_frames`; `assembling()`
-tells whether a frame is in flight. With
+stops arriving is dropped by `expire_incomplete()` and counted in
+`framing_stats().stale_frames`; `assembling()` tells whether a frame is in
+flight. The endpoint holds no clock — when a frame is dead depends on the
+transport's chunk geometry and on whether the line is still busy, so the
+`UartAdapter` decides: 5 ms of silence after a partial (IDLE-ended) chunk,
+one chunk's transfer time plus 5 ms after a full one. With
 `framing::None` (the default) nothing described in this section is compiled
 in, and the endpoint is the one documented everywhere else in this file.
 

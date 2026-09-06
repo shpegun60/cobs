@@ -394,29 +394,44 @@ afterwards next to COBS and the default endpoint, at 1M and up to 10M
 
 A frame whose sender stops mid-frame would otherwise stay in flight in the
 framed endpoint, holding its RX block and gluing itself to the next frame,
-which then fails CRC and is lost with it. `poll(now_ms)` therefore carries a
-progress watchdog: a frame that has not grown for `framing::stale_frame_ms`
-(5 ms) is dropped and counted in `framing_stats().stale_frames`. The
-`framing` suite gained a fourth shape for it — the first half of a frame,
-50 ms of silence, then a whole different frame — and the split shape's pause
-was set to 1 ms, a bridge-like split well inside the limit (with the earlier
-5 ms pause the watchdog correctly treats the half as dead). Both endpoints
-were rerun at 1M
-([record](results_framing_stale_2026-09-05.jsonl), `verify_framing.py`):
+which then fails CRC and is lost with it. The `framing` suite gained a fourth
+shape for it — the first half of a frame, 50 ms of silence, then a whole
+different frame — and the split shape's pause was set to 1 ms, a bridge-like
+split (with a 5 ms pause the half is, correctly, a dead frame).
 
-### RTU frame boundaries on the H7S ST-Link bridge: default burst framing versus the framing policy
+The first cure was a 5 ms watchdog inside the endpoint
+([record](results_framing_stale_2026-09-05.jsonl), kept as evidence of that
+step):
 
 | Baud | Endpoint | single-write echoes | split-write echoes | two frames in one write | orphan half then a whole frame | smoke | vectors suite |
 |---:|---|---:|---:|---:|---:|---|---|
 | 1000000 | framing::None (burst candidate) | 12/12 | 0/12 | 2/12 | 12/12 | passed | passed |
 | 1000000 | framing policy (length-prefixed) | 12/12 | 12/12 | 12/12 | 12/12 | passed | passed |
 
+It was replaced the next day: with DMA reception the software sees
+silence for a whole chunk's transfer time while the line is still busy
+(294 ms for a 256-byte chunk at 9600 baud), so a fixed limit inside the
+endpoint kills every frame that spans two chunks at low baud. The rule now
+lives in `modbus::rtu::UartAdapter`, which knows the driver's chunk size and
+whether a chunk ended by IDLE or by transfer-complete, and the endpoint
+exposes only `expire_incomplete()`. The harness runs through the adapter
+(`bind()` for the gap and transport binding, the adapter's `on_rx()` under
+the `rtu_receive` timing scope, `service()` before the driver's `proceed()`),
+both endpoints rerun at 1M
+([record](results_framing_adapter_2026-09-06.jsonl), `verify_framing.py`):
+
+### RTU frame boundaries on the H7S ST-Link bridge: default burst framing versus the framing policy
+
+| Baud | Endpoint | single-write echoes | split-write echoes | two frames in one write | orphan half then a whole frame | smoke | vectors suite |
+|---:|---|---:|---:|---:|---:|---|---|
+| 1000000 | framing::None (burst candidate) | 12/12 | 0/12 | 3/12 | 12/12 | passed | passed |
+| 1000000 | framing policy (length-prefixed) | 12/12 | 12/12 | 12/12 | 12/12 | passed | passed |
+
 The framed endpoint echoed the whole frame after every orphan (12/12) with
-zero CRC errors; without the watchdog the same firmware echoed 0/12 there,
-each orphan costing one CRC failure and the frame behind it (that run was
-repeated with the fixed harness and is not kept). The default endpoint is
-unaffected by orphans by construction: the half is a separate burst that
-fails CRC on its own. The harness calls `poll(HAL_GetTick())` on every loop
-iteration and charges only a call that actually released a TX block to the
-`rtu_tx_release` counter, so that counter now includes the tick read and the
-watchdog's audit (about 110-170 cycles per release instead of about 80).
+zero CRC errors; without any expiry the same firmware echoed 0/12 there, each
+orphan costing one CRC failure and the frame behind it. The default endpoint
+is unaffected by orphans by construction: the half is a separate burst that
+fails CRC on its own. The low-baud, multi-chunk behaviour of the adapter's
+rule is proven on the host against the fake HAL (`test_uart_integration`,
+9600 baud, 700-byte private ADU across three chunks), which this 1M record
+cannot exercise: a 256-byte ADU here is one chunk.
