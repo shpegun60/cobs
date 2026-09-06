@@ -76,8 +76,12 @@
  * buffer standing; the discontinuity is this adapter's decision). A
  * WriteError means the frame being sent will not leave: what the port still
  * buffers is cleared and the endpoint releases the block it was lending, so
- * nothing waits for a bytesWritten that never comes. A ResourceError (the
- * device went away) is both. The layer above learns which happened from
+ * nothing waits for a bytesWritten that never comes. The release does not
+ * depend on the clearing succeeding — a port whose device is gone refuses
+ * clear() — because the port holds its own copy of the frame and the
+ * endpoint's block is referenced by nobody else; a line whose state is
+ * unknown after an error is not "busy" in any sense worth waiting for. A
+ * ResourceError (the device went away) is both. The layer above learns which happened from
  * take_transport_error(), read inside its service handler, and decides what
  * it means for its transaction (adapters/qt/RtuClient.h finishes the request
  * as a write error). Everything else the port reports is its own business.
@@ -219,7 +223,7 @@ public:
 	{
 		if (m_bound) {
 			m_releasing = true;
-			m_endpoint.poll(now_ms());
+			release_borrowed_block();
 			(void)m_endpoint.unbind();
 			detach();
 		}
@@ -334,7 +338,9 @@ public:
 	 */
 	void discard_incoming()
 	{
-		(void)m_port.clear(QSerialPort::Input);
+		if (!m_port.clear(QSerialPort::Input)) {
+			(void)m_port.readAll();   // a port that cannot clear can still be read empty
+		}
 		m_stale.stop();
 		if constexpr (framed) {
 			m_endpoint.discard_incomplete();
@@ -389,13 +395,24 @@ private:
 	}
 
 	// The frame being sent will not leave: what the port still buffers is
-	// cleared, and the endpoint takes back the block it was lending (busy()
-	// reads false once the output is empty).
+	// dropped — best effort, a dead device refuses — and the endpoint takes
+	// back the block it was lending whether or not the port could clear,
+	// since nothing but the endpoint references that block.
 	void abort_outgoing(const TransportError error)
 	{
 		(void)m_port.clear(QSerialPort::Output);
-		m_endpoint.poll(now_ms());
+		release_borrowed_block();
 		m_transport_error = error;
+	}
+
+	// poll() with busy() forced false: the endpoint releases the block of the
+	// frame on its way out, whatever the port says about its output.
+	void release_borrowed_block()
+	{
+		const bool releasing = m_releasing;
+		m_releasing = true;
+		m_endpoint.poll(now_ms());
+		m_releasing = releasing;
 	}
 
 	[[nodiscard]] bool send(const std::span<const uint8_t> frame)

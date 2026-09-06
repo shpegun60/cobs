@@ -72,9 +72,15 @@ public:
 	// write buffer is full does.
 	void set_write_limit(const qint64 limit) noexcept { m_write_limit = limit; }
 
+	// clear() refuses and changes nothing, as a port whose device is gone does.
+	void set_clear_fails(const bool fails) noexcept { m_clear_fails = fails; }
+
 	// QSerialPort::clear(): drops what the OS holds, in the asked directions.
 	bool clear(const QSerialPort::Directions directions = QSerialPort::AllDirections)
 	{
+		if (m_clear_fails) {
+			return false;
+		}
 		if (directions & QSerialPort::Input) {
 			m_rx.clear();
 		}
@@ -127,6 +133,7 @@ private:
 	QByteArray m_written;
 	qint64 m_pending = 0;
 	qint64 m_write_limit = -1;
+	bool m_clear_fails = false;
 	qint32 m_baud = 115200;
 };
 
@@ -287,6 +294,16 @@ int main(int argc, char** argv)
 	      "the tail of a discarded frame is refused as an unknown function, not delivered as a packet");
 	port.feed(response_bytes);
 	check(static_cast<bool>(client.pop_packet()), "and the stream recovers on the next whole response");
+	// A port that refuses clear(): what it buffers is read away instead, and
+	// the bytes that were already delivered are discarded all the same.
+	port.set_clear_fails(true);
+	port.feed(response_bytes.first(4u));
+	adapter.discard_incoming();
+	check(!client.assembling() && port.bytesAvailable() == 0,
+	      "discard_incoming() on a port that cannot clear still drops the frame in flight and empties the input");
+	port.set_clear_fails(false);
+	port.feed(response_bytes);
+	check(static_cast<bool>(client.pop_packet()) && !client.has_packet(), "and the next response is delivered whole");
 
 	group("AdapterDestructorUnbinds");
 	check(adapter.unbind(), "the long-lived adapter releases the port and the endpoint");
@@ -523,6 +540,29 @@ int main(int argc, char** argv)
 		      client_port.bytesToWrite() == 0,
 		      "a resource error while sending finishes the request as WriteError with the block released");
 		(void)client_port.take_written();
+
+		// The same write error on a port that cannot clear its output (a device
+		// that is gone): the block must come back all the same, or every later
+		// send() would be Busy forever.
+		completed = 0;
+		check(rtu.send(0x11u, 0x03u, std::vector<uint8_t>{0u, 1u, 0u, 1u}, capture()), "a request is queued");
+		pump(10);
+		check(client_port.bytesToWrite() == 8, "it is leaving");
+		client_port.set_clear_fails(true);
+		client_port.raise(QSerialPort::WriteError);
+		check(completed == 1u && seen.state == RequestState::WriteError, "the write error finishes the request");
+		check(!client_link.tx_active(), "and the endpoint's block is released although the port kept its bytes");
+		check(client_port.bytesToWrite() == 8, "which are the port's problem now");
+		client_port.set_clear_fails(false);
+		client_port.drain();
+		(void)client_port.take_written();
+		completed = 0;
+		check(rtu.send(0x11u, 0x03u, std::vector<uint8_t>{0u, 1u, 0u, 1u}, capture()), "the next request is queued");
+		pump(10);
+		check(client_port.take_written().size() == 8u, "and is sent, not refused as Busy");
+		client_port.drain();
+		client_port.feed(make_adu(0x11u, 0x03u, std::vector<uint8_t>{0x02u, 0x00u, 0x01u}));
+		check(completed == 1u && seen.state == RequestState::Completed, "and completes");
 
 		completed = 0;
 		client_port.set_write_limit(3);
