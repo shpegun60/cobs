@@ -34,7 +34,8 @@ Direct comparison: [COBS versus Modbus RTU](doc/PROTOCOL_COMPARISON.md)
 
 `src/` is the stack (`wire/`, `crc/`, `cobs/`, `modbus/`, `uart/`) plus
 `adapters/`, the glue that knows both a transport and an endpoint
-(`rtu/UartAdapter.h`, `freertos/FreeRtosWake.h`); `libs/` the third-party
+(`rtu/UartAdapter.h`, `freertos/FreeRtosWake.h`, `qt/SerialAdapter.h` and
+`qt/RtuClient.h`); `libs/` the third-party
 dependencies, `app/` the Qt host application, `doc/` the documentation of the
 whole repository. Include paths are `src`-relative.
 
@@ -970,7 +971,8 @@ cross-target code generation, benchmarks, and real hardware evidence.
 | Modbus CRC layout/codegen | `sh src/modbus/rtu/tests/check_arm_crc_codegen.sh` | default Endpoint emits no table; Table emits one private 512-byte read-only lookup; empty policies add no RAM |
 | Modbus RTU host suite | `sh src/modbus/rtu/tests/run.sh` | headers, compile-fail boundaries, every CRC width/method, custom three-byte and hardware policies, `NoCrc`, derived geometry, storage, ownership, endpoint and fuzz properties |
 | Modbus qmake consumer | `sh src/modbus/rtu/tests/qmake_consumer/run.sh` | downstream header-only use with Heap, Pool and Table policy |
-| Adapters: RTU over the UART driver, FreeRTOS wake (fake HAL, fake FreeRTOS) | `sh src/adapters/tests/run.sh` | short IDLE ADU, exact 256-byte TC ADU, gaps, recovery, and DMA TX borrow |
+| Adapters: RTU over the UART driver, FreeRTOS wake (fake HAL, fake FreeRTOS) | `sh src/adapters/tests/run.sh` |
+| Qt adapters: `QSerialPort` transport and the QModbus-shaped RTU client (event loop, no COM port) | `sh src/adapters/qt/tests/run.sh` | short IDLE ADU, exact 256-byte TC ADU, gaps, recovery, and DMA TX borrow |
 | Cortex-M Modbus layout | `sh src/modbus/rtu/tests/check_arm_layout.sh` | ARM object layout and static RAM assertions |
 | Modbus + UART H7S matrix | [`src/modbus/rtu/tests/hardware/h7s/README.md`](src/modbus/rtu/tests/hardware/h7s/README.md) | independent PC CRC oracle, Bitwise/Table A/B, exact 256-byte ADUs, corruptions, pools, recovery and stress at 115200/1M |
 | UART host matrix | `sh src/uart/tests/host/run.sh` | runtime interleavings, errors, recovery, callbacks, baud changes, torture, invalid configs |

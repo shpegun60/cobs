@@ -64,7 +64,8 @@ Choosing a pattern:
 | STM32 with `src/uart/Uart.h`, FreeRTOS | RTU or COBS | §4, `FreeRtosWake` on top of §2 or §3 |
 | STM32 with `src/uart/Uart.h` | COBS | §3, the driver wired directly — COBS needs no adapter |
 | STM32 with another driver, or a stale-frame rule of your own | RTU | §5, the endpoint wired directly |
-| desktop, TCP, `QSerialPort`, a test double, a radio | either | §6, any byte transport |
+| desktop with Qt | either | §6, `adapters/qt/SerialAdapter.h`, plus `RtuClient.h` for a master |
+| TCP, a test double, a radio | either | §7, any byte transport |
 
 ## 2. RTU on STM32 through `UartAdapter`
 
@@ -349,7 +350,67 @@ void loop_step() noexcept
 
 If this is what you end up writing, use the adapter: it is this, tested.
 
-## 6. Any other byte transport: desktop, TCP, `QSerialPort`, tests, radios
+## 6. Qt on the desktop: `QSerialPort`
+
+`src/adapters/qt/` is the desktop counterpart of §2: `SerialAdapter` binds a
+`QSerialPort` to either endpoint, and `RtuClient` is a Modbus master shaped
+like Qt's own `QModbusRtuSerialClient` on top of it.
+
+```cpp
+#include "adapters/qt/RtuClient.h"
+
+namespace framing = modbus::rtu::framing;
+using Link = modbus::rtu::Endpoint<wire::Heap, modbus::rtu::Format<>,
+                                   framing::Standard<framing::Direction::Response>>;
+
+QSerialPort port;
+port.setPortName("COM6");
+port.setBaudRate(9600);
+port.open(QIODevice::ReadWrite);
+
+Link link;
+adapters::qt::RtuClient client{port, link};
+client.update_timing_from_port();     // 3.5 character times below 19200 baud, as Qt computes it
+client.bind();
+
+const uint8_t body[] = {0x00, 0x6B, 0x00, 0x03};
+client.send(0x11, 0x03, body, decltype(client)::Handler{[](const adapters::qt::Response& response) {
+    if (response.state == adapters::qt::RequestState::Completed) { use(response.data); }
+}});
+```
+
+`SerialAdapter` alone is enough for a server, for COBS, or for an
+application that drives its own transactions: `readyRead` feeds `consume()`,
+`bytesWritten` releases the transmitted block, a read or resource error
+becomes `notify_gap()`, and a frame that stops arriving is expired 50 ms
+after the last byte. An RTU endpoint here must carry a framing policy, since
+a serial port delivers arbitrary cuts and not IDLE-ended bursts; the
+adapter refuses the burst endpoint at compile time.
+
+`RtuClient` adds what a master needs and what QModbus provides: one
+transaction at a time with a queue behind it, a response timeout with
+retries, matching by address and function with the exception bit masked off,
+broadcasts to address 0 completed without an answer, an inter-frame delay
+between transactions and a turnaround delay after a broadcast, and a clean
+start before every attempt. Its defaults are Qt's: 1000 ms, three retries,
+100 ms turnaround, 2 ms inter-frame at and above 19200 baud.
+
+Where it deliberately differs from QModbus is written down in
+`SerialAdapter.h`: Qt's RTU server drops a buffered fragment when the next
+delivery arrives more than 3.5 character times after the previous one, which
+on a desktop measures the operating system's scheduling rather than the
+wire and can discard an intact frame that arrived in two deliveries; this
+adapter uses a silence timer instead, which cannot. Qt reports a read error
+to the application and keeps its buffer; this adapter treats it as a stream
+discontinuity, because a lost byte inside a length-prefixed frame would
+otherwise consume the frame behind it.
+
+Build it with `include(src/adapters/qt/qt.pri)` next to `rtu.pri` or
+`cobs.pri`; it adds `QT += serialport` and nothing else. Verified by
+`sh src/adapters/qt/tests/run.sh` (82 checks on a `QIODevice` stand-in for
+the port, both protocols, a real event loop, no COM port).
+
+## 7. Any other byte transport: TCP, tests, radios
 
 The endpoints do not know what carries their bytes. A transport is any
 object with a `send(std::span<const uint8_t>) -> bool` that writes one frame
@@ -426,7 +487,7 @@ any monotonic millisecond tick. Verified by `src/cobs/tests/qmake_consumer` and
 both built-in storages) and `src/wire/tests/test_protocol_storage` (a
 user-written memory specification through both endpoints).
 
-## 7. Choosing the parameters
+## 8. Choosing the parameters
 
 **Memory.** `wire::Heap` (default) allocates per frame and is the desktop and
 default path; `wire::Pool<Rx, Tx>` is `Rx` receive blocks and `Tx` transmit
@@ -458,7 +519,7 @@ buffering — about one millisecond at 10 Mbaud for `Uart<256, 4>`, which is
 why the RTOS pattern wakes on the ISR rather than polling. The whole driver
 object must sit in DMA-reachable RAM; the application places it.
 
-## 8. Execution and lifetime rules
+## 9. Execution and lifetime rules
 
 | Object | Lives at least as long as | Touched from |
 |---|---|---|

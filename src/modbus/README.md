@@ -16,9 +16,10 @@ Its different streaming/MBAP framing contract is recorded in
 
 ## Quick start
 
-The compositions beyond this one — the endpoint without the adapter, a
-desktop or TCP transport, FreeRTOS on top — are enumerated in
-[`doc/INTEGRATION.md`](../../doc/INTEGRATION.md).
+The compositions beyond this one — the endpoint without the adapter, Qt on
+the desktop (`adapters/qt/RtuClient.h`, a master shaped like Qt's own
+`QModbusRtuSerialClient`), a TCP transport, FreeRTOS on top — are enumerated
+in [`doc/INTEGRATION.md`](../../doc/INTEGRATION.md).
 
 ```cpp
 #include "modbus/rtu/Rtu.h"

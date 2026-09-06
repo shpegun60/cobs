@@ -29,7 +29,8 @@ The stable documentation is split by boundary:
 Repository layout: `src/` holds the stack itself (`wire/`, `crc/`, `cobs/`,
 `modbus/`, `uart/`) and `src/adapters/`, the glue that knows both a transport
 and an endpoint while neither knows it (`rtu/UartAdapter.h`,
-`freertos/FreeRtosWake.h`, later `qt/`); `uart/` is only the driver, its
+`freertos/FreeRtosWake.h`, `qt/SerialAdapter.h` with the QModbus-shaped
+`qt/RtuClient.h` on top); `uart/` is only the driver, its
 tests and the probe header, and `modbus/` names no transport; `libs/` at the
 root holds the third-party dependencies
 (`spsc`, `delegate`, the vendored STM32 HAL/CMSIS packages) and is never part
@@ -147,6 +148,15 @@ sh src/cobs/tests/run.sh
 sh src/modbus/rtu/tests/run.sh
 sh src/crc/tests/run.sh
 sh src/adapters/tests/run.sh
+```
+
+The Qt adapters have their own runner, because they need a Qt kit with
+QtSerialPort — on this machine only the Qt 6.4.3 MinGW kit has that module,
+with its own GCC 11.2, so the script uses that kit and not the 6.10.1 one the
+application is built with:
+
+```bash
+sh src/adapters/qt/tests/run.sh
 ```
 
 Each runner first compiles its public headers independently and (for the protocols) verifies intentional compile-fail translation units with boundary-specific diagnostic markers (nine for COBS, eleven for RTU, one for the adapters): the `wire::Storage` contract, the CRC-in-Format limits, coordinator-only message/packet operations, serializer constraints, the physical absence of old API names, and for RTU the absence of `consume()` without a framing policy, the rejection of a half-written policy and of a non-RTU endpoint handed to `UartAdapter`.

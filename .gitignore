@@ -17,6 +17,7 @@ src/cobs/tests/out/
 src/crc/tests/out/
 src/modbus/rtu/tests/out/
 src/adapters/tests/out/
+src/adapters/qt/tests/out/
 src/wire/tests/out/
 src/wire/tests/*.o
 
