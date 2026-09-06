@@ -47,6 +47,13 @@
 #ifndef MODBUS_HW_FRAMER
 #define MODBUS_HW_FRAMER 0
 #endif
+// MODBUS_HW_WAKE=1 installs the cheapest possible wake handler (a volatile
+// increment) so the cost of the driver's ISR-side wake call can be measured
+// against an image without a handler; a real RTOS notification adds its own,
+// scheduler-defined cost on top.
+#ifndef MODBUS_HW_WAKE
+#define MODBUS_HW_WAKE 0
+#endif
 static_assert(MODBUS_HW_FRAMER == 0 || MODBUS_HW_FRAMER == 1,
 	"MODBUS_HW_FRAMER selects the framing policy: 0 or 1");
 // Data bytes owned by the framing policy in front of every body.
@@ -679,6 +686,9 @@ void apply_pending_action(const uint32_t now) noexcept
 // arithmetic) — that is the rtu_receive counter.
 using Adapter = modbus::rtu::UartAdapter<Serial, Link>;
 Adapter s_adapter{s_uart, s_link, MODBUS_HW_BAUD};
+#if MODBUS_HW_WAKE
+volatile uint32_t s_wakes = 0u;
+#endif
 
 void on_rx(const std::span<const uint8_t> bytes) noexcept
 {
@@ -707,6 +717,9 @@ extern "C" void bench_init(void)
 		Error_Handler();
 	}
 
+#if MODBUS_HW_WAKE
+	s_uart.setWakeHandler([]() noexcept { s_wakes = s_wakes + 1u; }); // volatile read-modify-write; ++ on a volatile is deprecated in C++20
+#endif
 	if (!s_adapter.bind() || !s_uart.init(&huart3)) {
 		Error_Handler();
 	}

@@ -1,0 +1,316 @@
+{
+  "backup_sha256": "a5903024dba85fab5121150ca8ad13482f97384aa450aab67413881991fb9456",
+  "core": [],
+  "finished_utc": "2026-09-06T08:04:12.569621+00:00",
+  "port": "COM6",
+  "probes": [],
+  "restored_and_verified": true,
+  "schema": 1,
+  "selection": {
+    "bauds": [
+      1000000
+    ],
+    "cases": [
+      "random250"
+    ],
+    "cobs_uart": [
+      [
+        256,
+        4
+      ]
+    ],
+    "core_only": false,
+    "policies": [
+      "bitwise"
+    ],
+    "protocols": [
+      "rtu"
+    ],
+    "uart_only": true
+  },
+  "session": "C:\\Users\\admin\\Documents\\my_workspace\\Qt\\COBS\\wire\\tests\\out\\comparison-20260906-100400",
+  "source_base_commit": "9bb67ff426c58e23643c307280a83e1abd0ed4bc",
+  "source_sha256": {
+    "cobs/Cobs.h": "f0edd69abeae9019876859c4b53a56f732773c2f5d6ceaac7111478a2d0bb974",
+    "cobs/Codec.h": "44afc977b5ab9e28699540e7d720629b11b7e6006f71024631655cb6b5110133",
+    "cobs/Decoder.cpp": "ad336654c67a496498b764c5f5a4c1104d8e97068c68b61122a75e6c62f2b856",
+    "cobs/Encoder.cpp": "c915b056dc790772d02d851be8ee3968204d834f8f091cab57e380c90e0c6445",
+    "cobs/Format.h": "e647b1c4cdb3063156129db210b738ab7fee843010176374a748b80b5e475102",
+    "cobs/Read.h": "0f2df2015133c619596d946ad6fc8d897da2ead68edae9b6fd78cfbe29c5c164",
+    "cobs/Stats.h": "6de9c7602f1c4d07b49aa97f45427069e59a7ccb5aa1f071996e6888ebae39a0",
+    "cobs/detail/Message.h": "eb99d4887c1393e49b3cccb61dd93167523bc7fd86ba3d1c6c71c173c02c3b21",
+    "cobs/detail/Packet.h": "c413045cf8a8d43c0862252cde5099bf1bb0ba2ad9943f86d1162a4dd1109c05",
+    "cobs/detail/Receiver.h": "5318e6f5132851f27940292f6ad61e4455efcf6f2693db64b295946d835c12fb",
+    "cobs/detail/RxBlock.h": "1fdc78168396657cfce5c4b06f532c7bd93c3a5aab8329d158c0f5c54704b1f4",
+    "cobs/tests/hardware/h7s/build.sh": "1e9937cd4add4b1aa96253b3de99869bdd39567e4579f0c5fadc78d7391802f0",
+    "cobs/tests/hardware/h7s/cobs_bench.cpp": "225033aa439a6c265baebf5e93c6e1f214b579503350d55c5cd9bd04db700ed1",
+    "cobs/tests/hardware/h7s/cobs_hardware.py": "69c54680d5b3305390fa02102f2d410904adf0fed65b42fe2a2f4fad676b262a",
+    "crc/Crc.h": "6fc82dbc2ca2ffdbe4073d88fe7ee069a1243a30e10a2e7211a30913c17616d5",
+    "modbus/Pdu.h": "aa476c624f4b4a4e22858a766d90f2c891f06ae21a813f685a735df0d3e819ba",
+    "modbus/Types.h": "3f48a801c1ca2e0f1e8a0c990c4789b59ea3355e8e27ab791ab83a21217936e7",
+    "modbus/rtu/Format.h": "24587a0b7da8bccfd64bb3e51612bb378cbfd6d62acc3279613792d3271edbe1",
+    "modbus/rtu/Framing.h": "6bf3c66c2f91f69fafcd13700693e71c24d0d43ad22fdb0c15852d8f8c3fd16f",
+    "modbus/rtu/Rtu.h": "ff27a2d3630857b108dfb332dbf05eb8475ef5f885d7019565835080d09c5e0d",
+    "modbus/rtu/RtuLimits.h": "939e2fb2704c89a3db422d32c446f8e677ddbc786b4d9e8688ca31ba34d596aa",
+    "modbus/rtu/Stats.h": "0b230ec43e54af963c8b2cd724de4524a479fbff4cccfc9e1ff1fbb22f1f9aab",
+    "modbus/rtu/UartAdapter.h": "2e3867a2f9d033dad09f8fbd04c73f6a7ad2730f8df94981a46d4e7c6f1311d8",
+    "modbus/rtu/detail/Message.h": "5d67729c7d9a14bd084e672e75a475ad7ef63ed33f788d894a36aabd49475052",
+    "modbus/rtu/detail/Packet.h": "54c6ad21fc87c4a51214b098a10b6d996320112aafb74d79480a086fdb73550b",
+    "modbus/rtu/detail/Receiver.h": "7b10b089044bb70cecf1c176fe955ac980b2cfc553ad83d96000afd84f093376",
+    "modbus/rtu/detail/RxBlock.h": "d9e48d1b428288236e04a050ebcff29b1739c55c50275172fb9458353b1a3299",
+    "modbus/rtu/detail/StreamReceiver.h": "d00d9896c36dbdbf014e9ed6ef9d4eb5aeff59b87b3a5f8c714e9db0956da95f",
+    "modbus/rtu/tests/hardware/h7s/build.sh": "55642ae24397dbadde898e08f9e941d292a6085208c1198b1648ea46d0665f7e",
+    "modbus/rtu/tests/hardware/h7s/modbus_bench.cpp": "832af54ac476b87585501284a653ee93c2c2fb8c4018a7ee2cc0061327734dfb",
+    "modbus/rtu/tests/hardware/h7s/modbus_hardware.py": "5d44e392a5027c35f463ae7e988ff50c626b3543398e662eeeeef2da0547b182",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Inc/gpdma.h": "4b8ed88d06449a34347b413fa3cf79cf59d8f0b21083cca134ee525e6c7587f7",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Inc/gpio.h": "e2d62f964a0b7f238384ed6a20a181d09df9647240a268dc547acf5b35099f74",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Inc/main.h": "5a8bf98b921016533593c4c7105d08bc4435d03de8184c33e2a83f5c4c3d279a",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Inc/stm32h7rsxx_hal_conf.h": "3242603358d98548d2e1475b056254ea5ab5efb8ab6d0651fc2252547d75319d",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Inc/stm32h7rsxx_it.h": "fcbd25a96bc4788b16282281e627352721db9dd7a413db6bdbcc298683f52326",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Inc/uart_bench.h": "55b6dbbfaa58b584df5a223df4dba8590eed09d52a99aa2ca0972899910243aa",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Inc/usart.h": "8167e4e06c52c66878f9effd3e551251c0f1393284a111f4ab2f73b491657f60",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Src/gpdma.c": "c9f0e13f00c5b7310344c2cd550645f8878e66cafcc7c3cfd9612677da0dd89e",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Src/gpio.c": "6fec7c8296be9fcac43d944e0b8fe7bf78f13333c7f86bd7eb450e76bee72eba",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Src/main.c": "e631288497f8e900fdd4aa449851f3bd2b5479a964cc6d773578c75b5e700813",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Src/stm32h7rsxx_hal_msp.c": "c7d803158f25c14294d427b177be6702e60822d6ebcde0f787fc5aa9b2bedfd2",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Src/stm32h7rsxx_it.c": "a149f3c8d30bea6e1351829e6fe0739521fac72b53f88126fa06256b0bc66431",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Src/syscalls.c": "b993ebb4f882e8be21cec8d95983655a0caf4f0eb11348f20f6371f5a5031717",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Src/sysmem.c": "147c60a13e805f62003d63f9de068b925e386de6d8844b1279620f715919c940",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Src/system_stm32h7rsxx.c": "c35a221d06d699bd0d2fa14adffcde197f654d51b715c8586215e0bfcfd03ca9",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Src/usart.c": "0254c61e05015266d20d71c93f826b75b7ae97e9edcaa3f97ce69f76103cb6be",
+    "stm32_cube_test/h7s_cobs_test/Boot/Core/Startup/startup_stm32h7s3l8hx.s": "fd29b9238480ce665eb224f7e4a87580c64a1516f9e28b550b26b303cf36d888",
+    "stm32_cube_test/h7s_cobs_test/Boot/STM32H7S3L8HX_FLASH.ld": "b4295e5f0a20cff5ce73d68dd7ff2b8a41530ada3f6df510b5eec06c9055a086",
+    "uart/FreeRtosWake.h": "e6383cb51a67d18976ae04552b64a00ccf01d94ad74e4290cd35584827f46ddf",
+    "uart/Uart.h": "479d30d286e1103ed36c92d14726068a4d2d906f988d51b99e34a738e6b2d312",
+    "uart/detail/IrqGuard.h": "9c6ab88d1573199c6cbeac7d77e202d98d19d5ab17aff855475a658811a4d3f5",
+    "uart/detail/UartRegs.h": "bf6d17a2a9f869f5af860a9f1bb414ef8c85a70cd157a495020ebe460ba4f4c7",
+    "uart/uart_probe.h": "2ce4e9ae4f5604a07f53e7e2f53bba2e1f559c5e8e68eb00226a28fa1b5eda06",
+    "wire/Read.h": "3f5fd2119d0600a2210966fb74482eda986fb5c6cf8c97ac7328f3ed63ce2088",
+    "wire/Scalar.h": "0de75675b294bfdfe020ea26d2c30824725b93bc6c1981f641013c9f040a6ee0",
+    "wire/Storage.h": "6de177a7f4fc7e3403d9b1f5f1574db4515e880a899588c8d198c9206918913d",
+    "wire/detail/BlockPool.h": "e29ecdb6d75186d15cc24ae0c56f30c70da61f282736d3d272ce0c3d0a1c8f07",
+    "wire/tests/hardware/h7s/build.sh": "8788bfd8a554b6cb481b4189e7418fc6375b9f79d7f1413f00429b5d49e53ca4",
+    "wire/tests/hardware/h7s/protocol_bench.cpp": "05503328e90b66f57be109ce938d555d235283b79e926acb0976acb163b25e1d",
+    "wire/tests/hardware/h7s/run_comparison.py": "19db09cc64529f7958f2c8152b5e537429280aacfb2e704d37d1c155666bb498"
+  },
+  "status": "passed",
+  "stlink_serial": "002A001F3033510135393935",
+  "timestamp_utc": "2026-09-06T08:04:00.791748+00:00",
+  "uart": [
+    {
+      "baud": 1000000,
+      "elf_sha256": "46b2a4e3c53d1773a49d628482783dde5fcc74e8f8d568b26b6ce4d545104fa6",
+      "hello": {
+        "baud": 1000000,
+        "core_clock": 600000000,
+        "crc_policy": 0,
+        "framer": 0,
+        "max_frame": 256,
+        "max_receive": 252,
+        "max_send": 252,
+        "rx_blocks": 8,
+        "tx_blocks": 2,
+        "uart_chunk_count": 4,
+        "uart_chunk_size": 256,
+        "version": 4
+      },
+      "policy": "bitwise",
+      "protocol": "rtu",
+      "rows": [
+        {
+          "actual_wire_percent": 35.88467083133109,
+          "baud": 1000000,
+          "case": "random250",
+          "corpus_sha256": "0fc45c5557790de83a84a92653cb128a386a62844c8c721b57253005436e03c2",
+          "cpu_percent": 0.7435351593785039,
+          "cycles_per_echo": 31577.482993197278,
+          "data_bytes": 73500,
+          "frames": 294,
+          "host_seconds": 2.0000421999720857,
+          "instrumented_cycles": 9283780,
+          "max_lateness_ms": 0.7749911746941507,
+          "normalized_cpu_percent": 0.7736483333333334,
+          "policy": "bitwise",
+          "protocol": "rtu",
+          "repeat": 0,
+          "stats": {
+            "control_frames": 1,
+            "counters": {
+              "packet_process": {
+                "avg": 15202,
+                "calls": 294,
+                "max": 15302,
+                "total": 4469649
+              },
+              "rtu_receive": {
+                "avg": 14368,
+                "calls": 295,
+                "max": 14447,
+                "total": 4238644
+              },
+              "rtu_tx_release": {
+                "avg": 79,
+                "calls": 294,
+                "max": 80,
+                "total": 23230
+              },
+              "rx_dma_irq": {
+                "avg": 0,
+                "calls": 0,
+                "max": 0,
+                "total": 0
+              },
+              "tx_dma_irq": {
+                "avg": 277,
+                "calls": 294,
+                "max": 281,
+                "total": 81442
+              },
+              "uart_slow": {
+                "avg": 14112,
+                "calls": 305,
+                "max": 14663,
+                "total": 4304221
+              },
+              "usart_irq": {
+                "avg": 688,
+                "calls": 589,
+                "max": 1120,
+                "total": 405238
+              }
+            },
+            "echo_data_bytes": 73500,
+            "echo_frames": 294,
+            "response_failures": 0,
+            "rtu_allocation_failure": 0,
+            "rtu_candidates": 295,
+            "rtu_crc_errors": 0,
+            "rtu_frames_received": 295,
+            "rtu_frames_sent": 294,
+            "rtu_oversize": 0,
+            "rtu_send_failed": 0,
+            "rtu_send_refused_busy": 0,
+            "rtu_stream_gaps": 0,
+            "rtu_too_short": 0,
+            "rx_available": 7,
+            "rx_exhausted": 0,
+            "rx_high_water": 1,
+            "rx_in_use": 1,
+            "rx_rejected": 0,
+            "selftest_failures": 0,
+            "tx_available": 2,
+            "tx_exhausted": 0,
+            "tx_high_water": 1,
+            "tx_in_use": 0,
+            "tx_rejected": 0,
+            "uart_restarts": 0,
+            "uart_rx_errors": 0,
+            "uart_rx_overrun": 0,
+            "uart_tx_errors": 0,
+            "version": 4,
+            "window_ms": 2081
+          },
+          "target_fps": 147,
+          "wire_bytes_per_direction": 74676
+        },
+        {
+          "actual_wire_percent": 35.88467083133109,
+          "baud": 1000000,
+          "case": "random250",
+          "corpus_sha256": "0fc45c5557790de83a84a92653cb128a386a62844c8c721b57253005436e03c2",
+          "cpu_percent": 0.7435534198302098,
+          "cycles_per_echo": 31578.25850340136,
+          "data_bytes": 73500,
+          "frames": 294,
+          "host_seconds": 2.000255000020843,
+          "instrumented_cycles": 9284008,
+          "max_lateness_ms": 0.7635346846655011,
+          "normalized_cpu_percent": 0.7736673333333334,
+          "policy": "bitwise",
+          "protocol": "rtu",
+          "repeat": 1,
+          "stats": {
+            "control_frames": 1,
+            "counters": {
+              "packet_process": {
+                "avg": 15203,
+                "calls": 294,
+                "max": 15240,
+                "total": 4469856
+              },
+              "rtu_receive": {
+                "avg": 14368,
+                "calls": 295,
+                "max": 14448,
+                "total": 4238690
+              },
+              "rtu_tx_release": {
+                "avg": 79,
+                "calls": 294,
+                "max": 80,
+                "total": 23229
+              },
+              "rx_dma_irq": {
+                "avg": 0,
+                "calls": 0,
+                "max": 0,
+                "total": 0
+              },
+              "tx_dma_irq": {
+                "avg": 277,
+                "calls": 294,
+                "max": 278,
+                "total": 81439
+              },
+              "uart_slow": {
+                "avg": 14066,
+                "calls": 306,
+                "max": 14663,
+                "total": 4304254
+              },
+              "usart_irq": {
+                "avg": 687,
+                "calls": 589,
+                "max": 1116,
+                "total": 405230
+              }
+            },
+            "echo_data_bytes": 73500,
+            "echo_frames": 294,
+            "response_failures": 0,
+            "rtu_allocation_failure": 0,
+            "rtu_candidates": 295,
+            "rtu_crc_errors": 0,
+            "rtu_frames_received": 295,
+            "rtu_frames_sent": 294,
+            "rtu_oversize": 0,
+            "rtu_send_failed": 0,
+            "rtu_send_refused_busy": 0,
+            "rtu_stream_gaps": 0,
+            "rtu_too_short": 0,
+            "rx_available": 7,
+            "rx_exhausted": 0,
+            "rx_high_water": 1,
+            "rx_in_use": 1,
+            "rx_rejected": 0,
+            "selftest_failures": 0,
+            "tx_available": 2,
+            "tx_exhausted": 0,
+            "tx_high_water": 1,
+            "tx_in_use": 0,
+            "tx_rejected": 0,
+            "uart_restarts": 0,
+            "uart_rx_errors": 0,
+            "uart_rx_overrun": 0,
+            "uart_tx_errors": 0,
+            "version": 4,
+            "window_ms": 2081
+          },
+          "target_fps": 147,
+          "wire_bytes_per_direction": 74676
+        }
+      ],
+      "uart_chunk": null
+    }
+  ]
+}

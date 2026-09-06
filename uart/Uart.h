@@ -352,10 +352,22 @@ public:
 	// cannot detect this: the bytes surrounding a gap may well form a
 	// structurally valid frame.
 	using GapHandler   = tiny::delegate<void()>;
+	// Raised from ISR context when proceed() has work: a chunk or a gap marker
+	// was queued, a transmission ended (well or badly), or an error left
+	// recovery for the thread. It carries no data and knows no scheduler: an
+	// RTOS integration turns it into a task notification (uart/FreeRtosWake.h),
+	// a bare-metal loop into a flag or a WFE exit, and a loop that runs
+	// proceed() unconditionally leaves it unset. Half-transfer events, which
+	// this driver ignores, never raise it. Unset, it costs one null test per
+	// event; set, one indirect call — measured on the H7S3 in
+	// doc/UART_PARANOID_AUDIT.md §9.
+	using WakeHandler  = tiny::delegate<void()>;
 
 	// Handler execution contexts are intentionally explicit:
 	//   RxHandler/GapHandler -> thread context, inside proceed();
 	//   ErrorHandler         -> HAL error ISR;
+	//   WakeHandler          -> the HAL RX event, TX completion and error ISRs,
+	//                           after the driver's own state is final;
 	//   TxHandler            -> normally a HAL completion/error ISR, but the
 	//                           watchdog can deliver a recovered terminal event
 	//                           from proceed() in thread context.
@@ -627,6 +639,15 @@ public:
 	{
 		uart::detail::IrqGuard guard;
 		m_gapHandler = static_cast<GapHandler&&>(h);
+	}
+	// The target runs in ISR context: it must be ISR-safe, bounded, and must
+	// not call the driver. With FreeRTOS that is vTaskNotifyGiveFromISR(), which
+	// also requires the USART and DMA interrupt priorities to stay within
+	// configMAX_SYSCALL_INTERRUPT_PRIORITY (see uart/FreeRtosWake.h).
+	void setWakeHandler(WakeHandler h) noexcept
+	{
+		uart::detail::IrqGuard guard;
+		m_wakeHandler = static_cast<WakeHandler&&>(h);
 	}
 
 	// Change the line speed of an already-initialised engine, typically once
@@ -1126,11 +1147,15 @@ private:
 		// exactly ChunkSize. HAL derives its IDLE sizes the same way.
 		(void)size;
 		if (!publishReceived(huart->hdmarx)) {
-			return;
+			return; // rejectDmaCount() has already raised the wake
 		}
 		// note: if m_active == nullptr the bytes went into m_drop — discarded.
 
 		receiveArm();
+		// A chunk was published, or the pool ran dry and a gap is pending:
+		// either way proceed() has work. Last, after the re-arm, so the
+		// notified thread never observes a half-done event.
+		wake();
 	}
 
 	// The byte stream is broken at this point in the sequence.
@@ -1172,6 +1197,7 @@ private:
 		++m_stats.rx_errors;
 		voidActiveChunk(); // stopped hardware: one ordered gap marker
 		m_started = false;
+		wake(); // the marker and the restart are work for proceed()
 		return false;
 	}
 
@@ -1179,6 +1205,7 @@ private:
 	{
 		++m_stats.rx_errors;
 		m_started = false; // proceed() -> receiveRestart(), tick alive
+		wake();
 	}
 
 	// Hand the active chunk to the consumer: invalidate, commit the byte
@@ -1333,6 +1360,7 @@ private:
 		if (m_txHandler) {
 			m_txHandler(ok);
 		}
+		wake(); // the layer above reclaims the borrowed frame from its loop
 	}
 
 	/* --------------------------- ISR: error ----------------------------- */
@@ -1427,6 +1455,18 @@ private:
 
 		if (m_errHandler && errorCode != uart::detail::no_error) {
 			m_errHandler(errorCode);
+		}
+		wake(); // recovery, the gap marker and a released TX frame await proceed()
+	}
+
+	// ISR side of the wake contract (see WakeHandler). Forced inline so that
+	// with no handler installed each ISR exit pays exactly one load and one
+	// compare-and-branch — no call to a shared helper — and with one installed,
+	// the delegate call alone.
+	UART_ENGINE_ALWAYS_INLINE void wake() noexcept
+	{
+		if (m_wakeHandler) {
+			m_wakeHandler();
 		}
 	}
 
@@ -1693,6 +1733,7 @@ private:
 	TxHandler    m_txHandler{};
 	ErrorHandler m_errHandler{};
 	GapHandler   m_gapHandler{};
+	WakeHandler  m_wakeHandler{};
 };
 
 /* ===================== HAL callbacks (internal variant) =================== */

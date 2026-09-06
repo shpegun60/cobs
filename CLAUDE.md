@@ -102,7 +102,13 @@ The fake HAL models the real behaviours verified in the ST sources (IDLE/TC end 
 
 Tests are grouped by guarantee (Initialization, RxOwnership, RxDiscontinuity, TxOwnership, TeardownArbitration, FaultInjection, Watchdog), not by HAL function, so they survive refactoring inside the driver.
 
-**Run both suites after any change to `uart/`.**
+**Run both suites after any change to `uart/`.** The driver is frozen apart
+from one admitted change: the optional ISR-side `WakeHandler` (2026-09-06),
+whose cost was measured A/B on the H7S before acceptance
+(`doc/UART_PARANOID_AUDIT.md` §9.2). `uart/FreeRtosWake.h` is the FreeRTOS
+glue on top of it and is compiled in the host suite against the recording
+fake in `uart/tests/host/fake_freertos`; the port matrix pins the ISR thunk
+sizes, so a change there must come with a measured reason.
 
 ### Shared, COBS, Modbus and CRC host tests
 

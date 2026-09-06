@@ -25,11 +25,12 @@ static_assert(!std::is_move_assignable_v<uart::detail::IrqGuard>);
 // Recorded ARM EABI layout. The 64-byte control header keeps every ISR field
 // before the inline DMA storage; all supported Cortex-M ports select a 32-byte
 // SPSC cache line. A field reorder must not silently give back the RAM/codegen
-// improvement this layout provides.
+// improvement this layout provides. The WakeHandler delegate (32 bytes) sits
+// with the other handlers after the DMA storage: 1664 -> 1696, 512 -> 544.
 static_assert(SPSC_CACHELINE_BYTES == 32u);
-static_assert(sizeof(Uart<256, 4>) == 1664u);
-static_assert(sizeof(Uart<64, 2>) == 512u);
-static_assert(sizeof(Uart<>) == 1664u);
+static_assert(sizeof(Uart<256, 4>) == 1696u);
+static_assert(sizeof(Uart<64, 2>) == 544u);
+static_assert(sizeof(Uart<>) == 1696u);
 static_assert(alignof(Uart<256, 4>) == 32u);
 static_assert(sizeof(Uart<>::Stats) == 16u);
 static_assert(std::is_trivially_copyable_v<Uart<>::Stats>);

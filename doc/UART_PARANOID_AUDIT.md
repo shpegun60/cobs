@@ -76,6 +76,7 @@ The following are intentional constraints, not unfinished refactoring:
 | fixed-capacity registry | HAL callbacks provide a handle but no portable user context across the supported families |
 | plain diagnostic counters | exact accounting is not worth atomic RMW operations in the ISR hot paths |
 | callbacks not globally deferred | RX/gap already run in the loop; TX/error preserve immediate HAL terminal notification |
+| optional ISR-side `WakeHandler` (2026-09-06) | the only scheduler primitive the driver offers: "proceed() has work", raised after an RX event, a TX completion or an error; carries no data, knows no RTOS; unset it costs three instructions per event (§9.2) |
 
 Removing delegates, translating the driver to C, adding compatibility wrappers,
 or introducing allocator traits are outside this architecture.
@@ -136,6 +137,7 @@ is required for safe M7 invalidation.
 | `GapHandler` | inside `proceed()` | ordered between bytes before and after physical loss |
 | `ErrorHandler` | HAL error ISR | bounded, non-blocking, non-throwing |
 | `TxHandler` | normally completion/error ISR; watchdog terminal recovery can call it from `proceed()` | must be valid in both contexts and produce exactly one ownership event |
+| `WakeHandler` | RX event, TX completion and error ISRs, after the driver's own state is final | ISR-safe, bounded, must not call the driver; never raised for the ignored half-transfer event; an RTOS integration turns it into a task notification (`uart/FreeRtosWake.h`), whose `FromISR` call requires the USART/DMA interrupt priorities to stay within `configMAX_SYSCALL_INTERRUPT_PRIORITY` |
 | registry forwarding | HAL ISR | fixed-table lookup followed by non-virtual operation dispatch |
 
 Handlers must not throw. A handler must not replace the same delegate while
@@ -385,6 +387,55 @@ test object by 142 text bytes, grew `receiveArm()` by 4 bytes through its
 overflow counter path, and did not reduce the complete TX thunk. It was
 rejected; the measured control/Stats/storage order remains.
 
+### 9.2 WakeHandler cost, 2026-09-06
+
+The driver was frozen after §9.1. One change was admitted afterwards, on the
+owner's decision: an optional ISR-side `WakeHandler`, because a communication
+task cannot otherwise sleep — the RX handler runs inside `proceed()`, the ISR
+only queues the chunk, so without a wake the task has to poll on a timer, and
+at 10 Mbaud the `Uart<256,4>` pool is about one millisecond of buffering. The
+condition was an A/B measurement, not an estimate.
+
+Method: the RTU comparison harness (`wire/tests/hardware/h7s/run_comparison.py
+--uart-only --protocols rtu --policies bitwise --bauds 1000000 --cases
+random250`), 588 echoes per record, the `uart_probe` DWT counters around the
+HAL interrupt handlers. A is the committed driver before the change, B1 the
+new driver with no handler installed, B2 with the cheapest possible handler
+installed by the harness (`MODBUS_HW_WAKE=1`: a volatile increment). Records:
+[A](../wire/tests/hardware/h7s/results_uart_wake_a_2026-09-06.json),
+[B1](../wire/tests/hardware/h7s/results_uart_wake_b1_2026-09-06.json),
+[B2](../wire/tests/hardware/h7s/results_uart_wake_b2_2026-09-06.json).
+
+| Interrupt scope (cycles per call) | A | B1: wake unset | B2: trivial handler |
+|---|---:|---:|---:|
+| `usart_irq` (RX IDLE event and TX complete, the two wake sites) | 643.1 | 647.4 | 688.0 |
+| `tx_dma_irq` (not a wake site) | 277.0 | 277.0 | 277.0 |
+
+An unset handler costs **4 cycles per interrupt**: the G4 `-Os` disassembly
+of the RX thunk gained exactly `ldr.w r3,[r4,#1684]; cmp r3,#0; beq` on that
+path (the null test is forced inline; a shared outlined helper would have
+added a `bl`/`bx` pair and was rejected for that reason). An installed
+handler costs **41 cycles** for the delegate call, the invoker thunk and the
+volatile increment; a real `vTaskNotifyGiveFromISR()` adds the kernel's own
+cost on top, which belongs to the RTOS, not to this driver. The thread-side
+scopes (`uart_slow`, `packet_process`) moved by 220-270 cycles between A and
+B in BOTH B records while their code did not change: that is the code
+placement effect documented in `doc/PROTOCOL_COMPARISON.md`, not wake cost,
+and it is why the two B records are compared with each other.
+
+Cortex-M4 (G4) thunk sizes: RX 84 to 100 bytes, TX 80 to 94 bytes; stack,
+`receiveArm()`, `publishActive()` and the idle `proceed()` unchanged;
+`sizeof(Uart<256,4>)` 1664 to 1696 for the delegate. The probe-equivalence
+check (`UART_ENGINE_PROBE=0` identical to the no-probe build) still holds.
+Host: the strict, old-HAL, registered-callback, external-forwarding and
+optimized variants each run the new `WakeHandler` group (one wake per RX
+chunk, TC chunk, TX completion and RX error; none for a half-transfer; none
+from `proceed()`; the handler is optional and replaceable while running), and
+`uart/FreeRtosWake.h` is compiled against a recording FreeRTOS fake
+(`uart/tests/host/fake_freertos`): one `vTaskNotifyGiveFromISR()` per event,
+coalescing into one `ulTaskNotifyTake()`, the yield request following what
+the kernel reports, the fallback timeout passed through.
+
 ## 10. Verification matrix
 
 ### Host runtime
@@ -399,7 +450,9 @@ rejected; the measured control/Stats/storage order remains.
 - MinGW/UCRT strict, fallback, registered-callback, external-forwarding, and
   optimized variants: all pass (sanitizers intentionally skipped on MinGW);
 - ten invalid macro/template configurations fail compilation with their
-  intended diagnostics.
+  intended diagnostics;
+- 2026-09-06, with the `WakeHandler` group: 217 checks per variant (230 with
+  registered callbacks), ASan+UBSan 217, plus 13 in the FreeRTOS wake test.
 
 The runtime suite covers registry alias/null safety, structural init refusal,
 IDLE/TC, stray HT, corrupt DMA counters, cache/ownership visibility, slot

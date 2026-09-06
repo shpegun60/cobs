@@ -429,6 +429,85 @@ void testTxSingleTerminalEvent()
 	      "exactly one terminal event, reporting success");
 }
 
+// ---- WakeHandler: "proceed() has work", raised from ISR context ----------
+
+struct WakeCount {
+	unsigned n = 0;
+	void bump() noexcept { ++n; }
+};
+
+void testWakeFollowsEveryIsrEventWithWork()
+{
+	fake::reset();
+	Fixture f;
+	f.start();
+	WakeCount wakes;
+	f.uart.setWakeHandler(TestUart::WakeHandler{tiny::bind<&WakeCount::bump>(wakes)});
+
+	fake::rx_bytes("abc", 3);
+	fake::rx_idle();
+	check(wakes.n == 1, "an IDLE-published chunk raises exactly one wake, before proceed() runs");
+	f.loop();
+	check(wakes.n == 1 && rxText() == "abc", "proceed() itself raises none and delivers the chunk");
+
+	std::string full(kChunk, 'x');
+	fake::rx_bytes(full.data(), full.size());
+	fake::rx_tc();
+	check(wakes.n == 2, "a TC-published chunk raises one wake");
+	f.loop();
+
+	fake::rx_bytes("q", 1);
+	fake::rx_half();
+	check(wakes.n == 2, "a half-transfer event, which the driver ignores, raises none");
+	fake::rx_idle();
+	check(wakes.n == 3, "the IDLE that ends that chunk does");
+	f.loop();
+
+	const uint8_t frame[4] = {1, 2, 3, 0};
+	check(f.uart.send(std::span<const uint8_t>{frame, 4}), "send starts a transfer");
+	check(wakes.n == 3, "starting a transmission raises none: the caller is awake");
+	fake::tx_done();
+	check(wakes.n == 4 && !f.uart.tx_busy(), "TX completion raises one wake, after ownership returned");
+
+	fake::rx_bytes("zz", 2);
+	fake::rx_error(HAL_UART_ERROR_ORE);
+	check(wakes.n == 5, "an RX error raises one wake: recovery is proceed()'s job");
+	f.loop();
+	check(events().find("gap") != std::string::npos, "and the ordered gap marker it queued is delivered");
+
+	checkNoViolations("wake handling changed no ownership");
+}
+
+void testWakeIsOptionalAndReplaceable()
+{
+	fake::reset();
+	Fixture f;
+	f.start();
+	// No handler: every event path must stay a null test.
+	fake::rx_bytes("abc", 3);
+	fake::rx_idle();
+	fake::tx_done();
+	fake::rx_error(HAL_UART_ERROR_FE);
+	f.loop();
+	check(rxText() == "abc", "unset wake handler: the driver runs exactly as before");
+
+	WakeCount first;
+	WakeCount second;
+	f.uart.setWakeHandler(TestUart::WakeHandler{tiny::bind<&WakeCount::bump>(first)});
+	fake::rx_bytes("d", 1);
+	fake::rx_idle();
+	f.uart.setWakeHandler(TestUart::WakeHandler{tiny::bind<&WakeCount::bump>(second)});
+	fake::rx_bytes("e", 1);
+	fake::rx_idle();
+	f.uart.setWakeHandler(TestUart::WakeHandler{});
+	fake::rx_bytes("f", 1);
+	fake::rx_idle();
+	f.loop();
+	check(first.n == 1 && second.n == 1 && rxText() == "abcdef",
+	      "the handler is replaceable and removable while the engine runs");
+	checkNoViolations("no ownership violation");
+}
+
 void testTxRefusesOversizedFrame()
 {
 	fake::reset();
@@ -813,6 +892,10 @@ int main(int argc, char** argv)
 	group("TxOwnership");
 	testTxSingleTerminalEvent();
 	testTxRefusesOversizedFrame();
+
+	group("WakeHandler");
+	testWakeFollowsEveryIsrEventWithWork();
+	testWakeIsOptionalAndReplaceable();
 
 	group("TeardownArbitration");
 	testRxTeardownDoesNotEatTxCompletion();

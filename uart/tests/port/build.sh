@@ -113,20 +113,25 @@ fi
 echo "OK (disassembly identical)"
 
 echo "=== G4 RX hot-path size/stack budget (pinned GCC 14.3, -Os) ==="
+# The WakeHandler (2026-09-06) added an inlined null test plus delegate call
+# to the RX and TX ISR thunks: 84 -> 100 and 80 -> 94 bytes (the test is
+# inlined on purpose, so an unset handler costs one load and one compare-and-
+# branch per event and no call). Stack, receiveArm, publishActive and the idle
+# proceed() are unchanged. Measured cost: doc/UART_PARANOID_AUDIT.md §9.
 RX_SIZE=$("$NM" -S -C "$OUT/test_g4.o" \
   | grep -F 'Uart<256u, 4u>::init' \
   | grep -F 'lambda(void*, unsigned short)#1}::_FUN' \
   | awk '{print $2}' | head -n 1)
-if [ "$RX_SIZE" != "00000054" ]; then
-  echo "FAIL: RX callback thunk is $RX_SIZE bytes, expected 00000054"
+if [ "$RX_SIZE" != "00000064" ]; then
+  echo "FAIL: RX callback thunk is $RX_SIZE bytes, expected 00000064"
   exit 1
 fi
 TX_SIZE=$("$NM" -S -C "$OUT/test_g4.o" \
   | grep -F 'Uart<256u, 4u>::init' \
   | grep -F 'lambda(void*)#1}::_FUN' \
   | awk '{print $2}' | head -n 1)
-if [ "$TX_SIZE" != "00000050" ]; then
-  echo "FAIL: TX callback thunk is $TX_SIZE bytes, expected 00000050"
+if [ "$TX_SIZE" != "0000005e" ]; then
+  echo "FAIL: TX callback thunk is $TX_SIZE bytes, expected 0000005e"
   exit 1
 fi
 RX_STACK=$(grep -F 'Uart<256, 4>::init' "$OUT/test_g4.su" \
@@ -148,7 +153,7 @@ if [ "$ARM_SIZE" != "0000006c" ] || \
   echo "FAIL: hot symbols changed: receiveArm=$ARM_SIZE publish=$PUBLISH_SIZE proceed=$PROCEED_SIZE"
   exit 1
 fi
-echo "OK (RX 84 B/8 B stack, TX 80 B, arm 108 B, publish 40 B, idle proceed 36 B)"
+echo "OK (RX 100 B/8 B stack, TX 94 B, arm 108 B, publish 40 B, idle proceed 36 B)"
 
 echo "=== G4 probe-on: DWT backend compiles, all three scopes instantiated ==="
 "$GCC" $COMMON_FLAGS $G4_FLAGS -DUART_ENGINE_PROBE=1 \

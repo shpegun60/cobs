@@ -612,6 +612,41 @@ armed during TX. RX and TX use distinct normal-mode DMA channels. See the
 complete initialization proof in
 [`doc/UART_PARANOID_AUDIT.md`](doc/UART_PARANOID_AUDIT.md).
 
+### Event-driven servicing under an RTOS
+
+`proceed()` is a thread-context call and the RX handler runs inside it, so a
+task that sleeps never sees a chunk until something wakes it. The driver's
+`WakeHandler` is that something: raised from the RX event, TX completion and
+error ISRs after the driver's state is final, carrying no data and knowing
+no scheduler. `uart/FreeRtosWake.h` turns it into a FreeRTOS task
+notification:
+
+```cpp
+#include "FreeRtosWake.h"
+
+uart::FreeRtosWake wake{communicationTaskHandle};
+wake.attach(uart);   // uart.setWakeHandler(...)
+
+void communicationTask(void*)
+{
+    for (;;) {
+        uart::FreeRtosWake::wait(50u);      // woken by the ISR; every 50 ms otherwise
+        adapter.proceed(HAL_GetTick());     // uart.proceed -> endpoint (see modbus/README.md)
+        while (auto packet = link.pop_packet()) { handle(packet); }
+    }
+}
+```
+
+Several interrupts before the task runs coalesce into one wake. The fallback
+timeout is not polling: it serves what no UART event announces (the driver's
+health audit, a stale frame, a request timeout). The `FromISR` call requires
+the USART and DMA interrupt priorities to stay within
+`configMAX_SYSCALL_INTERRUPT_PRIORITY`, and the communication task must be
+the only one touching the driver, the endpoint and its packets. Cost with no
+handler installed: 4 cycles per interrupt (`doc/UART_PARANOID_AUDIT.md` §9.2).
+A bare-metal loop that calls `proceed()` unconditionally leaves the handler
+unset.
+
 ### UART receive contract
 
 - DMA writes into a claimed SPSC chunk.
@@ -674,6 +709,7 @@ remain intentionally cheap plain increments.
 | `setRxGapHandler(...)` | install the thread-context ordered-loss notification |
 | `setTxHandler(...)` | receive terminal TX success/failure, normally from ISR context |
 | `setErrorHandler(...)` | receive the HAL error mask from ISR context |
+| `setWakeHandler(...)` | optional: be told from ISR context that `proceed()` has work (RX chunk or gap queued, TX finished, error pending); the hook an RTOS task sleeps on |
 | `proceed(now_ms)` | drain RX and run recovery from exactly one loop context |
 | `send(bytes)` / `tx_busy()` | start and track one borrowed DMA TX span |
 | `setBaudRate(baud)` | transactional thread-context line-rate change with a deliberate RX gap |
