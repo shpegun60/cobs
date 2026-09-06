@@ -99,3 +99,23 @@ PC clients' writes produce.
 
 The tables below are printed by `verify_qmodbus.py` from the record;
 `--check-doc` fails when they drift.
+
+Record: [`results_qmodbus_2026-09-06.json`](results_qmodbus_2026-09-06.json), taken against commit `2d7e90d`; the burst medians are thirty back-to-back reads of ten registers, round trip as the client measures it.
+
+### The board as a server: Qt's client and this repository's client, same script, same server
+
+| Baud | Board server | QModbusRtuSerialClient ok | RtuClient ok | Qt burst median | RtuClient burst median | Qt total | RtuClient total | served by the board |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 115200 | burst | 55/55 | 55/55 | 5.37 ms | 5.34 ms | 1334.36 ms | 1332.74 ms | 106 |
+| 1000000 | burst | 55/55 | 55/55 | 2.89 ms | 2.84 ms | 1159.57 ms | 1164.70 ms | 106 |
+| 115200 | framing policy | 54/55 | 54/55 | 5.29 ms | 5.24 ms | 2325.42 ms | 2322.43 ms | 104 |
+| 1000000 | framing policy | 54/55 | 54/55 | 2.85 ms | 2.84 ms | 2157.58 ms | 2156.56 ms | 104 |
+
+### The board as a client against QModbusRtuSerialServer
+
+| Baud | Board client | steps ok | burst median round trip | writes Qt recorded | steps not ok |
+|---:|---|---:|---:|---:|---|
+| 115200 | burst | 54/55 | 3.18 ms | 7 | 19 timeout |
+| 1000000 | burst | 54/55 | 0.66 ms | 7 | 19 timeout |
+| 115200 | framing policy | 54/55 | 3.20 ms | 7 | 19 timeout |
+| 1000000 | framing policy | 54/55 | 0.72 ms | 7 | 19 timeout |
