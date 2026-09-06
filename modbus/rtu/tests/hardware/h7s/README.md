@@ -421,7 +421,10 @@ driver's `proceed()`), both endpoints rerun at 1M
 ([record](results_framing_adapter_2026-09-06.jsonl), then again after the
 lifecycle review — line rate read from the handle, transactional `bind()`,
 12-bit characters, deadline judged after the driver has delivered —
-[record](results_framing_lifecycle_2026-09-06.jsonl); `verify_framing.py`):
+[record](results_framing_lifecycle_2026-09-06.jsonl), and a third time with
+the deadline asking the driver's `rx_progress()` whether DMA is already
+taking the remainder before it expires a frame —
+[record](results_framing_progress_2026-09-06.jsonl); `verify_framing.py`):
 
 ### RTU frame boundaries on the H7S ST-Link bridge: default burst framing versus the framing policy
 

@@ -473,9 +473,13 @@ transport's chunk geometry and on whether the line is still busy, so the
 `UartAdapter` decides: 5 ms of silence after a partial (IDLE-ended) chunk,
 one chunk's transfer time (12-bit characters, the widest the driver accepts,
 at the rate read live from the HAL handle) plus 5 ms after a full one. The
-full-chunk rule assumes a continuously transmitting peer or bridge; a strict
-RTU sender that paused below t1.5 after every byte could stretch a chunk
-beyond it. With
+silence is the hardware's word, not the absence of events: at the 5 ms the
+adapter asks the driver's `rx_progress()` whether DMA is already taking the
+remainder into the next chunk, and if so the frame lives on for one chunk
+time. The full-chunk rule assumes a continuously transmitting peer or
+bridge; a strict RTU sender that paused below t1.5 after every byte could
+stretch a chunk beyond it. A task that sleeps between `proceed()` calls
+bounds its sleep by `adapter.deadline_in_ms(now)`. With
 `framing::None` (the default) nothing described in this section is compiled
 in, and the endpoint is the one documented everywhere else in this file.
 

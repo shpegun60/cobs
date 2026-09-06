@@ -58,7 +58,16 @@
  *     clock starts at the IDLE event, which itself follows about one
  *     character of silence, so on any usual Modbus baud the total is far
  *     beyond the t1.5 limit inside a frame; it is a pragmatic guard, not a
- *     derivation from t1.5 for every conceivable baud.
+ *     derivation from t1.5 for every conceivable baud. Silence is judged by
+ *     the hardware, not by the absence of events: when the 5 ms fall due
+ *     the adapter asks the driver (Uart::rx_progress()) whether DMA has
+ *     already taken bytes into the chunk it still owns. It has whenever the
+ *     bridge resumed and the remainder is arriving but has not yet ended in
+ *     IDLE or filled the chunk, a state that lasts the remainder's whole
+ *     transfer time (14 ms for 150 bytes at 115200, far longer at 9600);
+ *     then the frame is alive and the deadline becomes one chunk time plus
+ *     the guard, as after a full chunk. Zero progress after 5 ms is a dead
+ *     frame.
  *   - After a full chunk the line is still busy: the next chunk needs
  *     ChunkSize character times to arrive, and only silence longer than that
  *     plus a guard is a dead frame. This is what a sender that dies exactly on
@@ -75,17 +84,24 @@
  *     DMA peers and USB bridges, which do not; it is not a t1.5 timer.
  *
  * No time is recorded in the receive path. on_rx() stamps a deadline with
- * the tick proceed() was given; the deadline is checked in proceed() AFTER
- * the driver has delivered what it had, so a continuation that already sits
- * in the driver's queue is never outrun by its own deadline. A loop that must
- * keep its own timing scopes around the driver composes the same steps with
- * prepare(now) → uart.proceed(now) → finish(now) → endpoint.poll(now); that
- * order is part of the contract.
+ * the tick proceed() was given; the progress snapshot is taken in proceed()
+ * BEFORE the driver is drained and the verdict AFTER, so a continuation that
+ * already sits in the driver's queue, or is moved there while it drains, is
+ * never outrun by its own deadline. A loop that must keep its own timing
+ * scopes around the driver composes the same steps with prepare(now) →
+ * uart.proceed(now) → finish(now) → endpoint.poll(now); that order is part
+ * of the contract. unbind() and the destructor discard a frame in flight,
+ * uncounted: what arrives after a later bind() can never complete it.
+ *
+ * A task that sleeps between calls must not sleep past the deadline:
+ * deadline_in_ms(now) bounds the wait (no_deadline when nothing is in
+ * flight, 0 when due), see uart/FreeRtosWake.h.
  *
  * The adapter does not include Uart.h: it needs only the driver's type
  * shape and the members every driver instantiation has (setRxHandler,
- * setRxGapHandler, send, tx_busy, proceed, instance), so it compiles against
- * the host fake HAL in the test suite exactly as against the silicon driver.
+ * setRxGapHandler, send, tx_busy, proceed, instance, rx_progress), so it
+ * compiles against the host fake HAL in the test suite exactly as against
+ * the silicon driver.
  */
 
 #ifndef MODBUS_RTU_UART_ADAPTER_H_
@@ -123,9 +139,19 @@ concept RtuEndpoint = requires(E& endpoint, uint32_t now_ms) {
 	endpoint.poll(now_ms);
 };
 
+// What the adapter needs from the driver beyond its handler setters and the
+// transport pair: the bound handle and the DMA progress snapshot.
+template<class S>
+concept ProgressReportingSerial = requires(const S& serial) {
+	{ serial.rx_progress() } -> std::convertible_to<uint16_t>;
+	serial.instance();
+};
+
 template<class SerialT, class EndpointT>
 class UartAdapter final {
 	static_assert(RtuEndpoint<EndpointT>, "UartAdapter serves a modbus::rtu::Endpoint");
+	static_assert(ProgressReportingSerial<SerialT>,
+		"UartAdapter needs Uart::instance() and Uart::rx_progress()");
 
 public:
 	using Serial = SerialT;
@@ -220,10 +246,11 @@ public:
 	}
 
 	/*
-	 * The one slow-path call: the driver delivers what it has (on_rx/on_gap run
-	 * inside), THEN an overdue frame is expired, then the endpoint reclaims a
-	 * finished transmission. `now_ms` is the application's monotonic
-	 * millisecond tick; on_rx() stamps deadlines with it.
+	 * The one slow-path call: the progress snapshot is taken, the driver
+	 * delivers what it has (on_rx/on_gap run inside), THEN an overdue frame is
+	 * judged, then the endpoint reclaims a finished transmission. `now_ms` is
+	 * the application's monotonic millisecond tick; on_rx() stamps deadlines
+	 * with it.
 	 */
 	void proceed(const uint32_t now_ms) noexcept
 	{
@@ -235,21 +262,46 @@ public:
 
 	/*
 	 * The two halves of proceed() around the driver, for a loop that keeps its
-	 * own timing scopes (the hardware harness): prepare() records the tick
-	 * on_rx() will stamp deadlines with and follows a changed line rate;
-	 * finish() expires an overdue frame. finish() must come AFTER the driver's
-	 * proceed(): a continuation already queued in the driver must be delivered
-	 * before its frame can be judged stale.
+	 * own timing scopes (the hardware harness); both take the same tick.
+	 * prepare() records the tick on_rx() will stamp deadlines with, follows a
+	 * changed line rate and, when a frame's deadline is due, asks the driver
+	 * whether DMA has taken bytes into the chunk it still owns. finish()
+	 * judges the frame: extended if the line resumed, expired if not. The
+	 * snapshot BEFORE the driver is drained and the verdict AFTER is what
+	 * makes the instant of the deadline safe: a byte that arrived before the
+	 * snapshot is seen either as progress or, if an event moved its chunk to
+	 * the driver's queue in between, as a delivered chunk that re-stamps the
+	 * deadline. Bytes that only begin to arrive after the snapshot are late
+	 * by definition. finish() must therefore come AFTER the driver's
+	 * proceed(), and prepare() before it.
 	 */
 	void prepare(const uint32_t now_ms) noexcept
 	{
 		m_now_ms = now_ms;
 		(void)refresh_timing();
+		if constexpr (framed) {
+			m_line_resumed = m_deadline_active && due(now_ms) &&
+				m_uart.rx_progress() != 0u;
+		}
 	}
 
 	void finish(const uint32_t now_ms) noexcept
 	{
-		expire_due(now_ms);
+		if constexpr (framed) {
+			if (m_deadline_active && due(now_ms)) {
+				if (m_line_resumed) {
+					// The next chunk is filling: it must be published within one
+					// chunk's transfer time, exactly as after a full chunk.
+					m_deadline_ms = now_ms + m_full_chunk_ms + full_chunk_guard_ms;
+				} else {
+					m_deadline_active = false;
+					m_endpoint.expire_incomplete();
+				}
+			}
+			m_line_resumed = false;
+		} else {
+			(void)now_ms;
+		}
 	}
 
 	// Transport entry points. bind() routes the driver here; a harness or a
@@ -309,24 +361,23 @@ private:
 		return true;
 	}
 
-	void expire_due(const uint32_t now_ms) noexcept
+	[[nodiscard]] bool due(const uint32_t now_ms) const noexcept
 	{
-		if constexpr (framed) {
-			if (m_deadline_active &&
-			    static_cast<int32_t>(now_ms - m_deadline_ms) >= 0) {
-				m_deadline_active = false;
-				m_endpoint.expire_incomplete();
-			}
-		} else {
-			(void)now_ms;
-		}
+		return static_cast<int32_t>(now_ms - m_deadline_ms) >= 0;
 	}
 
+	// Detaching is a discontinuity of the stream: a frame in flight can never
+	// be completed by what arrives after a later bind(), so it is discarded,
+	// uncounted (it is neither stale nor lost).
 	void detach() noexcept
 	{
 		m_uart.setRxHandler(typename SerialT::RxHandler{});
 		m_uart.setRxGapHandler(typename SerialT::GapHandler{});
+		if constexpr (framed) {
+			m_endpoint.discard_incomplete();
+		}
 		m_deadline_active = false;
+		m_line_resumed = false;
 		m_bound = false;
 	}
 
@@ -337,6 +388,7 @@ private:
 	uint32_t m_now_ms = 0u;
 	uint32_t m_deadline_ms = 0u;
 	bool m_deadline_active = false;
+	bool m_line_resumed = false;
 	bool m_bound = false;
 };
 

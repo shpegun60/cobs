@@ -137,7 +137,7 @@ is required for safe M7 invalidation.
 | `GapHandler` | inside `proceed()` | ordered between bytes before and after physical loss |
 | `ErrorHandler` | HAL error ISR | bounded, non-blocking, non-throwing |
 | `TxHandler` | normally completion/error ISR; watchdog terminal recovery can call it from `proceed()` | must be valid in both contexts and produce exactly one ownership event |
-| `WakeHandler` | RX event, TX completion and error ISRs, after the driver's own state is final | ISR-safe, bounded, must not call the driver; never raised for the ignored half-transfer event; an RTOS integration turns it into a task notification (`uart/FreeRtosWake.h`), whose `FromISR` call requires the USART/DMA interrupt priorities to stay within `configMAX_SYSCALL_INTERRUPT_PRIORITY` |
+| `WakeHandler` | RX event, TX completion and error ISRs, after the driver's own state is final | ISR-safe, bounded, must not call the driver; never raised for the ignored half-transfer event; an RTOS integration turns it into a task notification (`uart/FreeRtosWake.h`), whose `FromISR` call requires the USART/DMA interrupts not to be logically more urgent than the kernel's syscall ceiling — on STM32 the HAL/CMSIS priority number `>= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY`, never a comparison against the shifted `configMAX_SYSCALL_INTERRUPT_PRIORITY` |
 | registry forwarding | HAL ISR | fixed-table lookup followed by non-virtual operation dispatch |
 
 Handlers must not throw. A handler must not replace the same delegate while
@@ -493,7 +493,8 @@ no more: the door is closed.
 - 2026-09-06, with the `WakeHandler` group: 217 checks per variant (230 with
   registered callbacks), ASan+UBSan 217, plus 13 in the FreeRTOS wake test;
 - 2026-09-06, with the `RxProgress` group: 231 checks per variant (244 with
-  registered callbacks), plus 13 in the FreeRTOS wake test; port matrix
+  registered callbacks), ASan+UBSan 231, plus 17 in the FreeRTOS wake test
+  (`attach()` now takes the task handle and refuses a null one); port matrix
   objects byte-identical to the previous driver (§9.3).
 
 The runtime suite covers registry alias/null safety, structural init refusal,

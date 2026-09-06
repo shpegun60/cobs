@@ -624,28 +624,41 @@ notification:
 ```cpp
 #include "FreeRtosWake.h"
 
-uart::FreeRtosWake wake{communicationTaskHandle};
-wake.attach(uart);   // uart.setWakeHandler(...)
+static uart::FreeRtosWake wake;                  // takes no task: safe before the task exists
+
+// after xTaskCreate(communicationTask, ..., &communicationTaskHandle):
+wake.attach(uart, communicationTaskHandle);      // false for a null handle, then nothing is installed
 
 void communicationTask(void*)
 {
     for (;;) {
-        uart::FreeRtosWake::wait(50u);      // woken by the ISR; every 50 ms otherwise
-        adapter.proceed(HAL_GetTick());     // uart.proceed -> endpoint (see modbus/README.md)
+        const uint32_t now = HAL_GetTick();
+        uart::FreeRtosWake::wait(std::min(50u, adapter.deadline_in_ms(now)));
+        adapter.proceed(HAL_GetTick());          // uart.proceed -> endpoint (see modbus/README.md)
         while (auto packet = link.pop_packet()) { handle(packet); }
     }
 }
 ```
 
-Several interrupts before the task runs coalesce into one wake. The fallback
-timeout is not polling: it serves what no UART event announces (the driver's
-health audit, a stale frame, a request timeout). The `FromISR` call requires
-the USART and DMA interrupt priorities to stay within
-`configMAX_SYSCALL_INTERRUPT_PRIORITY`, and the communication task must be
-the only one touching the driver, the endpoint and its packets. Cost with no
-handler installed: 4 cycles per interrupt (`doc/UART_PARANOID_AUDIT.md` §9.2).
-A bare-metal loop that calls `proceed()` unconditionally leaves the handler
-unset.
+Several interrupts before the task runs coalesce into one wake. The wait has
+two bounds. The fallback is not polling: it serves what no UART event
+announces (the driver's health audit, a request timeout). The adapter's
+`deadline_in_ms(now)` is mandatory when a framed endpoint is used: a frame
+whose remainder never comes must be expired when its deadline falls due, not
+when the next unrelated frame wakes the task, whose bytes would otherwise be
+glued onto the orphan first; it is `no_deadline` while nothing is in flight
+and 0 when due, so `std::min` is the whole computation. `wait()` acts on the
+calling task and must be called only by the attached one, whose notification
+index 0 then belongs to the UART wake. The `FromISR` call requires the USART
+and DMA interrupts not to be logically more urgent than the kernel's syscall
+ceiling: on STM32, the HAL/CMSIS number given to `HAL_NVIC_SetPriority()`
+must be `>= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY` (the unshifted
+form; `configMAX_SYSCALL_INTERRUPT_PRIORITY` is the same limit shifted into
+the register's form and is not the number to compare against). The
+communication task must be the only one touching the driver, the endpoint
+and its packets. Cost with no handler installed: 4 cycles per interrupt
+(`doc/UART_PARANOID_AUDIT.md` §9.2). A bare-metal loop that calls
+`proceed()` unconditionally leaves the handler unset.
 
 ### UART receive contract
 

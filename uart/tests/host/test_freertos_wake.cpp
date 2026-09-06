@@ -5,10 +5,11 @@
 
 /*
  * uart/FreeRtosWake.h on the real driver and the recording fakes of the HAL
- * and of FreeRTOS: every ISR event with work becomes exactly one task
- * notification, several before the task runs coalesce into one take, the
- * yield request follows what the kernel reports, and the fallback timeout is
- * passed through.
+ * and of FreeRTOS: a wake object is built without a task and refuses a null
+ * handle, every ISR event with work becomes exactly one task notification,
+ * several before the task runs coalesce into one take, the yield request
+ * follows what the kernel reports, and the fallback timeout is passed
+ * through.
  */
 #define UART_ENGINE_IMPLEMENT
 #include "uart_test_fixture.h"
@@ -42,11 +43,21 @@ int main()
 	fake_freertos::reset();
 	Fixture f;
 	f.start();
-	uart::FreeRtosWake wake{kTask};
-	check(wake.task() == kTask, "the wake object remembers the communication task");
-	wake.attach(f.uart);
-
 	auto& rtos = fake_freertos::model();
+
+	// The static-init situation: the object exists before the task does.
+	uart::FreeRtosWake wake;
+	check(wake.task() == nullptr, "constructed without a task, as a static object before xTaskCreate()");
+	check(!wake.attach(f.uart, nullptr) && wake.task() == nullptr,
+	      "attach() refuses a null task handle");
+	fake::rx_bytes("no", 2);
+	fake::rx_idle();
+	check(rtos.notifications_from_isr == 0, "and installed nothing: the chunk notified nobody");
+	f.loop();
+	check(rxText() == "no", "the chunk is still delivered by the loop");
+
+	check(wake.attach(f.uart, kTask) && wake.task() == kTask,
+	      "attach() with the real handle installs the wake and remembers the task");
 	fake::rx_bytes("abc", 3);
 	fake::rx_idle();
 	check(rtos.notifications_from_isr == 1 && rtos.last_notified == kTask,
@@ -68,7 +79,7 @@ int main()
 	      "one wait() takes all pending notifications: ISR bursts coalesce into one proceed()");
 	check(rtos.last_take_timeout == 50u, "the fallback timeout reaches ulTaskNotifyTake in ticks");
 	f.loop();
-	check(rxText() == "abcdef", "the woken loop delivers every chunk in order");
+	check(rxText() == "noabcdef", "the woken loop delivers every chunk in order");
 
 	const uint8_t frame[4] = {1, 2, 3, 0};
 	check(f.uart.send(std::span<const uint8_t>{frame, 4}), "send starts a transfer");

@@ -457,28 +457,42 @@ accepts — so the deadline is never shorter than the wire. A shorter chunk
 ended by IDLE while a frame is in flight: the line fell silent mid-frame,
 and 5 ms of silence — counted from the IDLE event, itself about one
 character after the last byte, so far beyond t1.5 at any usual Modbus baud —
-is a dead frame. A bridge that splits a frame resumes within microseconds
-and never reaches it. The full-chunk rule assumes a continuously
+is a dead frame — silence judged by the hardware, not by the absence of
+events: when the 5 ms fall due the adapter asks the driver's `rx_progress()`
+whether DMA has already taken bytes into the chunk it still owns, which is
+the case for the whole transfer time of a resumed remainder that has not yet
+ended in IDLE or filled the chunk (14 ms for 150 bytes at 115200, far longer
+at 9600); then the frame is alive and the deadline becomes one chunk time
+plus the guard. A bridge that splits a frame resumes within microseconds and
+never reaches the 5 ms with zero progress. The full-chunk rule assumes a continuously
 transmitting peer or bridge whose stalls inside a frame are small against a
 chunk's transmission; strict RTU permits a pause below t1.5 between every
 character, and a sender using that allowance on every byte could stretch a
 chunk beyond the deadline — this adapter targets DMA peers and USB bridges
 and is not a t1.5 timer. `on_rx()` stamps the deadline with the tick
-`proceed()` was given; no time is read in the receive path, and the deadline
-is judged only after the driver has delivered what it had, so a continuation
-already queued in the driver is never outrun by its own deadline (a loop
-composing the steps itself keeps `prepare → uart.proceed → finish → poll`).
-A gap disarms the deadline and reaches `notify_gap()`. `deadline_in_ms(now)`
-tells a scheduler how long it may sleep. With `framing::None` the adapter
-routes bursts to `receive_adu()` and keeps no deadline.
+`proceed()` was given; no time is read in the receive path. The progress
+snapshot is taken before the driver is drained and the verdict after, so a
+continuation already queued in the driver, or moved there while it drains,
+is never outrun by its own deadline (a loop composing the steps itself keeps
+`prepare → uart.proceed → finish → poll`); bytes that only begin to arrive
+after the deadline instant are late by definition. A gap disarms the
+deadline and reaches `notify_gap()`. `deadline_in_ms(now)` tells a scheduler
+how long it may sleep, and a sleeping task must bound its wait by it.
+`unbind()` and the destructor discard a frame in flight through
+`discard_incomplete()`, uncounted: it is neither stale nor lost, and what
+arrives after a later `bind()` could only glue onto it. With `framing::None`
+the adapter routes bursts to `receive_adu()` and keeps no deadline.
 
 Measured: on the fake HAL a 700-byte private ADU crosses three 256-byte
 chunks at 9600 baud with 310 ms of software silence between them and
 arrives whole, a sender that dies on a chunk boundary is expired after
 325 ms, an orphan half after 5 ms, a 1 ms split is reassembled, a
-continuation queued at the deadline completes, a baud change to 1M is
-followed on the next `proceed()`, the tick wraps harmlessly, and a refused
-`bind()` leaves the application's own handler in place
+continuation queued at the deadline completes, a bridge that resumes a split
+frame into the next DMA chunk with no event yet keeps the frame alive at
+115200 (the case the 5 ms rule alone got wrong: 7 failures before the
+progress check), a baud change to 1M is followed on the next `proceed()`,
+the tick wraps harmlessly, a refused `bind()` leaves the application's own
+handler in place, and `unbind()` discards a frame in flight
 (`test_uart_integration`); on the H7S the harness runs through the adapter
 and the framed endpoint echoes 12/12 single, split, glued and orphan-then-
 whole frames (`rtu/tests/hardware/h7s/README.md`).

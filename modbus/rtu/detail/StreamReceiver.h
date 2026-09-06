@@ -166,9 +166,19 @@ public:
 		if (!assembling()) {
 			return;
 		}
+		discard_incomplete();
+		++m_framing.stale_frames;
+	}
+
+	// The same drop without a verdict: the transport was detached, so the
+	// frame in flight is neither stale nor lost, and nothing is counted.
+	void discard_incomplete() noexcept
+	{
+		if (!assembling()) {
+			return;
+		}
 		release_building();
 		reset();
-		++m_framing.stale_frames;
 	}
 
 private:

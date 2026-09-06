@@ -29,6 +29,7 @@ public:
 	bool tx_busy() const noexcept { return false; }
 	void proceed(uint32_t) noexcept {}
 	FakeHandle* instance() const noexcept { return nullptr; }
+	uint16_t rx_progress() const noexcept { return 0u; }
 };
 
 struct NotAnRtuEndpoint {

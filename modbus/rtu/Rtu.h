@@ -300,6 +300,16 @@ public:
 		m_receiver.expire_incomplete();
 	}
 
+	// Drops the frame in flight, if any (framing policy only), as a stream
+	// discontinuity the transport announces rather than a fault: nothing is
+	// counted. UartAdapter::unbind() calls it, so a half-received frame cannot
+	// glue onto the first frame after a later bind().
+	void discard_incomplete() noexcept
+		requires framed
+	{
+		m_receiver.discard_incomplete();
+	}
+
 	[[nodiscard]] modbus::rtu::Stats stats() const noexcept
 	{
 		return {m_receiver.stats(), m_tx_stats};

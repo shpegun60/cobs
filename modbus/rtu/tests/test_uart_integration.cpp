@@ -12,7 +12,9 @@
  * 320 ms of 12-bit characters to arrive. The adapter's lifecycle contract is
  * covered too: construction before the handle carries a rate, transactional
  * bind()/unbind(), a changed line rate, a continuation queued at the
- * deadline, and the tick wrapping around.
+ * deadline, the tick wrapping around, and the case the 5 ms rule alone gets
+ * wrong: a bridge that resumes a split frame into the next DMA chunk before
+ * any IDLE or TC event has fired, which the driver's rx_progress() exposes.
  */
 
 #define UART_ENGINE_IMPLEMENT
@@ -275,11 +277,20 @@ int main()
 		check(!f.adapter.unbind(), "unbind() is refused too while TX is active");
 		fake::tx_done();
 		f.loop();
+		feed(std::span<const uint8_t>{frame}.first(10u), false);   // a frame in flight
+		f.loop();
+		check(f.link.assembling(), "a partial frame is in flight");
 		check(f.adapter.unbind() && !f.adapter.bound(), "unbind() succeeds once the frame is released");
+		check(!f.link.assembling() && f.link.framing_stats().stale_frames == 0u &&
+		      f.link.storage().rx_available() == 4u,
+		      "unbind() discards the frame in flight as a discontinuity: block returned, nothing counted");
 		feed(frame, false);
 		f.loop();
 		check(!f.link.has_packet(), "after unbind() nothing reaches the endpoint");
 		check(f.adapter.bind(), "and bind() works again");
+		feed(frame, false);
+		f.loop();
+		check(equal(f.pop_adu(), frame), "the first frame after the rebind is delivered whole, glued to nothing");
 		check(fake::model().violations.empty(), "no ownership violation across the lifecycle");
 	}
 
@@ -493,10 +504,16 @@ int main()
 			FramedAdapter temporary{f.uart, f.link};
 			check(temporary.bind() && temporary.bound(),
 			      "a second adapter binds over the first while no transmission is active");
+			const auto partial = wide_frame(30u, 14u);
+			feed(std::span<const uint8_t>{partial}.first(12u), false);
+			temporary.proceed(fake::model().tick);
+			check(f.link.assembling(), "a frame is in flight through the temporary adapter");
 			// `temporary` now owns the driver's handlers and dies here: it must
 			// detach them on the way out rather than leave them pointing at a
-			// dead object.
+			// dead object, and drop the frame it can no longer complete.
 		}
+		check(!f.link.assembling() && f.link.framing_stats().stale_frames == 0u,
+		      "the dying adapter discarded the frame in flight, uncounted");
 		const auto frame = wide_frame(20u, 13u);
 		feed(frame, false);
 		f.loop();
@@ -505,6 +522,89 @@ int main()
 		feed(frame, false);
 		f.loop();
 		check(equal(f.pop_adu(), frame), "and receives");
+	}
+
+	group("PartialIdleThenDmaResumes");
+	{
+		// The scenario the 5 ms rule alone gets wrong. A bridge splits a frame:
+		// the first part ends with IDLE at t0, the bridge resumes 1 ms later
+		// and the remainder is physically arriving into the next DMA chunk,
+		// but no IDLE or TC has fired yet, so the driver has nothing to
+		// publish when the deadline falls due at t0 + 5 ms. At 115200 the
+		// remainder of a 300-byte frame takes about 14 ms on the wire; at
+		// 9600 more than a hundred. The frame must stay alive: the driver's
+		// DMA counter shows the line is busy again.
+		fake::reset();
+		Fixture<FramedLink> f;
+		check(f.start(115200u), "framed endpoint through the adapter at 115200");
+		check(f.adapter.full_chunk_ms() == 27u, "one 256-byte chunk of 12-bit characters at 115200: 27 ms");
+		const auto adu = wide_frame(300u, 21u);
+		const std::span<const uint8_t> bytes{adu};
+		feed(bytes.first(150u), false);
+		f.loop();
+		check(f.link.assembling() && f.adapter.deadline_in_ms(fake::model().tick) == 5u,
+		      "the first part ends with IDLE: 5 ms deadline");
+		fake::advance_tick(1u);
+		fake::rx_bytes(bytes.data() + 150u, 100u);   // DMA is receiving again; no event yet
+		fake::advance_tick(4u);
+		f.loop();
+		check(f.link.assembling() && f.link.framing_stats().stale_frames == 0u,
+		      "at the deadline DMA has already taken 100 bytes of the remainder: the frame is alive");
+		check(f.adapter.deadline_in_ms(fake::model().tick) == 27u + 5u,
+		      "the deadline moved to one chunk time plus the guard, as after a full chunk");
+		fake::advance_tick(10u);
+		f.loop();
+		check(f.link.assembling() && f.link.framing_stats().stale_frames == 0u,
+		      "10 ms later, still no event: still alive");
+		feed(bytes.subspan(250u), false);            // the remainder ends with IDLE
+		f.loop();
+		check(equal(f.pop_adu(), adu) && f.link.framing_stats().stale_frames == 0u,
+		      "the frame arrives whole");
+
+		// The orphan: IDLE, then nothing at all on the line. Progress stays 0,
+		// and 5 ms is the verdict exactly as before.
+		feed(bytes.first(150u), false);
+		f.loop();
+		fake::advance_tick(5u);
+		f.loop();
+		check(!f.link.assembling() && f.link.framing_stats().stale_frames == 1u,
+		      "with nothing arriving after IDLE the orphan is expired at 5 ms");
+
+		// The instant of the deadline. The progress snapshot is taken BEFORE the
+		// driver is drained and the verdict AFTER, so a continuation the driver
+		// publishes in between is delivered, never outrun by its own deadline.
+		feed(bytes.first(150u), false);
+		f.loop();
+		fake::advance_tick(5u);
+		f.adapter.prepare(fake::model().tick);       // snapshot: no progress, deadline due
+		feed(bytes.subspan(150u), false);            // the ISR publishes the remainder now
+		f.uart.proceed(fake::model().tick);
+		f.adapter.finish(fake::model().tick);
+		f.link.poll(fake::model().tick);
+		check(equal(f.pop_adu(), adu) && f.link.framing_stats().stale_frames == 1u,
+		      "a continuation published between the snapshot and the drain completes the frame");
+
+		// Bytes that only begin to arrive after the deadline instant are late by
+		// definition: the orphan is expired, and the late remainder is a
+		// garbage frame start the endpoint resynchronizes from.
+		feed(bytes.first(150u), false);
+		f.loop();
+		fake::advance_tick(5u);
+		f.adapter.prepare(fake::model().tick);
+		f.uart.proceed(fake::model().tick);
+		fake::rx_bytes(bytes.data() + 150u, 100u);   // arrives only now, unpublished
+		f.adapter.finish(fake::model().tick);
+		f.link.poll(fake::model().tick);
+		check(!f.link.assembling() && f.link.framing_stats().stale_frames == 2u,
+		      "bytes first arriving after the deadline instant do not rescue the orphan");
+		feed(bytes.subspan(250u), false);
+		f.loop();
+		const auto next = wide_frame(40u, 22u);
+		feed(next, false);
+		f.loop();
+		check(equal(f.pop_adu(), next) && f.link.storage().rx_available() == 4u,
+		      "the endpoint resynchronizes on the next frame and leaks nothing");
+		check(fake::model().violations.empty(), "no ownership violation");
 	}
 
 	return finish();
