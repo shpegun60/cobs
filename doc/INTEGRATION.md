@@ -408,7 +408,11 @@ otherwise consume the frame behind it.
 Build it with `include(src/adapters/qt/qt.pri)` next to `rtu.pri` or
 `cobs.pri`; it adds `QT += serialport` and nothing else. Verified by
 `sh src/adapters/qt/tests/run.sh` (82 checks on a `QIODevice` stand-in for
-the port, both protocols, a real event loop, no COM port).
+the port, both protocols, a real event loop, no COM port), and against
+QtSerialBus itself on the H7S: `RtuClient` and `QModbusRtuSerialClient` run
+the same 55-step script against the board's server and agree scenario for
+scenario, and the board's client runs it against `QModbusRtuSerialServer`
+(`src/adapters/qt/tests/hardware/h7s/README.md`).
 
 ## 7. Any other byte transport: TCP, tests, radios
 

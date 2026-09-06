@@ -44,6 +44,15 @@ CMD_RESET = 3
 CMD_HOLD = 4
 CMD_SELFTEST = 5
 CMD_CRC_BENCHMARK = 6
+CMD_ROLE_REPORT = 7
+CMD_START_CLIENT = 8
+CMD_RESET_MODEL = 9
+
+# RoleReport payload: 8-byte header, four u32 counters, 27 eight-byte entries.
+REPORT_ENTRIES = 27
+REPORT_DATA_SIZE = 8 + 4 * 4 + REPORT_ENTRIES * 8
+CLIENT_STATUS = {0: "ok", 1: "mismatch", 2: "timeout", 3: "unexpected", 4: "send_failed",
+                 5: "refused", 255: "pending"}
 
 STATS_FIELDS = (
     "version",
@@ -409,6 +418,47 @@ class HardwareLink:
             raise AssertionError(f"metric reset refused: {status}")
         # The baseline is taken after the ACK's DMA borrow is released.
         time.sleep(0.08)
+
+    def start_client(self, delay_ms: int) -> None:
+        """Arms the client role's script to start after delay_ms (client images only)."""
+        status, echoed = self.ack(CMD_START_CLIENT, delay_ms)
+        if status != 0 or echoed != delay_ms:
+            raise AssertionError(f"StartClient refused: status={status} argument={echoed}")
+
+    def reset_model(self) -> None:
+        """The board's reference model back to its initial contents (server and client images)."""
+        status, _ = self.ack(CMD_RESET_MODEL)
+        if status != 0:
+            raise AssertionError(f"ResetModel refused: {status}")
+
+    def role_report(self, page: int = 0) -> dict:
+        """The role's counters and, for a client image, one page of step verdicts."""
+        payload = self.control(CMD_ROLE_REPORT, REPORT_DATA_SIZE, (page,))
+        role, running, done, steps_total, page_echo, in_page, framer, _ = struct.unpack_from("<8B", payload)
+        served, exceptions, broadcasts, ignored = struct.unpack_from("<4I", payload, 8)
+        entries = []
+        for i in range(in_page):
+            status, detail, responded, _reserved, rtt_us = struct.unpack_from("<4BI", payload, 24 + 8 * i)
+            entries.append({"index": page * REPORT_ENTRIES + i, "status": CLIENT_STATUS.get(status, str(status)),
+                            "detail": detail, "responded": bool(responded), "rtt_us": rtt_us})
+        return {"role": role, "running": bool(running), "done": bool(done), "steps_total": steps_total,
+                "page": page_echo, "framer": bool(framer),
+                "counters": {"served": served, "exceptions": exceptions, "broadcasts": broadcasts, "ignored": ignored},
+                "entries": entries}
+
+    def client_results(self) -> dict:
+        """Every step verdict of a finished client script, across report pages."""
+        first = self.role_report(0)
+        entries = list(first["entries"])
+        page = 1
+        while len(entries) < first["steps_total"]:
+            more = self.role_report(page)
+            if not more["entries"]:
+                raise AssertionError(f"report page {page} is empty before {first['steps_total']} steps were read")
+            entries.extend(more["entries"])
+            page += 1
+        first["entries"] = entries
+        return first
 
     def stats(self) -> dict:
         scalar_bytes = 4 * len(STATS_FIELDS)

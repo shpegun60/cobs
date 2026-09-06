@@ -24,6 +24,20 @@
  * Ordinary CRC-valid ADUs are echoed with the same address, function and
  * function data. A reserved address/function/data envelope carries harness
  * control commands through the same Packet/Message/CRC/Pool path.
+ *
+ * MODBUS_HW_ROLE turns the harness into one side of a standard Modbus
+ * exchange for the comparison against Qt's QtSerialBus on the PC
+ * (src/adapters/qt/tests/hardware/h7s):
+ *   1 — a SERVER at unit 0x11 serving modbus/rtu/tests/reference_model.h,
+ *       for QModbusRtuSerialClient or this repository's RtuClient on the PC;
+ *   2 — a CLIENT running a fixed script of requests against a
+ *       QModbusRtuSerialServer at unit 0x0A on the PC, predicting every
+ *       response from the same reference model kept as a shadow, and
+ *       reporting each step's verdict and round-trip time.
+ * In both roles the control envelope keeps working (it is how the PC starts
+ * the client script and collects the report), and with MODBUS_HW_FRAMER=1
+ * the framing table is the standard one for the role's direction plus the
+ * control function; frames for other units are ignored, not echoed.
  */
 
 #define UART_ENGINE_PROBE 1
@@ -31,6 +45,7 @@
 #include "Uart.h"
 
 #include "modbus/rtu/Rtu.h"
+#include "modbus/rtu/tests/reference_model.h"
 #include "adapters/rtu/UartAdapter.h"
 #include "uart_bench.h"
 #include "usart.h"
@@ -54,10 +69,30 @@
 #ifndef MODBUS_HW_WAKE
 #define MODBUS_HW_WAKE 0
 #endif
+#ifndef MODBUS_HW_ROLE
+#define MODBUS_HW_ROLE 0
+#endif
 static_assert(MODBUS_HW_FRAMER == 0 || MODBUS_HW_FRAMER == 1,
 	"MODBUS_HW_FRAMER selects the framing policy: 0 or 1");
-// Data bytes owned by the framing policy in front of every body.
+static_assert(MODBUS_HW_ROLE >= 0 && MODBUS_HW_ROLE <= 2,
+	"MODBUS_HW_ROLE: 0 echo harness, 1 reference server, 2 scripted client");
+// Data bytes owned by the framing policy in front of the CONTROL body (in the
+// echo role, in front of every body).
 constexpr std::size_t kFramePrefix = MODBUS_HW_FRAMER ? 2u : 0u;
+constexpr uint8_t kControlFunction = 0x41u;
+
+// The prefix a given function carries: in the echo role every function is
+// length-prefixed; in the server and client roles the standard functions keep
+// their standard layout and only the harness's control function is prefixed.
+[[nodiscard]] constexpr std::size_t prefix_for(const uint8_t function) noexcept
+{
+#if MODBUS_HW_FRAMER
+	return (MODBUS_HW_ROLE == 0 || function == kControlFunction) ? 2u : 0u;
+#else
+	(void)function;
+	return 0u;
+#endif
+}
 #ifndef MODBUS_HW_CRC_POLICY_ID
 #define MODBUS_HW_CRC_POLICY_ID 0
 #endif
@@ -106,7 +141,7 @@ constexpr uint32_t kCrcPolicy = 7u;
 using Crc = ::crc::Crc64Table;
 constexpr uint32_t kCrcPolicy = 8u;
 #endif
-#if MODBUS_HW_FRAMER
+#if MODBUS_HW_FRAMER && MODBUS_HW_ROLE == 0
 // The harness protocol is not standard Modbus: every function carries an
 // arbitrary body, so every function is declared length-prefixed. Direction is
 // irrelevant to such a table but the policy contract still names one.
@@ -122,6 +157,25 @@ struct HarnessFramer {
 	}
 };
 using Framer = HarnessFramer;
+#elif MODBUS_HW_FRAMER
+// A standard Modbus side: the standard table for what this role receives
+// (a server receives requests, a client responses), plus the harness's own
+// control function as a length-prefixed private function.
+struct RoleFramer : modbus::rtu::framing::Standard<MODBUS_HW_ROLE == 1
+		? modbus::rtu::framing::Direction::Request
+		: modbus::rtu::framing::Direction::Response> {
+	using Base = modbus::rtu::framing::Standard<rx>;
+
+	[[nodiscard]] static constexpr modbus::rtu::framing::Layout layout(
+			const modbus::rtu::framing::Direction direction,
+			const uint8_t function) noexcept
+	{
+		return function == kControlFunction
+			? modbus::rtu::framing::Layout::length_prefixed(2u)
+			: Base::layout(direction, function);
+	}
+};
+using Framer = RoleFramer;
 #else
 using Framer = modbus::rtu::framing::None;
 #endif
@@ -134,7 +188,6 @@ static_assert(Link::max_send_size == Link::max_receive_size);
 static_assert(Link::max_frame_size == 256u);
 
 constexpr uint8_t kControlAddress = 0xF7u;
-constexpr uint8_t kControlFunction = 0x41u;
 constexpr std::array<uint8_t, 4> kMagic{0x4Du, 0x52u, 0x54u, 0x55u};
 // Harness protocol, not Modbus: version 4 appends the framing mode to HELLO.
 constexpr uint32_t kProtocolVersion = 4u;
@@ -156,7 +209,16 @@ enum class Command : uint8_t {
 	HoldPackets = 4u,
 	BackpressureSelfTest = 5u,
 	CrcBenchmark = 6u,
+	RoleReport = 7u,    // argument: page; the role's counters and the client's step verdicts
+	StartClient = 8u,   // argument: delay in ms before the client script starts
+	ResetModel = 9u,    // the served (or shadowed) reference model back to its initial contents
 };
+
+// RoleReport payload: an 8-byte header, four 32-bit role counters, and up to
+// kReportEntries 8-byte step entries (client role; zero in the server role).
+constexpr std::size_t kReportEntries = 27u;
+constexpr std::size_t kReportDataSize = 8u + 4u * sizeof(uint32_t) + kReportEntries * 8u;
+static_assert(kReportDataSize == 240u);
 
 enum class PendingAction : uint8_t { None, ResetMetrics, HoldPackets };
 
@@ -176,6 +238,64 @@ struct AppMetrics final {
 };
 
 AppMetrics s_app;
+
+// Role counters, reported by RoleReport in this order.
+struct RoleCounters final {
+	uint32_t served = 0u;        // server: responses sent | client: responses matched
+	uint32_t exceptions = 0u;    // server: exception responses sent | client: mismatches
+	uint32_t broadcasts = 0u;    // server: broadcast writes executed | client: timeouts
+	uint32_t ignored = 0u;       // frames for other units (server) or unsolicited (client)
+};
+RoleCounters s_role;
+modbus_reference::Model s_model;   // served (server) or shadowed (client)
+
+#if MODBUS_HW_ROLE == 2
+namespace client {
+
+// QModbus's defaults, so the two clients compared on the PC and this one
+// behave alike on the wire.
+constexpr uint32_t kResponseTimeoutMs = 1000u;
+constexpr uint32_t kInterFrameMs = 2u;
+constexpr uint32_t kTurnaroundMs = 100u;
+constexpr std::size_t kSteps = modbus_reference::script::kSteps;
+using Step = modbus_reference::script::Request;
+
+enum class Status : uint8_t {
+	Ok = 0u,          // behaved as the reference model predicts (a response that matched, or silence where none was due)
+	Mismatch = 1u,    // a response arrived and differed; detail = the function it carried
+	Timeout = 2u,     // a response was due and none came within kResponseTimeoutMs
+	Unexpected = 3u,  // a response arrived where none was due (broadcast, foreign unit)
+	SendFailed = 4u,  // the endpoint or the transport refused the frame
+	Refused = 5u,     // the framed builder refused the function before the wire (unknown function)
+	Pending = 0xFFu,
+};
+
+struct Result final {
+	Status status = Status::Pending;
+	uint8_t detail = 0u;
+	uint8_t responded = 0u;
+	uint8_t reserved = 0u;
+	uint32_t rtt_us = 0u;
+};
+
+struct Engine final {
+	bool armed = false;
+	uint32_t start_at = 0u;
+	bool running = false;
+	bool done = false;
+	bool waiting = false;
+	std::size_t index = 0u;
+	uint32_t next_at = 0u;
+	uint32_t sent_tick = 0u;
+	uint32_t sent_cycles = 0u;
+	Step step;
+	modbus_reference::Reply expected;
+	std::array<Result, kSteps> results{};
+};
+Engine s_engine;
+
+} // namespace client
+#endif
 modbus::rtu::Stats s_rtu0;
 Serial::Stats s_uart0;
 Link::Storage::Stats s_rx_pool0;
@@ -349,7 +469,7 @@ template<class Counter>
 {
 	// With a framer the message already holds its reserved prefix; the hint
 	// covers the body that follows it.
-	auto message = s_link.make_message(address, function, data.size() + kFramePrefix);
+	auto message = s_link.make_message(address, function, data.size() + prefix_for(function));
 	if (!message || !message.append_bytes(data) ||
 			s_link.send(message) != modbus::SendResult::Sent) {
 		++s_app.response_failures;
@@ -357,6 +477,30 @@ template<class Counter>
 	}
 	return true;
 }
+
+#if MODBUS_HW_ROLE == 2
+// Like send_data(), but tells a builder refusal (the framed endpoint will not
+// send a function its table does not know) apart from a transport failure.
+enum class SendOutcome : uint8_t { Sent, Refused, Failed };
+
+[[nodiscard]] SendOutcome send_request(
+		const uint8_t address,
+		const uint8_t function,
+		const std::span<const uint8_t> data) noexcept
+{
+	auto message = s_link.make_message(address, function, data.size() + prefix_for(function));
+	if (!message || !message.append_bytes(data)) {
+		return SendOutcome::Refused;
+	}
+	const modbus::SendResult result = s_link.send(message);
+	if (result == modbus::SendResult::Sent) {
+		return SendOutcome::Sent;
+	}
+	return result == modbus::SendResult::Invalid ? SendOutcome::Refused : SendOutcome::Failed;
+}
+
+[[nodiscard]] std::span<const uint8_t> body_of(const Link::Packet& packet) noexcept;
+#endif
 
 [[nodiscard]] bool send_writer(const Writer& writer) noexcept
 {
@@ -394,6 +538,173 @@ void reset_metrics() noexcept
 	return begin_response(writer, command, token) &&
 		writer.put_u32(status) && writer.put_u32(value) &&
 		send_writer(writer);
+}
+
+#if MODBUS_HW_ROLE == 2
+namespace client {
+
+void start(const uint32_t now, const uint32_t delay_ms) noexcept
+{
+	s_model.reset();
+	s_engine = Engine{};
+	s_engine.armed = true;
+	s_engine.start_at = now + delay_ms;
+}
+
+void advance(const uint32_t now) noexcept
+{
+	s_engine.waiting = false;
+	const uint32_t gap = s_engine.step.address == 0u ? kTurnaroundMs : kInterFrameMs;
+	++s_engine.index;
+	s_engine.next_at = now + gap;
+}
+
+[[nodiscard]] uint32_t round_trip_us() noexcept
+{
+	return (DWT->CYCCNT - s_engine.sent_cycles) / (SystemCoreClock / 1000000u);
+}
+
+void record(const Status status, const uint8_t detail, const bool responded, const uint32_t rtt_us) noexcept
+{
+	Result& result = s_engine.results[s_engine.index];
+	result.status = status;
+	result.detail = detail;
+	result.responded = responded ? 1u : 0u;
+	result.rtt_us = rtt_us;
+	switch (status) {
+	case Status::Ok: ++s_role.served; break;
+	case Status::Mismatch: ++s_role.exceptions; break;
+	case Status::Timeout: ++s_role.broadcasts; break;
+	default: break;
+	}
+}
+
+void step(const uint32_t now) noexcept
+{
+	if (s_engine.armed && !deadline_pending(now, s_engine.start_at)) {
+		s_engine.armed = false;
+		s_engine.running = true;
+		s_engine.index = 0u;
+		s_engine.next_at = now;
+	}
+	if (!s_engine.running) {
+		return;
+	}
+	if (s_engine.waiting) {
+		// Silence is the expected outcome for a broadcast and for a foreign
+		// unit; it is a timeout when a response was due. Either way the wait
+		// is QModbus's: the response timeout, or the turnaround after a
+		// broadcast.
+		const bool broadcast = s_engine.step.address == 0u;
+		const uint32_t limit = broadcast ? kTurnaroundMs : kResponseTimeoutMs;
+		if (!deadline_pending(now, s_engine.sent_tick + limit)) {
+			record(s_engine.expected.respond ? Status::Timeout : Status::Ok, 0u, false, limit * 1000u);
+			advance(now);
+		}
+		return;
+	}
+	if (s_engine.index >= kSteps) {
+		s_engine.running = false;
+		s_engine.done = true;
+		return;
+	}
+	if (deadline_pending(now, s_engine.next_at) || s_link.tx_active()) {
+		return;
+	}
+	modbus_reference::script::build(s_engine.index, modbus_reference::kPcUnit, s_engine.step);
+	s_engine.expected = modbus_reference::serve(s_model, modbus_reference::kPcUnit,
+		s_engine.step.address, s_engine.step.function, s_engine.step.span());
+	s_engine.sent_cycles = DWT->CYCCNT;
+	s_engine.sent_tick = now;
+	switch (send_request(s_engine.step.address, s_engine.step.function, s_engine.step.span())) {
+	case SendOutcome::Sent:
+		s_engine.waiting = true;
+		break;
+	case SendOutcome::Refused:
+		record(Status::Refused, 0u, false, 0u);
+		advance(now);
+		break;
+	case SendOutcome::Failed:
+		record(Status::SendFailed, 0u, false, 0u);
+		advance(now);
+		break;
+	}
+}
+
+void on_packet(const Link::Packet& packet) noexcept
+{
+	if (!s_engine.running || !s_engine.waiting) {
+		++s_role.ignored;   // unsolicited
+		return;
+	}
+	const uint32_t rtt = round_trip_us();
+	if (!s_engine.expected.respond) {
+		record(Status::Unexpected, packet.function(), true, rtt);
+		advance(HAL_GetTick());
+		return;
+	}
+	if (packet.address() != s_engine.step.address) {
+		++s_role.ignored;   // QModbus ignores a response from another server too
+		return;
+	}
+	const std::span<const uint8_t> body = body_of(packet);
+	const std::span<const uint8_t> want = s_engine.expected.span();
+	bool same = packet.function() == s_engine.expected.function && body.size() == want.size();
+	uint8_t detail = packet.function();
+	if (same) {
+		for (std::size_t i = 0u; i < body.size(); ++i) {
+			if (body[i] != want[i]) {
+				same = false;
+				detail = static_cast<uint8_t>(i < 255u ? i : 255u);
+				break;
+			}
+		}
+	}
+	record(same ? Status::Ok : Status::Mismatch, same ? 0u : detail, true, rtt);
+	advance(HAL_GetTick());
+}
+
+} // namespace client
+#endif
+
+[[nodiscard]] bool send_role_report(const uint32_t token, const uint32_t page) noexcept
+{
+	Writer writer;
+	bool ok = begin_response(writer, Command::RoleReport, token) &&
+		writer.put_u8(static_cast<uint8_t>(MODBUS_HW_ROLE));
+#if MODBUS_HW_ROLE == 2
+	const std::size_t first = page * kReportEntries;
+	const std::size_t in_page = first < client::kSteps
+		? (client::kSteps - first < kReportEntries ? client::kSteps - first : kReportEntries) : 0u;
+	ok = ok && writer.put_u8(client::s_engine.running ? 1u : 0u) &&
+		writer.put_u8(client::s_engine.done ? 1u : 0u) &&
+		writer.put_u8(static_cast<uint8_t>(client::kSteps)) &&
+		writer.put_u8(static_cast<uint8_t>(page)) &&
+		writer.put_u8(static_cast<uint8_t>(in_page)) &&
+		writer.put_u8(static_cast<uint8_t>(MODBUS_HW_FRAMER)) &&
+		writer.put_u8(0u);
+#else
+	ok = ok && writer.put_u8(0u) && writer.put_u8(0u) && writer.put_u8(0u) &&
+		writer.put_u8(static_cast<uint8_t>(page)) && writer.put_u8(0u) &&
+		writer.put_u8(static_cast<uint8_t>(MODBUS_HW_FRAMER)) && writer.put_u8(0u);
+#endif
+	ok = ok && writer.put_u32(s_role.served) && writer.put_u32(s_role.exceptions) &&
+		writer.put_u32(s_role.broadcasts) && writer.put_u32(s_role.ignored);
+	for (std::size_t i = 0u; i < kReportEntries && ok; ++i) {
+#if MODBUS_HW_ROLE == 2
+		const std::size_t index = first + i;
+		client::Result result;
+		if (index < client::kSteps) {
+			result = client::s_engine.results[index];
+		}
+		ok = writer.put_u8(static_cast<uint8_t>(result.status)) && writer.put_u8(result.detail) &&
+			writer.put_u8(result.responded) && writer.put_u8(result.reserved) &&
+			writer.put_u32(result.rtt_us);
+#else
+		ok = writer.put_u32(0u) && writer.put_u32(0u);
+#endif
+	}
+	return ok && send_writer(writer);
 }
 
 [[nodiscard]] bool send_hello(const uint32_t token) noexcept
@@ -559,7 +870,7 @@ void run_backpressure_selftest() noexcept
 // against the frame length).
 [[nodiscard]] std::span<const uint8_t> body_of(const Link::Packet& packet) noexcept
 {
-	return packet.data().subspan(kFramePrefix);
+	return packet.data().subspan(prefix_for(packet.function()));
 }
 
 [[nodiscard]] bool has_control_magic(const Link::Packet& packet) noexcept
@@ -616,9 +927,53 @@ void process_control(const std::span<const uint8_t> data) noexcept
 		}
 		(void)send_crc_benchmark(token, argument, second_argument);
 		return;
+	case Command::RoleReport:
+		(void)send_role_report(token, data.size() >= 13u ? argument : 0u);
+		return;
+	case Command::ResetModel:
+		// Between two clients that each expect the initial contents, and
+		// before a client script; the role counters stay.
+		s_model.reset();
+		(void)send_ack(command, token, 0u, 0u);
+		return;
+	case Command::StartClient:
+#if MODBUS_HW_ROLE == 2
+		if (data.size() < 13u || argument > kMaxActionMs) {
+			(void)send_ack(command, token, 1u, argument);
+			return;
+		}
+		if (send_ack(command, token, 0u, argument)) {
+			client::start(HAL_GetTick(), argument);
+		}
+#else
+		(void)send_ack(command, token, 3u, 0u);   // not a client image
+#endif
+		return;
 	}
 	(void)send_ack(command, token, 2u, 0u);
 }
+
+#if MODBUS_HW_ROLE == 1
+// The server role: the reference model at unit 0x11, broadcasts executed
+// silently, frames for other units ignored.
+void serve_packet(const Link::Packet& packet) noexcept
+{
+	const modbus_reference::Reply reply = modbus_reference::serve(
+		s_model, modbus_reference::kBoardUnit, packet.address(), packet.function(), body_of(packet));
+	if (!reply.respond) {
+		if (packet.address() == 0u) {
+			++s_role.broadcasts;
+		}
+		return;
+	}
+	if (send_data(modbus_reference::kBoardUnit, reply.function, reply.span())) {
+		++s_role.served;
+		if (reply.exception()) {
+			++s_role.exceptions;
+		}
+	}
+}
+#endif
 
 void process_one_packet() noexcept
 {
@@ -631,11 +986,21 @@ void process_one_packet() noexcept
 		if (packet) {
 			if (has_control_magic(packet)) {
 				process_control(body_of(packet));
+#if MODBUS_HW_ROLE == 1
+			} else if (packet.address() == modbus_reference::kBoardUnit || packet.address() == 0u) {
+				serve_packet(packet);
+			} else {
+				++s_role.ignored;
+#elif MODBUS_HW_ROLE == 2
+			} else {
+				client::on_packet(packet);
+#else
 			} else if (send_data(packet.address(), packet.function(),
 			                          body_of(packet))) {
 				++s_app.echo_frames;
 				s_app.echo_data_bytes +=
 					static_cast<uint32_t>(body_of(packet).size());
+#endif
 			}
 		}
 	}
@@ -729,6 +1094,7 @@ extern "C" void bench_init(void)
 	s_uart.setRxHandler([](const std::span<const uint8_t> bytes) noexcept {
 		on_rx(bytes);
 	});
+	s_model.reset();
 	reset_metrics();
 }
 
@@ -752,4 +1118,7 @@ extern "C" void bench_loop(void)
 		s_hold_active = false;
 	}
 	process_one_packet();
+#if MODBUS_HW_ROLE == 2
+	client::step(now);
+#endif
 }

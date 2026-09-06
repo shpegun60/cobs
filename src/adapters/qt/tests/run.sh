@@ -55,4 +55,17 @@ echo "=== serial_adapter_test (qmake, $QT_KIT) ==="
 	fi
 )
 "$OUT/host/bin/serial_adapter_test.exe"
+
+echo "=== qmodbus_bench (qmake, QtSerialBus): the PC side of the hardware comparison compiles ==="
+mkdir -p "$OUT/qmodbus_bench"
+(
+	cd "$OUT/qmodbus_bench"
+	qmake "$HERE/qmodbus_bench/qmodbus_bench.pro" >qmake.log 2>&1
+	mingw32-make -j >make.log 2>&1 || { cat make.log; exit 1; }
+	if grep -i "warning" make.log | grep -v "/Qt/"; then
+		echo "FAIL  the runner build is not warning-free"; exit 1
+	fi
+)
+"$OUT/qmodbus_bench/bin/qmodbus_bench.exe" --help >/dev/null
+echo "  ok    qmodbus_bench built and answers --help"
 echo "=== all Qt adapter suites passed ==="

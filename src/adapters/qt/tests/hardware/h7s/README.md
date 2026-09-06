@@ -1,0 +1,101 @@
+# The Modbus RTU stack against QtSerialBus, on the NUCLEO-H7S3L8
+
+Qt's `QtSerialBus` is the reference this repository's Modbus RTU stack is
+measured against: the stack has to be a usable replacement, "не гірше".
+This directory holds the measurement, both ways round, over the board's real
+UART and the ST-Link virtual COM port.
+
+## What is compared
+
+One request script, `modbus_reference::script` in
+[`src/modbus/rtu/tests/reference_model.h`](../../../../modbus/rtu/tests/reference_model.h):
+55 steps — reads of every table, writes of every kind each verified by a
+read-back, the largest legal request and response (123 registers written,
+125 read), the exceptions the specification defines (address out of range,
+quantity 0, an unknown function, an illegal coil value), a diagnostics echo,
+a request to a unit nobody has, a broadcast write verified by a read-back,
+and thirty identical reads back to back for timing. One reference data model,
+`modbus_reference::Model`, with `serve()` answering a request the way a
+server holding that model does. Every party in the comparison uses the same
+header, so a verdict of **ok** means "the peer answered exactly what the
+reference model predicts, or stayed silent where the model says nobody
+answers".
+
+**The board as a server.** The harness firmware built with `MODBUS_HW_ROLE=1`
+serves the model at unit 0x11 through the production stack (`Uart<256,4>`,
+`UartAdapter`, `modbus::rtu::Endpoint`). Two clients on the PC run the
+script against it in turn, the model reset between them:
+
+- `QModbusRtuSerialClient` from QtSerialBus 6.4.3, driven through
+  `sendRawRequest()` so that every request goes out byte for byte as
+  scripted;
+- `adapters::qt::RtuClient`, this repository's master shaped like Qt's, over
+  `adapters::qt::SerialAdapter` and a `QSerialPort`.
+
+Both run with a 1000 ms response timeout and no retries, so nothing masks a
+failure, and both record the round trip of every scenario.
+
+**The board as a client.** The firmware built with `MODBUS_HW_ROLE=2` runs
+the same script against `QModbusRtuSerialServer` on the PC, which serves the
+same model at unit 0x0A. The board keeps the model as a shadow, predicts
+every response from it, records each step's verdict and round trip, and the
+PC collects the report through the harness control protocol afterwards;
+Qt's final register map and the writes Qt saw are recorded as well.
+
+Each direction runs at 115200 and 1 M baud, with the board's endpoint in
+both framing modes: the default burst endpoint (one IDLE-ended DMA burst is
+one candidate) and the framing policy (`framing::Standard`, frame ends from
+the bytes, the harness control function as a private length-prefixed one).
+
+## How to run and recheck
+
+```powershell
+python -B src/adapters/qt/tests/hardware/h7s/run_qmodbus.py --port COM6 `
+  --serial 002A001F3033510135393935 `
+  --output src/adapters/qt/tests/hardware/h7s/results_qmodbus_2026-09-06.json
+python -B src/adapters/qt/tests/hardware/h7s/verify_qmodbus.py `
+  src/adapters/qt/tests/hardware/h7s/results_qmodbus_2026-09-06.json `
+  --check-doc src/adapters/qt/tests/hardware/h7s/README.md
+```
+
+`run_qmodbus.py` builds the PC runner
+([`qmodbus_bench`](../../qmodbus_bench/main.cpp)) with the Qt 6.4.3 kit, the
+only local kit with QtSerialBus, backs up the board's flash, then for every
+baud and framing mode builds, inspects and flashes the two role images and
+drives the runs; the flash is restored, verified and read back last. The
+record carries the SHA-256 of every source it was built from and the flashed
+images; `verify_qmodbus.py` rechecks every verdict against the expectations
+below, the writes in Qt's final map, the flash restore and the provenance,
+and prints the tables that follow.
+
+## What the run showed
+
+The only verdicts other than **ok**, in either direction, follow from two
+facts about length-driven framing and QtSerialBus, and are written into the
+verifier as the only acceptable exceptions:
+
+- **An unknown function code cannot be framed.** Script step 19 sends
+  function 0x64. A server that finds frame ends from a length table has no
+  entry for it and never sees a complete request: the board's framed server
+  and Qt's server (which frames the same way) stay silent where the
+  specification asks for exception 01, so the client times out. Only the
+  board's burst server, which takes a whole IDLE-ended burst as one
+  candidate, answers 01 — and the burst server is what the default endpoint
+  is. A client sends the unknown function as it is: the builder has no
+  opinion about a function its table does not know, the peer decides.
+- **Qt's client does not model Diagnostics.** Step 20 is function 0x08,
+  sub-function 0 (return query data). The board's server echoes it exactly
+  as the model predicts, `QModbusRtuSerialClient` receives the echo intact
+  (its private code even special-cases this response), and then reports
+  `InvalidResponseError` because it has no data unit to map function 0x08
+  into. The runner judges the raw response, which is what is being
+  compared, and keeps Qt's verdict in the scenario's detail.
+
+Everything else matched, in both directions, at both bauds, in both framing
+modes: the same script, the same model, the two clients' verdicts identical
+scenario for scenario, Qt's server left with exactly the register map the
+board's writes produce, and the board's server left with exactly the map the
+PC clients' writes produce.
+
+The tables below are printed by `verify_qmodbus.py` from the record;
+`--check-doc` fails when they drift.

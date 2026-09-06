@@ -99,7 +99,16 @@ case "${MODBUS_HW_FRAMER:-0}" in
     exit 1
     ;;
 esac
-echo "CONFIG optimization=$OPT lto=${MODBUS_HW_LTO:-0} baud=${MODBUS_HW_BAUD:-115200} crc=$CRC_POLICY framer=${MODBUS_HW_FRAMER:-0} extra=${MODBUS_HW_CXXFLAGS_EXTRA:-}"
+# 0: the echo harness; 1: the reference server at unit 0x11; 2: the scripted
+# client against a QModbus server at unit 0x0A (see modbus_bench.cpp).
+case "${MODBUS_HW_ROLE:-0}" in
+  0|1|2) ;;
+  *)
+    echo "Unsupported MODBUS_HW_ROLE: ${MODBUS_HW_ROLE} (expected 0, 1 or 2)"
+    exit 1
+    ;;
+esac
+echo "CONFIG optimization=$OPT lto=${MODBUS_HW_LTO:-0} baud=${MODBUS_HW_BAUD:-115200} crc=$CRC_POLICY framer=${MODBUS_HW_FRAMER:-0} role=${MODBUS_HW_ROLE:-0} extra=${MODBUS_HW_CXXFLAGS_EXTRA:-}"
 for f in "$PROJECT"/Drivers/STM32H7RSxx_HAL_Driver/Src/*.c \
          "$PROJECT"/Boot/Core/Src/*.c; do
   o="$OUT/$(basename "$f" .c).o"
@@ -120,7 +129,7 @@ done
 
 echo "CXX modbus_bench.cpp"
 "$GXX" $CXXFLAGS -DMODBUS_HW_BAUD="${MODBUS_HW_BAUD:-115200}u" \
-  $CRC_DEFINE -DMODBUS_HW_FRAMER="${MODBUS_HW_FRAMER:-0}" \
+  $CRC_DEFINE -DMODBUS_HW_FRAMER="${MODBUS_HW_FRAMER:-0}" -DMODBUS_HW_ROLE="${MODBUS_HW_ROLE:-0}" \
   "$HERE/modbus_bench.cpp" -o "$OUT/modbus_bench.o"
 OBJS="$OBJS $OUT/modbus_bench.o"
 

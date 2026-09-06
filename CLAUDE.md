@@ -24,7 +24,9 @@ The stable documentation is split by boundary:
 - `doc/STORAGE.md` — the shared raw-byte storage contract used by both protocols;
 - `src/modbus/ARCHITECTURE.md` and `src/modbus/README.md` — the Modbus RTU endpoint;
 - `src/crc/README.md` — the protocol-independent CRC policy library;
-- `doc/PROTOCOL_COMPARISON.md` and `doc/COBS_PERFORMANCE.md` — measured H7S evidence.
+- `doc/PROTOCOL_COMPARISON.md` and `doc/COBS_PERFORMANCE.md` — measured H7S evidence;
+- `src/adapters/qt/tests/hardware/h7s/README.md` — the RTU stack against Qt's
+  QtSerialBus, both ways round, on the H7S.
 
 Repository layout: `src/` holds the stack itself (`wire/`, `crc/`, `cobs/`,
 `modbus/`, `uart/`) and `src/adapters/`, the glue that knows both a transport
@@ -158,6 +160,18 @@ application is built with:
 ```bash
 sh src/adapters/qt/tests/run.sh
 ```
+
+It runs `adapters/qt/SerialAdapter.h` and the QModbus-shaped
+`adapters/qt/RtuClient.h` on a `QIODevice` stand-in for the port (82 checks,
+a real event loop, no COM port), the compile-fail contract, and builds
+`qmodbus_bench`, the PC side of the hardware comparison against QtSerialBus.
+That comparison itself — the board as a reference server against Qt's client
+and ours, then the board as a client against Qt's server, one shared 55-step
+script and one reference model (`src/modbus/rtu/tests/reference_model.h`)
+for every party — is `src/adapters/qt/tests/hardware/h7s/run_qmodbus.py`,
+rechecked by `verify_qmodbus.py`; the record and the findings are in that
+directory's README. The reference model is checked on the host by the RTU
+suite (`test_reference_model`).
 
 Each runner first compiles its public headers independently and (for the protocols) verifies intentional compile-fail translation units with boundary-specific diagnostic markers (nine for COBS, eleven for RTU, one for the adapters): the `wire::Storage` contract, the CRC-in-Format limits, coordinator-only message/packet operations, serializer constraints, the physical absence of old API names, and for RTU the absence of `consume()` without a framing policy, the rejection of a half-written policy and of a non-RTU endpoint handed to `UartAdapter`.
 
