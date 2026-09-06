@@ -305,6 +305,28 @@ int main(int argc, char** argv)
 	port.feed(response_bytes);
 	check(static_cast<bool>(client.pop_packet()) && !client.has_packet(), "and the next response is delivered whole");
 
+	group("ServiceHandlerBelongsToTheBinding");
+	{
+		struct Owner final {
+			unsigned served = 0;
+			void service() noexcept { ++served; }
+		};
+		Owner owner;
+		adapter.set_service_handler(ClientAdapter::ServiceHandler{tiny::bind<&Owner::service>(owner)});
+		port.feed(response_bytes);
+		check(owner.served >= 1u && static_cast<bool>(client.pop_packet()), "an installed service handler is raised on a delivery");
+		const unsigned before = owner.served;
+		check(adapter.unbind(), "unbind()");
+		check(adapter.bind(), "rebind without installing a handler again");
+		port.feed(response_bytes);
+		check(owner.served == before && static_cast<bool>(client.pop_packet()),
+		      "the handler did not survive the binding: nothing is raised into an owner that may be gone");
+		adapter.set_service_handler(ClientAdapter::ServiceHandler{tiny::bind<&Owner::service>(owner)});
+		port.feed(response_bytes);
+		check(owner.served == before + 1u && static_cast<bool>(client.pop_packet()), "installed again, it is raised again");
+		adapter.set_service_handler(ClientAdapter::ServiceHandler{});
+	}
+
 	group("AdapterDestructorUnbinds");
 	check(adapter.unbind(), "the long-lived adapter releases the port and the endpoint");
 	{
@@ -595,6 +617,26 @@ int main(int argc, char** argv)
 		check(broadcasts == 1u && rtu.pending() == 1u, "it completed and the handler's request is queued");
 		pump(10);
 		check(client_port.take_written().empty(), "10 ms later the next request has not left: the 20 ms turnaround stands");
+		pump(15);
+		check(!client_port.take_written().empty(), "after the turnaround it goes out");
+		client_port.drain();
+		client_port.feed(make_adu(0x11u, 0x03u, std::vector<uint8_t>{0x02u, 0x00u, 0x01u}));
+		check(completed == 1u, "and completes");
+
+		// A redundant bind() on a bound client must not forgive the debt either.
+		completed = 0;
+		check(rtu.send(0x00u, 0x06u, std::vector<uint8_t>{0x00u, 0x02u, 0x00u, 0x01u}, RtuClient::Handler{
+			[&completed](const Response&) { ++completed; }}), "another broadcast is queued");
+		pump(10);
+		(void)client_port.take_written();
+		client_port.drain();
+		check(completed == 1u, "it completed: the 20 ms turnaround starts now");
+		check(rtu.bind() && rtu.bound(), "bind() on the bound client is a no-op that returns true");
+		completed = 0;
+		check(rtu.send(0x11u, 0x03u, std::vector<uint8_t>{0u, 1u, 0u, 1u}, RtuClient::Handler{
+			[&completed](const Response&) { ++completed; }}), "a request follows");
+		pump(10);
+		check(client_port.take_written().empty(), "10 ms later it has not left: the redundant bind() did not erase the turnaround");
 		pump(15);
 		check(!client_port.take_written().empty(), "after the turnaround it goes out");
 		client_port.drain();

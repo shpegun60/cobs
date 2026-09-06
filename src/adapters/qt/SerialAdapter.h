@@ -194,7 +194,9 @@ public:
 	// finished transmission, a transport error and a stale-frame expiry. A
 	// layer above (adapters/qt/RtuClient.h) drains packets, reads
 	// take_transport_error() and advances its transaction in it; an
-	// application that polls the endpoint itself leaves it unset.
+	// application that polls the endpoint itself leaves it unset. It is
+	// installed for one binding: unbind() and the destructor drop it, so a
+	// rebind never raises it into an owner that may be gone by then.
 	using ServiceHandler = tiny::delegate<void()>;
 
 	// Whether the stale-frame rule is compiled in (RTU with a framing policy).
@@ -443,6 +445,7 @@ private:
 		if constexpr (framed) {
 			m_endpoint.discard_incomplete();   // a discontinuity, not a fault
 		}
+		m_service = ServiceHandler{};   // the handler belongs to the binding, not to the adapter
 		m_bound = false;
 	}
 

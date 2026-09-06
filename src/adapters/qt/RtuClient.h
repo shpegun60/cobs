@@ -145,6 +145,9 @@ public:
 
 	[[nodiscard]] bool bind()
 	{
+		if (m_adapter.bound()) {
+			return true;   // already bound: nothing to reset, least of all the gap a broadcast still owes
+		}
 		if (!m_adapter.bind()) {
 			return false;
 		}
