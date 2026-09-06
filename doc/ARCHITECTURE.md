@@ -443,6 +443,8 @@ explicitly revised together:
 
 ## 11. Reading order
 
+- Read `INTEGRATION.md` to choose how the pieces are put together (with or
+  without the RTU adapter, under FreeRTOS, on another transport).
 - Start here for components, API, and ownership.
 - Read `PROTOCOL.md` when implementing a peer or reviewing framing changes.
 - Read `STORAGE.md` when selecting or writing a memory strategy.

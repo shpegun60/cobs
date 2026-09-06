@@ -8,11 +8,11 @@
  * notification, so one communication task can sleep until the UART has work
  * instead of polling proceed() on a timer.
  *
- *     static Uart<256, 4> uart;
+ *     static Uart<256, 4> serial;
  *     static uart::FreeRtosWake wake;              // no task yet: safe at static-init time
  *
  *     // after xTaskCreate(communicationTask, ..., &communicationTaskHandle):
- *     wake.attach(uart, communicationTaskHandle);  // false for a null handle: nothing installed
+ *     wake.attach(serial, communicationTaskHandle);  // false for a null handle: nothing installed
  *
  *     void communicationTask(void*)
  *     {

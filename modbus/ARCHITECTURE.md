@@ -428,8 +428,8 @@ above this one.
 (`uart/Uart.h`) and an RTU endpoint, for either endpoint kind:
 
 ```cpp
-static modbus::rtu::UartAdapter adapter{uart, link};   // no configuration: safe at static-init time
-uart.init(&huart3);
+static modbus::rtu::UartAdapter adapter{serial, link};   // no configuration: safe at static-init time
+serial.init(&huart3);
 adapter.bind();                  // transactional: endpoint transport first, then the driver's RX/gap handlers
 adapter.proceed(HAL_GetTick());  // uart.proceed → expire an overdue frame → link.poll
 ```

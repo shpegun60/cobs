@@ -16,6 +16,10 @@ Its different streaming/MBAP framing contract is recorded in
 
 ## Quick start
 
+The compositions beyond this one — the endpoint without the adapter, a
+desktop or TCP transport, FreeRTOS on top — are enumerated in
+[`doc/INTEGRATION.md`](../doc/INTEGRATION.md).
+
 ```cpp
 #include "modbus/rtu/Rtu.h"
 #include "modbus/rtu/UartAdapter.h"
@@ -24,9 +28,9 @@ Its different streaming/MBAP framing contract is recorded in
 using Serial = Uart<256, 4>;
 using Link = modbus::rtu::Endpoint<wire::Pool<8, 2>>;
 
-static Serial uart;
+static Serial serial;
 static Link link;
-static modbus::rtu::UartAdapter adapter{uart, link};   // takes no configuration: safe before main()
+static modbus::rtu::UartAdapter adapter{serial, link};   // takes no configuration: safe before main()
 ```
 
 The adapter is the whole integration: UART RX and ordered loss notification
@@ -37,7 +41,7 @@ first and the adapter bound after (a CubeMX `huart3` carries no rate until
 construction):
 
 ```cpp
-uart.init(&huart3);
+serial.init(&huart3);
 adapter.bind();     // false if the driver is not initialized or a transmission is still active; then nothing changed
 ```
 
@@ -419,7 +423,7 @@ Server server;
 // chunk, a frame across chunks — and expires a frame whose sender died
 // mid-frame (UartAdapter.h explains the rule and why it needs the chunk
 // geometry and the baud).
-modbus::rtu::UartAdapter adapter{uart, server};
+modbus::rtu::UartAdapter adapter{serial, server};
 void loop_step() noexcept { adapter.proceed(HAL_GetTick()); }
 
 // The builder knows the same table: a response to 0x03 is a byte count plus

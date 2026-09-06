@@ -12,11 +12,11 @@
  *     using Link   = modbus::rtu::Endpoint<wire::Pool<8, 2>, modbus::rtu::Format<>,
  *                        modbus::rtu::framing::Standard<framing::Direction::Request>>;
  *
- *     static Serial uart;
+ *     static Serial serial;
  *     static Link link;
- *     static modbus::rtu::UartAdapter adapter{uart, link};   // safe at static-init time
+ *     static modbus::rtu::UartAdapter adapter{serial, link};   // safe at static-init time
  *
- *     uart.init(&huart3);      // first: the adapter reads the line rate from the bound handle
+ *     serial.init(&huart3);      // first: the adapter reads the line rate from the bound handle
  *     adapter.bind();
  *
  *     // main loop, or one communication task
@@ -89,7 +89,7 @@
  * already sits in the driver's queue, or is moved there while it drains, is
  * never outrun by its own deadline. A loop that must keep its own timing
  * scopes around the driver composes the same steps with prepare(now) →
- * uart.proceed(now) → finish(now) → endpoint.poll(now); that order is part
+ * serial.proceed(now) → finish(now) → endpoint.poll(now); that order is part
  * of the contract. unbind() and the destructor discard a frame in flight,
  * uncounted: what arrives after a later bind() can never complete it.
  *

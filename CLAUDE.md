@@ -14,6 +14,11 @@ or file boundaries.
 
 The stable documentation is split by boundary:
 
+- `doc/INTEGRATION.md` — the usage guide: every supported composition (RTU
+  through `UartAdapter`, COBS on the driver directly, FreeRTOS on top, RTU
+  without the adapter, any other byte transport); its snippets are the
+  translation units in `doc/examples/`, compiled and run by
+  `sh doc/examples/build.sh` against the real headers and the host fakes;
 - `doc/ARCHITECTURE.md` — canonical component/API/ownership entry point for COBS;
 - `doc/PROTOCOL.md` — normative COBS wire format (v2: length prefix + CRC trailer) and decoder behavior;
 - `doc/STORAGE.md` — the shared raw-byte storage contract used by both protocols;

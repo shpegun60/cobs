@@ -484,11 +484,11 @@ RTU receive call is exactly one candidate ADU; it is not arbitrary chunking.
 ```cpp
 using Serial = Uart<256, 4>;
 
-uart.setRxHandler(Serial::RxHandler{
+serial.setRxHandler(Serial::RxHandler{
     [](std::span<const uint8_t> candidate) noexcept {
         link.receive_adu(candidate);
     }});
-uart.setRxGapHandler(Serial::GapHandler{
+serial.setRxGapHandler(Serial::GapHandler{
     []() noexcept { link.notify_gap(); }});
 ```
 
@@ -627,7 +627,7 @@ notification:
 static uart::FreeRtosWake wake;                  // takes no task: safe before the task exists
 
 // after xTaskCreate(communicationTask, ..., &communicationTaskHandle):
-wake.attach(uart, communicationTaskHandle);      // false for a null handle, then nothing is installed
+wake.attach(serial, communicationTaskHandle);      // false for a null handle, then nothing is installed
 
 void communicationTask(void*)
 {
@@ -735,7 +735,10 @@ remain intentionally cheap plain increments.
 ## Complete UART + COBS composition
 
 This is the intended embedded arrangement. UART stays a byte transport; COBS
-receives byte chunks and ordered gap notifications.
+receives byte chunks and ordered gap notifications. The other arrangements —
+RTU through `UartAdapter`, FreeRTOS on top, RTU without the adapter, a
+desktop or TCP transport — are enumerated in
+[`doc/INTEGRATION.md`](doc/INTEGRATION.md).
 
 ```cpp
 #define UART_ENGINE_IMPLEMENT
@@ -996,6 +999,10 @@ acceptance rules and limitations of those measurements.
 
 Read active documents in this order:
 
+0. [Integration patterns](doc/INTEGRATION.md) — every supported way to put
+   the pieces together: RTU through `UartAdapter`, COBS wired directly,
+   FreeRTOS on top, RTU without the adapter, and any other byte transport;
+   which calls from where, and what each pattern must decide itself.
 1. [Architecture](doc/ARCHITECTURE.md) — public surfaces, ownership, data flow,
    lifetimes, and execution domains.
 2. [Wire protocol](doc/PROTOCOL.md) — normative frame grammar and peer
