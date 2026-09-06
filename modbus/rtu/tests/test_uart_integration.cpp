@@ -259,6 +259,10 @@ int main()
 		      "bind() after init reads 9600 baud from the handle: 320 ms per 256-byte chunk of 12-bit characters");
 		check(FramedAdapter::chunk_time_ms(1000000u) == 4u && FramedAdapter::chunk_time_ms(0u) == 0u,
 		      "4 ms at 1M; 0 for an invalid rate");
+		check(FramedAdapter::chunk_time_ms(115200u) == 27u && FramedAdapter::chunk_time_ms(UINT32_MAX) == 1u &&
+		      FramedAdapter::chunk_time_ms(3072000u) == 1u && FramedAdapter::chunk_time_ms(3072001u) == 1u &&
+		      FramedAdapter::chunk_time_ms(3071999u) == 2u,
+		      "27 ms at 115200; the ceiling holds at the exact divisor, one off it, and at UINT32_MAX without overflow");
 		const auto frame = wide_frame(20u, 1u);
 		feed(frame, false);
 		f.loop();

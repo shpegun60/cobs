@@ -45,6 +45,15 @@
  * nothing is in flight and 0 when due, so std::min() with the fallback is
  * the whole computation.
  *
+ * The wait is as fine as the kernel tick. pdMS_TO_TICKS() truncates to
+ * whole ticks, so with a tick coarser than the deadline (configTICK_RATE_HZ
+ * of 100 gives 10 ms ticks; a 5 ms deadline becomes 0 ticks) wait() returns
+ * at once and the loop services proceed() back to back until HAL_GetTick()
+ * reaches the deadline: correct, but a busy loop for those milliseconds.
+ * Give the kernel a tick at least as fine as the deadlines the transport
+ * uses (the usual 1 kHz STM32 configuration is); no timer of its own is
+ * kept here to paper over a coarse one.
+ *
  * wait() acts on the CALLING task (ulTaskNotifyTake has no task argument):
  * it must be called only by the task whose handle was attached, and
  * notification index 0 of that task belongs to the UART wake — other code

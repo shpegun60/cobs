@@ -199,7 +199,8 @@ public:
 		}
 		const uint32_t bit_milliseconds =
 			static_cast<uint32_t>(chunk_size) * bits_per_character * 1000u;
-		return (bit_milliseconds + baud - 1u) / baud;
+		// Rounded up without the `+ baud - 1` that overflows for an absurd baud.
+		return bit_milliseconds / baud + ((bit_milliseconds % baud) != 0u ? 1u : 0u);
 	}
 
 	[[nodiscard]] uint32_t baud() const noexcept { return m_baud; }

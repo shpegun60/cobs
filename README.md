@@ -647,7 +647,10 @@ announces (the driver's health audit, a request timeout). The adapter's
 whose remainder never comes must be expired when its deadline falls due, not
 when the next unrelated frame wakes the task, whose bytes would otherwise be
 glued onto the orphan first; it is `no_deadline` while nothing is in flight
-and 0 when due, so `std::min` is the whole computation. `wait()` acts on the
+and 0 when due, so `std::min` is the whole computation; the kernel tick must
+be at least as fine as those deadlines (`pdMS_TO_TICKS()` truncates, and a
+10 ms tick turns a 5 ms wait into a non-blocking service loop until the
+deadline passes, correct but busy). `wait()` acts on the
 calling task and must be called only by the attached one, whose notification
 index 0 then belongs to the UART wake. The `FromISR` call requires the USART
 and DMA interrupts not to be logically more urgent than the kernel's syscall
