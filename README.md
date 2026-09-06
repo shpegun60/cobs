@@ -710,6 +710,7 @@ remain intentionally cheap plain increments.
 | `setTxHandler(...)` | receive terminal TX success/failure, normally from ISR context |
 | `setErrorHandler(...)` | receive the HAL error mask from ISR context |
 | `setWakeHandler(...)` | optional: be told from ISR context that `proceed()` has work (RX chunk or gap queued, TX finished, error pending); the hook an RTOS task sleeps on |
+| `rx_progress()` | bytes DMA has taken into the chunk it still owns (not yet published by IDLE/TC); a thread-context snapshot a transport adapter uses to tell a silent line from a chunk still filling |
 | `proceed(now_ms)` | drain RX and run recovery from exactly one loop context |
 | `send(bytes)` / `tx_busy()` | start and track one borrowed DMA TX span |
 | `setBaudRate(baud)` | transactional thread-context line-rate change with a deliberate RX gap |

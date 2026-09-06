@@ -946,6 +946,29 @@ public:
 	}
 	[[nodiscard]] UART_HandleTypeDef* instance() const noexcept { return m_huart; }
 
+	// Bytes DMA has written so far into the current RX chunk: the one still
+	// owned by hardware, not yet published by IDLE or TC. Thread context. A
+	// snapshot, not a synchronization primitive: DMA may add a byte right after
+	// the read, and an event in flight may just have moved the chunk to the
+	// queue, so a fresh chunk reads 0. Also 0 while reception is not armed or
+	// the pool ran dry (bytes are going to the drop buffer). Nothing on any
+	// ISR path pays for it; it exists so a transport adapter can tell "the
+	// line fell silent" from "the next chunk is still filling" without a
+	// timing policy of its own (modbus/rtu/UartAdapter.h). The driver knows
+	// nothing of what the caller concludes.
+	[[nodiscard]] uint16_t rx_progress() const noexcept
+	{
+		if (m_huart == nullptr || !m_started || m_active == nullptr ||
+		    m_huart->hdmarx == nullptr) {
+			return 0u;
+		}
+		const uint32_t remaining = __HAL_DMA_GET_COUNTER(m_huart->hdmarx);
+		if (remaining > ChunkSize) {
+			return 0u;
+		}
+		return static_cast<uint16_t>(ChunkSize - remaining);
+	}
+
 private:
 	// RAII: raises the teardown gate for the duration of a HAL abort. Thread
 	// context only — the counter is only ever mutated here.

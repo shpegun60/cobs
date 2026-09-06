@@ -436,6 +436,49 @@ struct WakeCount {
 	void bump() noexcept { ++n; }
 };
 
+// rx_progress(): what DMA has taken into the chunk it still owns, read from
+// the counter in thread context, zero whenever there is no such chunk.
+void testRxProgressIsASnapshotOfTheActiveChunk()
+{
+	fake::reset();
+	Fixture f;
+	check(f.uart.rx_progress() == 0, "0 before init: no handle, nothing armed");
+	f.start();
+	check(f.uart.rx_progress() == 0, "0 right after arming: the chunk is empty");
+
+	fake::rx_bytes("abc", 3);
+	check(f.uart.rx_progress() == 3, "3 bytes taken by DMA, no event yet: 3");
+	fake::rx_bytes("de", 2);
+	check(f.uart.rx_progress() == 5, "the snapshot follows the counter: 5");
+	fake::rx_half();
+	check(f.uart.rx_progress() == 5, "the ignored half-transfer event changes nothing");
+	fake::rx_idle();
+	check(f.uart.rx_progress() == 0, "IDLE published the chunk and re-armed a fresh one: 0 again");
+	f.loop();
+	check(rxText() == "abcde", "the published bytes are exactly the ones the snapshot counted");
+
+	std::string full(kChunk, 'x');
+	fake::rx_bytes(full.data(), full.size() - 1u);
+	check(f.uart.rx_progress() == kChunk - 1u, "one byte short of a full chunk");
+	fake::rx_bytes("y", 1);
+	fake::rx_tc();
+	check(f.uart.rx_progress() == 0, "TC published the full chunk: 0");
+	f.loop();
+
+	fake::rx_bytes("zz", 2);
+	check(f.uart.rx_progress() == 2, "2 before the error");
+	fake::rx_error(HAL_UART_ERROR_ORE);
+	check(f.uart.rx_progress() == 0, "an RX error stops reception until proceed() repairs it: 0, not a stale count");
+	f.loop();
+	check(f.uart.rx_progress() == 0 && events().find("gap") != std::string::npos,
+	      "re-armed after recovery with an empty chunk, the gap delivered");
+	fake::rx_bytes("ok", 2);
+	check(f.uart.rx_progress() == 2, "and counting again");
+	fake::rx_idle();
+	f.loop();
+	checkNoViolations("reading the counter touched no ownership");
+}
+
 void testWakeFollowsEveryIsrEventWithWork()
 {
 	fake::reset();
@@ -896,6 +939,9 @@ int main(int argc, char** argv)
 	group("WakeHandler");
 	testWakeFollowsEveryIsrEventWithWork();
 	testWakeIsOptionalAndReplaceable();
+
+	group("RxProgress");
+	testRxProgressIsASnapshotOfTheActiveChunk();
 
 	group("TeardownArbitration");
 	testRxTeardownDoesNotEatTxCompletion();

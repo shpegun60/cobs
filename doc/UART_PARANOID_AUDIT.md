@@ -436,6 +436,45 @@ from `proceed()`; the handler is optional and replaceable while running), and
 coalescing into one `ulTaskNotifyTake()`, the yield request following what
 the kernel reports, the fallback timeout passed through.
 
+### 9.3 rx_progress(), 2026-09-06: the second and last addition
+
+The transport adapter's review (`modbus/rtu/UartAdapter.h`) found a case its
+stale-frame rule alone gets wrong: a bridge splits a frame, the first part
+ends with IDLE, the bridge resumes a millisecond later and the remainder is
+physically arriving into the next DMA chunk, but no IDLE or TC has fired
+yet, so when the adapter's 5 ms deadline falls due the driver has nothing to
+publish and the frame is expired while the line is busy delivering it. Only
+the driver can see that hardware is receiving. The owner admitted exactly
+one read-only accessor and declared the public contract closed with it:
+
+```cpp
+[[nodiscard]] uint16_t rx_progress() const noexcept;
+```
+
+Bytes DMA has written so far into the current RX chunk, the one still owned
+by hardware and not yet published; thread context; a snapshot, not a
+synchronization primitive (DMA may add a byte right after the read; an
+event in flight may just have moved the chunk to the queue, so a fresh chunk
+reads 0); 0 while reception is not armed, the pool ran dry or no handle is
+bound. The driver knows nothing of what the caller concludes: no "stale",
+no protocol, no scheduler.
+
+Cost, measured rather than asserted: the port matrix was built on the
+committed driver and again with the accessor, and every one of the twelve
+object files (F1, G4 in eight variants, H7RS with and without the probe) is
+byte-identical (sha256), the five kept disassemblies identical line for
+line, the pinned sizes unchanged (RX 100 B / 8 B stack, TX 94 B, arm 108 B,
+publish 40 B, idle proceed 36 B) and `sizeof` unchanged (1696 / 544). A
+template member no translation unit calls emits nothing. Host: the
+`RxProgress` group (14 checks: 0 before init and after arming, the count
+follows the counter byte by byte, an ignored half-transfer changes nothing,
+IDLE and TC return it to 0 as the fresh chunk is armed, an RX error reads 0
+rather than a stale count until `proceed()` repairs reception) runs in all
+five variants, 231 checks each (244 with registered callbacks).
+
+Two additions since the freeze, `setWakeHandler()` and `rx_progress()`, and
+no more: the door is closed.
+
 ## 10. Verification matrix
 
 ### Host runtime
@@ -452,7 +491,10 @@ the kernel reports, the fallback timeout passed through.
 - ten invalid macro/template configurations fail compilation with their
   intended diagnostics;
 - 2026-09-06, with the `WakeHandler` group: 217 checks per variant (230 with
-  registered callbacks), ASan+UBSan 217, plus 13 in the FreeRTOS wake test.
+  registered callbacks), ASan+UBSan 217, plus 13 in the FreeRTOS wake test;
+- 2026-09-06, with the `RxProgress` group: 231 checks per variant (244 with
+  registered callbacks), plus 13 in the FreeRTOS wake test; port matrix
+  objects byte-identical to the previous driver (§9.3).
 
 The runtime suite covers registry alias/null safety, structural init refusal,
 IDLE/TC, stray HT, corrupt DMA counters, cache/ownership visibility, slot
