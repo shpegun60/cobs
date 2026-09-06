@@ -12,7 +12,7 @@ an older green commit validates uncommitted changes. Hardware records carry
 source SHA-256 values and exact image identities. The executable recheck is:
 
 ```bash
-python -B wire/tests/verify_hardware_migration.py
+python -B src/wire/tests/verify_hardware_migration.py
 ```
 
 It verifies 85 COBS and 127 RTU records, the current measured source hashes,
@@ -39,22 +39,22 @@ using Rtu = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<>>;
   UART code, its framing boundary and DMA/cache ownership were not redesigned.
 
 The [plan](SHARED_POLICIES_PLAN.md), [storage contract](STORAGE.md),
-[COBS protocol](PROTOCOL.md) and [RTU guide](../modbus/README.md) are the
+[COBS protocol](PROTOCOL.md) and [RTU guide](../src/modbus/README.md) are the
 current usage/architecture references.
 
 ## Host and compile-time evidence
 
 | Check | Result / scope |
 |---|---|
-| `sh crc/tests/run.sh` | GCC ASan+UBSan O1 and O3/NDEBUG; 20 contract/vector/property checks per build |
-| `sh wire/tests/run.sh` | Raw BlockPool; Heap/Pool, real COBS/RTU Geometry, NDEBUG checks; shared custom-memory and API-parity suites |
-| `sh cobs/tests/run.sh` | Headers, 9 intended compile failures, legacy v1 suites, inverse geometry and 20,360 integrity checks at O1 and O3 |
+| `sh src/crc/tests/run.sh` | GCC ASan+UBSan O1 and O3/NDEBUG; 20 contract/vector/property checks per build |
+| `sh src/wire/tests/run.sh` | Raw BlockPool; Heap/Pool, real COBS/RTU Geometry, NDEBUG checks; shared custom-memory and API-parity suites |
+| `sh src/cobs/tests/run.sh` | Headers, 9 intended compile failures, legacy v1 suites, inverse geometry and 20,360 integrity checks at O1 and O3 |
 | Codec differential oracle | 960,800 decoder streams and 177,146 encoder/headroom cases in each checked/optimized run |
-| `sh modbus/rtu/tests/run.sh` | Headers, 9 compile failures, every policy, 104 geometry checks, ownership and 100,000 random candidates; checked/sanitized and optimized runs |
+| `sh src/modbus/rtu/tests/run.sh` | Headers, 9 compile failures, every policy, 104 geometry checks, ownership and 100,000 random candidates; checked/sanitized and optimized runs |
 | RTU integration | Fake-HAL UART IDLE/TC/gap/borrow suite passed |
 | qmake | Both real consumer executables passed with Qt 6.10.1 / MinGW 13.1 |
-| `wire/tests/check_gcc_matrix.sh` | Strict O3/LTO, aliasing/conversion warnings, perturbed scalar ABI flags |
-| `wire/tests/check_msvc.ps1` | Eight CRC/storage/protocol/layout suites on both MSVC x64 and x86, O2/NDEBUG; no sanitizer claim for these builds |
+| `src/wire/tests/check_gcc_matrix.sh` | Strict O3/LTO, aliasing/conversion warnings, perturbed scalar ABI flags |
+| `src/wire/tests/check_msvc.ps1` | Eight CRC/storage/protocol/layout suites on both MSVC x64 and x86, O2/NDEBUG; no sanitizer claim for these builds |
 
 The new COBS integrity suite includes every built-in policy, all input splits
 for short frames, empty and maximum payloads, H1/H2 transition, payload and
@@ -101,18 +101,18 @@ remain identical in footprint and in Storage/Packet/Message types.
 
 ARM verification:
 
-- [6360/6360 new CRC objects](../crc/tests/results_shared_policies_arm_2026-09-05.json),
+- [6360/6360 new CRC objects](../src/crc/tests/results_shared_policies_arm_2026-09-05.json),
   all 106 named GNU AArch32 CPU targets, Os/O2/O3, little/big endian and strict
   alignment codecs. Real nm/objdump inspections, not execution on 106 boards.
 - Shared scalar/protocol matrix: 96 scalar, 60 protocol and 30 COBS objects.
 - Focused endpoint/layout and CRC emission guards passed.
-- `wire/tests/check_shared_crc.sh` passed on Linux GCC (WSL) and GNU ARM Cortex-M7 (ELF objects; MinGW COFF is refused with a message):
+- `src/wire/tests/check_shared_crc.sh` passed on Linux GCC (WSL) and GNU ARM Cortex-M7 (ELF objects; MinGW COFF is refused with a message):
   COBS and RTU compiled in two translation units link **one** 512-byte CRC16
   lookup for Table, and no lookup for Bitwise or NoCrc, at Os/O2/O3.
 
 The ARM matrix is not AArch64, all optional ISA/ABI combinations, or physical
 big-endian board execution. The matrix scope is detailed in
-[the ARM audit](../crc/tests/ARM_AUDIT.md). NoCrc inlines away in production;
+[the ARM audit](../src/crc/tests/ARM_AUDIT.md). NoCrc inlines away in production;
 its separately callable hardware benchmark still measures call/harness cost.
 
 ## COBS on NUCLEO-H7S3L8
@@ -128,9 +128,9 @@ matrix also restored and smoke-tested its own 115200 image.
 
 | Configuration | Records | 1M stress frames | Useful bytes | Instrumented CPU |
 |---|---:|---:|---:|---:|
-| [CRC16 Bitwise / 253](../cobs/tests/hardware/h7s/results_crc_default_2026-09-05.jsonl) | 29 | 3505 | 423404 | 2.608745% |
-| [CRC16 Table / 253](../cobs/tests/hardware/h7s/results_crc_table_2026-09-05.jsonl) | 28 | 3449 | 416507 | 1.058586% |
-| [Legacy NoCrc / 1024](../cobs/tests/hardware/h7s/results_legacy_shared_storage_2026-09-05.jsonl) | 28 | 1229 | 380545 | 0.540598% |
+| [CRC16 Bitwise / 253](../src/cobs/tests/hardware/h7s/results_crc_default_2026-09-05.jsonl) | 29 | 3505 | 423404 | 2.608745% |
+| [CRC16 Table / 253](../src/cobs/tests/hardware/h7s/results_crc_table_2026-09-05.jsonl) | 28 | 3449 | 416507 | 1.058586% |
+| [Legacy NoCrc / 1024](../src/cobs/tests/hardware/h7s/results_legacy_shared_storage_2026-09-05.jsonl) | 28 | 1229 | 380545 | 0.540598% |
 
 These are 5-second windowed echo workloads, not a guaranteed UART line-rate
 load or a fixed number of identical frames. NoCrc/1024 uses a different
@@ -148,7 +148,7 @@ harness version is not a COBS on-wire negotiation feature.
 
 ## RTU on the same board
 
-[127 fresh records](../modbus/rtu/tests/hardware/h7s/results_shared_storage_2026-09-05.jsonl)
+[127 fresh records](../src/modbus/rtu/tests/hardware/h7s/results_shared_storage_2026-09-05.jsonl)
 cover all nine policies at 115200 and 1M: vectors, corruptions/recovery,
 backpressure, pool exhaustion, isolated CRC measurements, stress and paced
 traffic. The final record is a restored standard Bitwise/115200 smoke test.
@@ -176,7 +176,7 @@ functions, not retired instructions per packet. All linked probes have no
 external helper calls. Measured CPU sums the selected DWT scopes and divides
 by the board's observation window; instrumentation and preemption effects
 remain, so it is not a universal processor-utilization guarantee. See the
-[benchmark methodology](../modbus/rtu/tests/hardware/h7s/CRC_BENCHMARK.md).
+[benchmark methodology](../src/modbus/rtu/tests/hardware/h7s/CRC_BENCHMARK.md).
 
 RTU still requires one complete candidate. CRC does not repair a split input,
 and NoCrc cannot identify one. These fresh tests do not broaden the documented
@@ -184,7 +184,7 @@ burst-adapter guarantee to arbitrary RTU timing or high-baud host behavior.
 (Addendum: the optional framing policy added later as the endpoint's third
 template parameter removes that requirement for endpoints that select it;
 its H7S record is in
-[`modbus/rtu/tests/hardware/h7s/README.md`](../modbus/rtu/tests/hardware/h7s/README.md#framing-policy-at-high-baud-2026-09-05).)
+[`src/modbus/rtu/tests/hardware/h7s/README.md`](../src/modbus/rtu/tests/hardware/h7s/README.md#framing-policy-at-high-baud-2026-09-05).)
 
 ## End state
 

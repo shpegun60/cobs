@@ -13,7 +13,7 @@ benchmark. That is 12.5% extra work with CRC16 Bitwise, 62.5% with Table,
 or 3.01 times the RTU cost without CRC. Ratios differ because checksum cost
 can dominate the total; the absolute framing-related difference is similar.
 
-The accepted [raw result](../wire/tests/hardware/h7s/results_comparison_2026-09-05.json)
+The accepted [raw result](../src/wire/tests/hardware/h7s/results_comparison_2026-09-05.json)
 contains **225 endpoint configurations / 2,025 timing windows**, **168 paired
 UART windows / 47,352 exact echoes / 4,721,088 useful bytes per direction**,
 and six physical high-baud probes. Endpoint and ordinary paired UART checks
@@ -110,7 +110,7 @@ cost, the COBS harness was rebuilt with `Uart<256,4>` (`COBS_HW_UART_CHUNK_SIZE`
 / `COBS_HW_UART_CHUNK_COUNT`) and measured in the **same session** as the
 default geometry and as RTU, at the same 1M cadence and payload corpus. This
 is a narrowed run: UART traffic only, `random252`, both repetitions. The
-[record](../wire/tests/hardware/h7s/results_comparison_uart_2026-09-05.json)
+[record](../src/wire/tests/hardware/h7s/results_comparison_uart_2026-09-05.json)
 carries its selection, so the verifier expects exactly these rows.
 
 ### Actual UART echo by UART chunk geometry, equal scheduled rate
@@ -154,7 +154,7 @@ windows; host scheduling lateness stayed below 6.5 ms.
 ### Three links on one UART geometry: COBS, RTU and RTU with the framing policy
 
 After the framing policy was added to the RTU endpoint
-(`modbus::rtu::Endpoint<Memory, Format, Framer>`, `modbus/ARCHITECTURE.md`
+(`modbus::rtu::Endpoint<Memory, Format, Framer>`, `src/modbus/ARCHITECTURE.md`
 §8), the same session method was run for three links on the same
 `Uart<256,4>`, the same `Pool<8,2>`, the same cadence and the same random
 corpus: COBS, RTU with `framing::None` (one burst candidate per
@@ -164,8 +164,8 @@ function, which the library fills). The body is 250 bytes, the largest all
 three carry inside a 256-byte RTU ADU, and 128 bytes, where no frame reaches
 the 256-byte DMA chunk. Each is a narrowed record with its selection and every
 flashed image:
-[random250](../wire/tests/hardware/h7s/results_comparison_framed_2026-09-05.json),
-[random128](../wire/tests/hardware/h7s/results_comparison_framed128_2026-09-05.json).
+[random250](../src/wire/tests/hardware/h7s/results_comparison_framed_2026-09-05.json),
+[random128](../src/wire/tests/hardware/h7s/results_comparison_framed128_2026-09-05.json).
 
 ### Actual UART echo by UART chunk geometry, equal scheduled rate
 
@@ -218,11 +218,11 @@ spanned four 8-byte fetch lines instead of three. `-Os` disables loop
 alignment, so where that loop lands is decided by the linker, image by image.
 
 That finding was acted on rather than footnoted. The bit-serial engine in
-`crc/Crc.h` now unrolls its eight bit steps at compile time and forces the
+`src/crc/Crc.h` now unrolls its eight bit steps at compile time and forces the
 byte update inline (`CRC_DETAIL_ALWAYS_INLINE`): there is no bit-loop head to
 misalign, and the counter and branch disappear from every bit. Rebuilt and
 re-measured in one session for the Bitwise policy
-([record](../wire/tests/hardware/h7s/results_comparison_framed_unrolled_2026-09-05.json)):
+([record](../src/wire/tests/hardware/h7s/results_comparison_framed_unrolled_2026-09-05.json)):
 
 | Link | Policy | Baud | Case | Frames/s | CPU % | cycles/echo | wire % |
 |---|---|---:|---|---:|---:|---:|---:|
@@ -242,7 +242,7 @@ after; COBS/RTU framed 1.04x before, 1.10x after), the absolute CPU of every
 Bitwise link is 13-18% lower. The host-side unit oracles, the Cortex-M codegen
 guard (no helper call, no lookup) and the MSVC/WSL matrices pass on the
 unrolled engine; the 106-CPU ARM matrix was rerun for it
-([record](../crc/tests/results_unrolled_arm_2026-09-05.json)).
+([record](../src/crc/tests/results_unrolled_arm_2026-09-05.json)).
 
 The 250-byte Bitwise and Table framed rows also carry a small DMA effect:
 with the two-byte prefix the ADU is exactly 256 bytes, so reception ends by
@@ -257,7 +257,7 @@ The default RTU endpoint has no valid row above 1M on this bridge (next
 section); the framed endpoint has. The same three policies and the 250-byte
 body at the harness's 300 frames/s cap, both links on `Uart<256,4>`, looped
 Bitwise engine
-([record](../wire/tests/hardware/h7s/results_comparison_framed_highbaud_2026-09-05.json)):
+([record](../src/wire/tests/hardware/h7s/results_comparison_framed_highbaud_2026-09-05.json)):
 
 | Link | Policy | Baud | Case | Frames/s | CPU % | cycles/echo | wire % |
 |---|---|---:|---|---:|---:|---:|---:|
@@ -320,11 +320,11 @@ Consequently there is **no accepted equal-load UART CPU comparison at
 rejecting partial candidates in the same column as successful COBS traffic.
 
 This is the RTU endpoint with `framing::None`. The optional framing policy
-(`modbus::rtu::Endpoint<Memory, Format, Framer>`, `modbus/ARCHITECTURE.md`
+(`modbus::rtu::Endpoint<Memory, Format, Framer>`, `src/modbus/ARCHITECTURE.md`
 §8) was measured on the same bridge: it echoed 12/12 single, split and
 glued frames at 3M, 6M and 10M with zero CRC errors and passed the full
 vector suite at every baud
-([`results_framing_2026-09-05.jsonl`](../modbus/rtu/tests/hardware/h7s/README.md#framing-policy-at-high-baud-2026-09-05)),
+([`results_framing_2026-09-05.jsonl`](../src/modbus/rtu/tests/hardware/h7s/README.md#framing-policy-at-high-baud-2026-09-05)),
 and its CPU at 3M, 6M and 10M is in the table two sections above.
 The libraries and UART driver are left unchanged; no length-based or timed
 framer was quietly added to make a benchmark pass.
@@ -494,36 +494,36 @@ All commands below are from the repository root. The full run flashes the
 explicitly selected board; it saves and restores/verifies all 64 KiB of its
 original internal boot flash, including after an exception. External flash
 and option bytes are not programmed. Original images, every measured ELF
-and build/flash/restore logs remain in an ignored `wire/tests/out/comparison-*`
+and build/flash/restore logs remain in an ignored `src/wire/tests/out/comparison-*`
 session directory. The durable result records its location and source/image
 fingerprints. Existing ignored Cube scaffolding and pyserial are required.
 
 ```powershell
-python -B wire/tests/hardware/h7s/test_comparison.py
+python -B src/wire/tests/hardware/h7s/test_comparison.py
 
-python -B wire/tests/hardware/h7s/run_comparison.py `
+python -B src/wire/tests/hardware/h7s/run_comparison.py `
   --port COM6 --serial 002A001F3033510135393935 `
-  --output wire/tests/hardware/h7s/results_comparison_NEW.json
+  --output src/wire/tests/hardware/h7s/results_comparison_NEW.json
 
-python -B wire/tests/hardware/h7s/verify_comparison.py `
-  wire/tests/hardware/h7s/results_comparison_NEW.json
+python -B src/wire/tests/hardware/h7s/verify_comparison.py `
+  src/wire/tests/hardware/h7s/results_comparison_NEW.json
 
 # The three-way and high-baud narrowed runs (framing policy needs the
 # rtu-framed link; random250 is the largest body all three links carry):
-python -B wire/tests/hardware/h7s/run_comparison.py `
+python -B src/wire/tests/hardware/h7s/run_comparison.py `
   --port COM6 --serial 002A001F3033510135393935 `
-  --output wire/tests/hardware/h7s/results_comparison_framed_NEW.json `
+  --output src/wire/tests/hardware/h7s/results_comparison_framed_NEW.json `
   --uart-only --protocols cobs,rtu,rtu-framed --policies none,bitwise,table `
   --bauds 1000000 --cases random250 --cobs-uart 256x4
-python -B wire/tests/hardware/h7s/run_comparison.py `
+python -B src/wire/tests/hardware/h7s/run_comparison.py `
   --port COM6 --serial 002A001F3033510135393935 `
-  --output wire/tests/hardware/h7s/results_comparison_framed_highbaud_NEW.json `
+  --output src/wire/tests/hardware/h7s/results_comparison_framed_highbaud_NEW.json `
   --uart-only --protocols cobs,rtu-framed --policies none,bitwise,table `
   --bauds 3000000,6000000,10000000 --cases random250 --cobs-uart 256x4
 
 # Recheck the recorded session and all published numeric table rows:
-python -B wire/tests/hardware/h7s/verify_comparison.py `
-  wire/tests/hardware/h7s/results_comparison_2026-09-05.json `
+python -B src/wire/tests/hardware/h7s/verify_comparison.py `
+  src/wire/tests/hardware/h7s/results_comparison_2026-09-05.json `
   --check-doc doc/PROTOCOL_COMPARISON.md
 ```
 
@@ -533,9 +533,9 @@ A narrowed UART run records its selection in the result and the verifier
 expects exactly that; the like-for-like geometry section was produced by:
 
 ```powershell
-python -B wire/tests/hardware/h7s/run_comparison.py `
+python -B src/wire/tests/hardware/h7s/run_comparison.py `
   --port COM6 --serial 002A001F3033510135393935 `
-  --output wire/tests/hardware/h7s/results_comparison_uart_2026-09-05.json `
+  --output src/wire/tests/hardware/h7s/results_comparison_uart_2026-09-05.json `
   --uart-only --protocols cobs,rtu --policies none,bitwise,table `
   --bauds 1000000 --cases random252 --cobs-uart 128x8,256x4
 ```
@@ -546,7 +546,7 @@ later commit that contains the measured bytes); a version older than the base
 is never accepted, because a run that started from the base cannot have
 measured it. A record made before its harness was committed is verified
 against the working tree and says so with a `CAVEAT` line; the shared rule
-lives in `wire/tests/provenance.py` and also governs the COBS performance and
+lives in `src/wire/tests/provenance.py` and also governs the COBS performance and
 migration verifiers.
 Policy labels are checked against the board's own HELLO: RTU has always
 reported its CRC policy identifier, COBS reports it since harness protocol 3.
@@ -570,5 +570,5 @@ remain unavailable, not be filled with CPU spent rejecting partial frames.
 
 Related: [COBS-only full matrix](COBS_PERFORMANCE.md),
 [COBS wire format](PROTOCOL.md),
-[RTU physical framing scope](../modbus/rtu/tests/hardware/h7s/README.md),
+[RTU physical framing scope](../src/modbus/rtu/tests/hardware/h7s/README.md),
 [shared-policy validation](SHARED_POLICIES_VALIDATION.md).

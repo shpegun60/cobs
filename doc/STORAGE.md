@@ -6,8 +6,8 @@ SPDX-License-Identifier: MIT
 # Shared storage contract
 
 This is the canonical extension guide for both COBS and Modbus RTU.
-Include `wire/Storage.h` to write storage; include `Cobs.h` or
-`modbus/rtu/Rtu.h` to use an endpoint. No protocol-specific storage aliases
+Include `src/wire/Storage.h` to write storage; include `Cobs.h` or
+`src/modbus/rtu/Rtu.h` to use an endpoint. No protocol-specific storage aliases
 or forwarding headers are provided.
 
 ## Configuration and ownership
@@ -248,13 +248,13 @@ A thread-safe allocator alone does not make Packet or Endpoint thread-safe.
 
 ## Conformance evidence
 
-Run `sh wire/tests/run.sh`. It covers raw BlockPool and storage behavior
+Run `sh src/wire/tests/run.sh`. It covers raw BlockPool and storage behavior
 under checked/sanitized and NDEBUG builds, real COBS/RTU geometries, alignment
 of every acquired RX slot, independent quotas and release checking.
 
-`wire/tests/test_protocol_storage.cpp` passes the same custom specification
+`src/wire/tests/test_protocol_storage.cpp` passes the same custom specification
 through both public endpoints. It checks excess grants beyond the maximum,
 undersized grants at construction and growth, strong failure, payload moves,
 retained packet references, transport borrowing and exact descriptor return.
-Adapt the generic contract body in `wire/tests/test_storage.cpp` to your
+Adapt the generic contract body in `src/wire/tests/test_storage.cpp` to your
 storage and run it with each required Endpoint::Geometry.

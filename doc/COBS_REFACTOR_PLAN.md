@@ -146,7 +146,7 @@ baseline recorded before production changes is:
 - disabled-probe and port-equivalence checks passed.
 
 At the starting SHA, root `COBS.pro` built only the Qt GUI scaffold. The current
-tree includes `cobs/cobs.pri`, so it compiles the two non-template codec sources;
+tree includes `src/cobs/cobs.pri`, so it compiles the two non-template codec sources;
 the dedicated qmake consumer additionally instantiates and executes the public
 endpoint API over both built-in storage strategies. UART still requires its
 own host and STM32 targets.
@@ -295,9 +295,9 @@ UART / TCP / test transport
 
 Dependency rules:
 
-1. Application code normally includes only `cobs/Cobs.h`.
-2. A custom storage author includes `cobs/Storage.h`.
-3. A low-level codec user includes `cobs/Codec.h`.
+1. Application code normally includes only `src/cobs/Cobs.h`.
+2. A custom storage author includes `src/cobs/Storage.h`.
+3. A low-level codec user includes `src/cobs/Codec.h`.
 4. Public headers may include detail definitions required by templates, but
    detail names are not application contracts.
 5. `Receiver` must not include `Heap` merely to obtain a default argument.
@@ -748,7 +748,7 @@ together, and forwarding headers or compatibility aliases are not retained.
 The repository now has a build target that proves the real library is usable.
 The integration boundary is:
 
-- `cobs/cobs.pri` is the guarded reusable qmake fragment;
+- `src/cobs/cobs.pri` is the guarded reusable qmake fragment;
 - it compiles non-template codec sources exactly once;
 - it exposes the required include paths for COBS and `tiny_delegate`, with an
   override for external dependency layouts;
@@ -766,9 +766,9 @@ longer be confused with core-library validation.
 
 UART cleanup is a separate, later phase after the COBS API is stable:
 
-- confirm and remove unused `uart/basic_types.h`;
+- confirm and remove unused `src/uart/basic_types.h`;
 - replace `_DELETE_COPY_MOVE` in `IRQGuard` with explicit deleted C++ special
-  members, then remove `uart/macro.h` if no uses remain;
+  members, then remove `src/uart/macro.h` if no uses remain;
 - place registry, IRQ, and register helpers under `uart::detail` where this is
   a namespace-only change;
 - do not alter interrupt ordering, DMA ownership, gap detection, watchdog
@@ -796,7 +796,7 @@ Content parity was checked before archival:
 | Heap/Pool/custom memory, blocks, quotas, release obligations | `STORAGE.md` |
 | detailed state traces and in-place overlap proof | `COBS_ENGINE.md` |
 | supported build and regression commands | `BUILD.md` |
-| implemented UART ISR/DMA/recovery behavior | `uart/Uart.h` plus host/port tests |
+| implemented UART ISR/DMA/recovery behavior | `src/uart/Uart.h` plus host/port tests |
 
 After that audit, the superseded sketch moved to
 `doc/old/UART_COBS_ARCHITECTURE.md` with an explicit historical banner. Its
@@ -1057,7 +1057,7 @@ The following are not part of this refactor:
   the decision to retain the universal owning delegate observable rather than
   documentary. MinGW and WSL ASan/UBSan passed 23,033 COBS checks; ARM layout,
   UART host 131/131, and the full F1/G4/H7RS port/probe matrix remained green.
-- Added the guarded reusable `cobs/cobs.pri` source manifest and included it in
+- Added the guarded reusable `src/cobs/cobs.pri` source manifest and included it in
   root `COBS.pro`, so a GUI build now compiles and links both non-template codec
   sources. Added a Qt-free qmake console consumer that includes only `Cobs.h`,
   instantiates the default heap endpoint and a format-compatible deterministic
@@ -1109,17 +1109,17 @@ The following are not part of this refactor:
 - Audited the apparent UART packaging leftovers through actual compiler
   dependencies rather than text search alone. SPSC's internal
   `#include "basic_types.h"` had been resolving accidentally to
-  `uart/basic_types.h` because the UART include path came first. Added the
+  `src/uart/basic_types.h` because the UART include path came first. Added the
   dependency's own root include path beside `libs/spsc/src` in qmake, host,
   port, and benchmark integration, then removed the shadowing UART copy.
   Replaced `IRQGuard`'s `_DELETE_COPY_MOVE` macro with four explicit deleted
   special members, locked all four with type-trait assertions, and removed the
-  now-unreferenced `uart/macro.h`. No runtime, ISR, DMA, or HAL ordering code
+  now-unreferenced `src/uart/macro.h`. No runtime, ISR, DMA, or HAL ordering code
   changed. A compiler dependency trace now resolves
   `libs/spsc/basic_types.h`, UART host remained 131/131, the complete
   F1/G4/H7RS port/probe matrix passed, and root qmake regenerated and built.
 - Consolidated the remaining UART implementation helpers physically under
-  `uart/detail` and semantically under `uart::detail`. The former global
+  `src/uart/detail` and semantically under `uart::detail`. The former global
   `IRQGuard` and `UartRegistry` are now the concise internal types `IrqGuard`
   and `Registry`; D-cache operations use named internal functions; and the
   register portability layer exposes typed `new_usart_ip`, `no_error`,
@@ -1153,7 +1153,7 @@ The following are not part of this refactor:
 
 ### 2026-09-02 universal scalar follow-up
 
-- Added one shared C++20 scalar codec in `wire/Scalar.h`. COBS and Modbus
+- Added one shared C++20 scalar codec in `src/wire/Scalar.h`. COBS and Modbus
   Messages now expose `append_native`, `append_be`, `append_le`, and
   `append_bytes`, including element-wise scalar-span overloads. The endian
   decision uses `std::endian::native` plus `if constexpr`; fixed 16/32/64-bit

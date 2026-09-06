@@ -6,18 +6,18 @@ build/
 .qtcreator/
 
 # STM32 portability test objects
-uart/tests/port/out/
+src/uart/tests/port/out/
 
 # Local STM32CubeIDE hardware-test project (vendored CMSIS/HAL live in libs/)
 stm32_cube_test/
 
 # Host test binaries
-uart/tests/host/out/
-cobs/tests/out/
-crc/tests/out/
-modbus/rtu/tests/out/
-wire/tests/out/
-wire/tests/*.o
+src/uart/tests/host/out/
+src/cobs/tests/out/
+src/crc/tests/out/
+src/modbus/rtu/tests/out/
+src/wire/tests/out/
+src/wire/tests/*.o
 
 # Python test-runner bytecode
 __pycache__/

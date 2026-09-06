@@ -13,8 +13,8 @@ At configured 10M, the 253-byte case costs approximately **6.98% / 21.38% /
 roughly 675–684 kB/s of actual wire traffic per direction. The original
 board firmware was restored and verified afterwards.
 
-Raw evidence: [300 measurements](../cobs/tests/hardware/h7s/results_performance_2026-09-05.jsonl)
-and [session/restore receipt](../cobs/tests/hardware/h7s/results_performance_2026-09-05.jsonl.session.json).
+Raw evidence: [300 measurements](../src/cobs/tests/hardware/h7s/results_performance_2026-09-05.jsonl)
+and [session/restore receipt](../src/cobs/tests/hardware/h7s/results_performance_2026-09-05.jsonl.session.json).
 The measurement session ran 16:23–16:37 UTC (18:23–18:37 Europe/Warsaw).
 
 ## What is measured
@@ -133,19 +133,19 @@ From the repository root, with the board connected to the explicitly named
 probe and port:
 
 ```powershell
-python -B cobs/tests/hardware/h7s/test_performance.py
+python -B src/cobs/tests/hardware/h7s/test_performance.py
 
 powershell -NoProfile -ExecutionPolicy Bypass -File `
-  cobs/tests/hardware/h7s/run_performance.ps1 `
+  src/cobs/tests/hardware/h7s/run_performance.ps1 `
   -Port COM6 -StLinkSerial 002A001F3033510135393935 `
-  -Output cobs/tests/hardware/h7s/results_performance_NEW.jsonl
+  -Output src/cobs/tests/hardware/h7s/results_performance_NEW.jsonl
 
-python -B cobs/tests/hardware/h7s/verify_performance.py `
-  cobs/tests/hardware/h7s/results_performance_NEW.jsonl
+python -B src/cobs/tests/hardware/h7s/verify_performance.py `
+  src/cobs/tests/hardware/h7s/results_performance_NEW.jsonl
 
 # Recheck the saved session and every published result-table row:
-python -B cobs/tests/hardware/h7s/verify_performance.py `
-  cobs/tests/hardware/h7s/results_performance_2026-09-05.jsonl `
+python -B src/cobs/tests/hardware/h7s/verify_performance.py `
+  src/cobs/tests/hardware/h7s/results_performance_2026-09-05.jsonl `
   --check-doc doc/COBS_PERFORMANCE.md
 ```
 
@@ -153,7 +153,7 @@ The runner refuses an existing output file, backs up all 64 KiB of internal
 boot flash before programming, and restores/verifies that exact image in
 `finally`, including after a failed measurement. No option bytes or external
 flash are programmed. Build/flash/restore logs, the backup and every measured
-ELF stay in the ignored `cobs/tests/out/performance-<timestamp>/` directory.
+ELF stay in the ignored `src/cobs/tests/out/performance-<timestamp>/` directory.
 The JSONL and its adjacent `.session.json` receipt are durable results.
 
 The optional verifier argument `--nm <path-to-arm-none-eabi-nm.exe>` checks
@@ -309,8 +309,8 @@ Related documents:
 
 - [COBS wire format and CRC placement](PROTOCOL.md)
 - [Shared-policy migration validation](SHARED_POLICIES_VALIDATION.md)
-- [Hardware harness and older results](../cobs/tests/hardware/h7s/README.md)
-- [CRC implementation / isolated CRC benchmarks](../crc/README.md)
+- [Hardware harness and older results](../src/cobs/tests/hardware/h7s/README.md)
+- [CRC implementation / isolated CRC benchmarks](../src/crc/README.md)
 
 ### Validation assessment: Share with caveats
 

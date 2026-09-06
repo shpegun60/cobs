@@ -32,28 +32,32 @@ Direct comparison: [COBS versus Modbus RTU](doc/PROTOCOL_COMPARISON.md)
 
 ## What is in this repository?
 
+`src/` is the stack (`wire/`, `crc/`, `cobs/`, `modbus/`, `uart/`), `libs/`
+the third-party dependencies, `app/` the Qt host application, `doc/` the
+documentation of the whole repository. Include paths are `src`-relative.
+
 | Layer | Main include | Responsibility |
 |---|---|---|
-| COBS application API | [`cobs/Cobs.h`](cobs/Cobs.h) | frames, packet ownership, TX message building, retries, counters |
-| Shared storage API | [`wire/Storage.h`](wire/Storage.h) | `Heap`, `Pool`, three-value Geometry, protocol-blind custom memory |
-| Low-level codec | [`cobs/Codec.h`](cobs/Codec.h) | streaming decoder and canonical in-place encoder |
-| Shared scalar I/O | [`wire/Scalar.h`](wire/Scalar.h), [`wire/Read.h`](wire/Read.h) | constrained native/BE/LE scalar representation and stateless bounds-checked readers |
-| CRC policy API | [`crc/Crc.h`](crc/Crc.h) | bitwise/table CRC8/16/32/64, wire codecs, custom policy contract, `NoCrc` |
-| Modbus RTU API | [`modbus/rtu/Rtu.h`](modbus/rtu/Rtu.h) | burst-delimited RTU ADUs, policy-derived trailer, metadata, packet/message ownership |
-| Modbus PDU helpers | [`modbus/Pdu.h`](modbus/Pdu.h) | stateless bounds-checked native/BE/LE function-data readers |
-| STM32 UART transport | [`uart/Uart.h`](uart/Uart.h) | DMA RX chunks, borrowed DMA TX, gap/error recovery |
-| Integration proof | [`cobs/tests/hardware/h7s`](cobs/tests/hardware/h7s) | real UART + COBS stack on NUCLEO-H7S3L8 |
-| Modbus integration proof | [`modbus/rtu/tests/hardware/h7s`](modbus/rtu/tests/hardware/h7s) | real RTU CRC/ownership/pools + UART DMA on NUCLEO-H7S3L8 |
+| COBS application API | [`src/cobs/Cobs.h`](src/cobs/Cobs.h) | frames, packet ownership, TX message building, retries, counters |
+| Shared storage API | [`src/wire/Storage.h`](src/wire/Storage.h) | `Heap`, `Pool`, three-value Geometry, protocol-blind custom memory |
+| Low-level codec | [`src/cobs/Codec.h`](src/cobs/Codec.h) | streaming decoder and canonical in-place encoder |
+| Shared scalar I/O | [`src/wire/Scalar.h`](src/wire/Scalar.h), [`src/wire/Read.h`](src/wire/Read.h) | constrained native/BE/LE scalar representation and stateless bounds-checked readers |
+| CRC policy API | [`src/crc/Crc.h`](src/crc/Crc.h) | bitwise/table CRC8/16/32/64, wire codecs, custom policy contract, `NoCrc` |
+| Modbus RTU API | [`src/modbus/rtu/Rtu.h`](src/modbus/rtu/Rtu.h) | burst-delimited RTU ADUs, policy-derived trailer, metadata, packet/message ownership |
+| Modbus PDU helpers | [`src/modbus/Pdu.h`](src/modbus/Pdu.h) | stateless bounds-checked native/BE/LE function-data readers |
+| STM32 UART transport | [`src/uart/Uart.h`](src/uart/Uart.h) | DMA RX chunks, borrowed DMA TX, gap/error recovery |
+| Integration proof | [`src/cobs/tests/hardware/h7s`](src/cobs/tests/hardware/h7s) | real UART + COBS stack on NUCLEO-H7S3L8 |
+| Modbus integration proof | [`src/modbus/rtu/tests/hardware/h7s`](src/modbus/rtu/tests/hardware/h7s) | real RTU CRC/ownership/pools + UART DMA on NUCLEO-H7S3L8 |
 
 The layers are intentionally independent. `Uart` transports ordered byte
 spans and reports physical gaps. `cobs::Endpoint` and
 `modbus::rtu::Endpoint` independently own their framing and messages. A
 different byte transport can be bound to either endpoint, and UART can be
 used without either protocol layer. COBS and Modbus share the stateless
-`wire/Scalar.h` and `wire/Read.h` primitives so their native/BE/LE scalar I/O
+`src/wire/Scalar.h` and `src/wire/Read.h` primitives so their native/BE/LE scalar I/O
 contracts cannot drift. Both select policies from the
 protocol-independent CRC module and bind the same memory specifications from
-`wire/Storage.h` to their own computed geometry. Neither
+`src/wire/Storage.h` to their own computed geometry. Neither
 protocol depends on the other's framing or ownership types.
 
 ```text
@@ -332,7 +336,7 @@ if (!cobs::read_be(packet.data(), offset, command) ||
 
 Every failed read leaves both `offset` and its output unchanged. The same code
 shape works for Modbus by replacing `cobs::` with `modbus::`; both names expose
-the same `wire/Read.h` functions, not duplicated wrappers.
+the same `src/wire/Read.h` functions, not duplicated wrappers.
 
 If the transport knows that one or more bytes were physically lost, report it
 at the exact stream position:
@@ -446,12 +450,12 @@ using FastModbus = modbus::rtu::Endpoint<
     Memory, modbus::rtu::Format<crc::Crc16Table>>;
 ```
 
-The independent [`crc/Crc.h`](crc/Crc.h) module also supplies CRC8/32/64,
+The independent [`src/crc/Crc.h`](src/crc/Crc.h) module also supplies CRC8/32/64,
 bitwise/table variants, reusable integer wire codecs, and `NoCrc`. A custom
 stateful policy can retain a hardware peripheral handle and can intentionally
 implement another checksum. The library performs no semantic validation: it
 uses the same object for RX and TX exactly as supplied. See the full
-[CRC policy guide](modbus/README.md#crc-policy-and-compile-time-rtu-format).
+[CRC policy guide](src/modbus/README.md#crc-policy-and-compile-time-rtu-format).
 
 Create an RTU request by passing address and function once; the library adds
 the selected trailer and advertises only policy-derived useful data capacity:
@@ -501,8 +505,8 @@ Non-Modbus checksum semantics or actual ADUs above 256 are private exchanges;
 CRC16 Table or an equivalent hardware calculator remain compatible. This adapter uses a
 continuous UART burst as its physical boundary;
 it does not claim strict software t1.5/t3.5 timing. Read the full
-[Modbus usage guide](modbus/README.md) and canonical
-[Modbus architecture](modbus/ARCHITECTURE.md) before integration.
+[Modbus usage guide](src/modbus/README.md) and canonical
+[Modbus architecture](src/modbus/ARCHITECTURE.md) before integration.
 
 ## STM32 UART quick start
 
@@ -618,7 +622,7 @@ complete initialization proof in
 task that sleeps never sees a chunk until something wakes it. The driver's
 `WakeHandler` is that something: raised from the RX event, TX completion and
 error ISRs after the driver's state is final, carrying no data and knowing
-no scheduler. `uart/FreeRtosWake.h` turns it into a FreeRTOS task
+no scheduler. `src/uart/FreeRtosWake.h` turns it into a FreeRTOS task
 notification:
 
 ```cpp
@@ -634,7 +638,7 @@ void communicationTask(void*)
     for (;;) {
         const uint32_t now = HAL_GetTick();
         uart::FreeRtosWake::wait(std::min(50u, adapter.deadline_in_ms(now)));
-        adapter.proceed(HAL_GetTick());          // uart.proceed -> endpoint (see modbus/README.md)
+        adapter.proceed(HAL_GetTick());          // uart.proceed -> endpoint (see src/modbus/README.md)
         while (auto packet = link.pop_packet()) { handle(packet); }
     }
 }
@@ -832,7 +836,7 @@ message scheduling, and packet dispatch. It should not add another framing
 buffer between these layers.
 
 The exact implementation used for real-silicon testing is
-[`cobs/tests/hardware/h7s/cobs_bench.cpp`](cobs/tests/hardware/h7s/cobs_bench.cpp).
+[`src/cobs/tests/hardware/h7s/cobs_bench.cpp`](src/cobs/tests/hardware/h7s/cobs_bench.cpp).
 
 ## Wire protocol
 
@@ -933,13 +937,13 @@ Exact recorded commands and qmake consumer instructions are in
 [`doc/BUILD.md`](doc/BUILD.md).
 
 A small runnable downstream-style COBS application is checked in at
-[`cobs/tests/qmake_consumer/main.cpp`](cobs/tests/qmake_consumer/main.cpp). It
+[`src/cobs/tests/qmake_consumer/main.cpp`](src/cobs/tests/qmake_consumer/main.cpp). It
 binds a transport, sends through both `Heap` and `Pool`, loops the wire frame
 back into RX, validates the packet, polls ownership, reads statistics, and
 parses native/BE/LE fields through the public reader facade before unbinding.
 
 The corresponding Modbus consumer is
-[`modbus/rtu/tests/qmake_consumer/main.cpp`](modbus/rtu/tests/qmake_consumer/main.cpp).
+[`src/modbus/rtu/tests/qmake_consumer/main.cpp`](src/modbus/rtu/tests/qmake_consumer/main.cpp).
 
 ## Verification
 
@@ -948,46 +952,46 @@ cross-target code generation, benchmarks, and real hardware evidence.
 
 | Verification | Command / evidence | What it checks |
 |---|---|---|
-| COBS host suite | `sh cobs/tests/run.sh` | public headers, compile-fail boundaries, decoder/encoder, storage, ownership, endpoint, debug and `-DNDEBUG` |
-| Exhaustive codec oracle | included in `cobs/tests/run.sh` | 960,800 decoder streams and 177,146 encoder/headroom cases |
-| COBS qmake consumer | `sh cobs/tests/qmake_consumer/run.sh` | real downstream include/link/use path for Heap and Pool |
-| Cortex-M COBS layout | `sh cobs/tests/check_arm_layout.sh` | ARM object layout assertions |
-| COBS benchmarks | `sh cobs/tests/bench/run.sh` | codec and complete Endpoint hot paths |
-| CRC host suite | `sh crc/tests/run.sh` | known CRC8/16/32/64 models, independent random oracles, both methods, codecs, custom policy and `NoCrc` under sanitizers and O3 |
-| Cortex-M CRC emission | `sh crc/tests/check_arm_codegen.sh` | all CRC8/16/32/64 loops are helper-free on both CPU byte orders; unused tables emit zero bytes, selected tables emit one read-only object, codecs are branch/call-free, `NoCrc` folds away |
-| All GNU AArch32 CPU CRC audit | [ARM audit](crc/tests/ARM_AUDIT.md) / `python -B crc/tests/check_arm_matrix.py` | every installed-compiler CPU target, nine policies, Os/O2/O3, both byte orders, strict codecs, real object disassembly |
-| Nine-policy live CRC benchmark | [H7S3 results and methodology](modbus/rtu/tests/hardware/h7s/CRC_BENCHMARK.md) | CRC8/16/32/64 Bitwise/Table and NoCrc: live DWT cycles, paced CPU, private table bytes and exact flashed-ELF instructions |
-| Shared scalar/API host oracle | `sh wire/tests/run.sh` | exhaustive scalar values, reader facade identity, COBS/Modbus public API parity, intentional protocol differences, sanitizers and O3/LTO |
-| GCC strict/LTO consumers | `MATRIX_TAG=<compiler> CXX=<g++> sh wire/tests/check_gcc_matrix.sh` | real COBS/Modbus consumers and API parity under strict alias/alignment/bounds warnings plus `-fshort-enums`/`-funsigned-char` scalar proof |
-| Cortex-M endian hot path | `sh wire/tests/check_arm_hotpath.sh` | little- and big-endian ARM builds prove compile-time selection: native order is direct, opposite order uses REV/REV16, and neither calls a helper |
-| Cortex-M codegen matrix | `sh wire/tests/check_arm_codegen_matrix.sh` | 96 scalar, 60 protocol and 30 COBS objects across M0/M0+/M3/M4/M7/M23/M33/M55, plus Bitwise/Table references, Os/O2/O3, endian and strict-alignment variants |
-| Modbus CRC layout/codegen | `sh modbus/rtu/tests/check_arm_crc_codegen.sh` | default Endpoint emits no table; Table emits one private 512-byte read-only lookup; empty policies add no RAM |
-| Modbus RTU host suite | `sh modbus/rtu/tests/run.sh` | headers, compile-fail boundaries, every CRC width/method, custom three-byte and hardware policies, `NoCrc`, derived geometry, storage, ownership, endpoint and fuzz properties |
-| Modbus qmake consumer | `sh modbus/rtu/tests/qmake_consumer/run.sh` | downstream header-only use with Heap, Pool and Table policy |
-| Modbus + UART fake HAL | `sh modbus/rtu/tests/run_uart_integration.sh` | short IDLE ADU, exact 256-byte TC ADU, gaps, recovery, and DMA TX borrow |
-| Cortex-M Modbus layout | `sh modbus/rtu/tests/check_arm_layout.sh` | ARM object layout and static RAM assertions |
-| Modbus + UART H7S matrix | [`modbus/rtu/tests/hardware/h7s/README.md`](modbus/rtu/tests/hardware/h7s/README.md) | independent PC CRC oracle, Bitwise/Table A/B, exact 256-byte ADUs, corruptions, pools, recovery and stress at 115200/1M |
-| UART host matrix | `sh uart/tests/host/run.sh` | runtime interleavings, errors, recovery, callbacks, baud changes, torture, invalid configs |
-| UART port matrix | `sh uart/tests/port/build.sh` | F1/G4/H7RS compile paths, analyzer, probes, hot symbol/stack budgets |
-| UART H7S bench | [`uart/tests/bench/README.md`](uart/tests/bench/README.md) | real DMA/IRQ throughput and CPU accounting |
-| COBS + UART H7S matrix | [`cobs/tests/hardware/h7s/README.md`](cobs/tests/hardware/h7s/README.md) | independent PC codec, vectors, faults, pools, gaps, stress through 10 Mbaud |
+| COBS host suite | `sh src/cobs/tests/run.sh` | public headers, compile-fail boundaries, decoder/encoder, storage, ownership, endpoint, debug and `-DNDEBUG` |
+| Exhaustive codec oracle | included in `src/cobs/tests/run.sh` | 960,800 decoder streams and 177,146 encoder/headroom cases |
+| COBS qmake consumer | `sh src/cobs/tests/qmake_consumer/run.sh` | real downstream include/link/use path for Heap and Pool |
+| Cortex-M COBS layout | `sh src/cobs/tests/check_arm_layout.sh` | ARM object layout assertions |
+| COBS benchmarks | `sh src/cobs/tests/bench/run.sh` | codec and complete Endpoint hot paths |
+| CRC host suite | `sh src/crc/tests/run.sh` | known CRC8/16/32/64 models, independent random oracles, both methods, codecs, custom policy and `NoCrc` under sanitizers and O3 |
+| Cortex-M CRC emission | `sh src/crc/tests/check_arm_codegen.sh` | all CRC8/16/32/64 loops are helper-free on both CPU byte orders; unused tables emit zero bytes, selected tables emit one read-only object, codecs are branch/call-free, `NoCrc` folds away |
+| All GNU AArch32 CPU CRC audit | [ARM audit](src/crc/tests/ARM_AUDIT.md) / `python -B src/crc/tests/check_arm_matrix.py` | every installed-compiler CPU target, nine policies, Os/O2/O3, both byte orders, strict codecs, real object disassembly |
+| Nine-policy live CRC benchmark | [H7S3 results and methodology](src/modbus/rtu/tests/hardware/h7s/CRC_BENCHMARK.md) | CRC8/16/32/64 Bitwise/Table and NoCrc: live DWT cycles, paced CPU, private table bytes and exact flashed-ELF instructions |
+| Shared scalar/API host oracle | `sh src/wire/tests/run.sh` | exhaustive scalar values, reader facade identity, COBS/Modbus public API parity, intentional protocol differences, sanitizers and O3/LTO |
+| GCC strict/LTO consumers | `MATRIX_TAG=<compiler> CXX=<g++> sh src/wire/tests/check_gcc_matrix.sh` | real COBS/Modbus consumers and API parity under strict alias/alignment/bounds warnings plus `-fshort-enums`/`-funsigned-char` scalar proof |
+| Cortex-M endian hot path | `sh src/wire/tests/check_arm_hotpath.sh` | little- and big-endian ARM builds prove compile-time selection: native order is direct, opposite order uses REV/REV16, and neither calls a helper |
+| Cortex-M codegen matrix | `sh src/wire/tests/check_arm_codegen_matrix.sh` | 96 scalar, 60 protocol and 30 COBS objects across M0/M0+/M3/M4/M7/M23/M33/M55, plus Bitwise/Table references, Os/O2/O3, endian and strict-alignment variants |
+| Modbus CRC layout/codegen | `sh src/modbus/rtu/tests/check_arm_crc_codegen.sh` | default Endpoint emits no table; Table emits one private 512-byte read-only lookup; empty policies add no RAM |
+| Modbus RTU host suite | `sh src/modbus/rtu/tests/run.sh` | headers, compile-fail boundaries, every CRC width/method, custom three-byte and hardware policies, `NoCrc`, derived geometry, storage, ownership, endpoint and fuzz properties |
+| Modbus qmake consumer | `sh src/modbus/rtu/tests/qmake_consumer/run.sh` | downstream header-only use with Heap, Pool and Table policy |
+| Modbus + UART fake HAL | `sh src/modbus/rtu/tests/run_uart_integration.sh` | short IDLE ADU, exact 256-byte TC ADU, gaps, recovery, and DMA TX borrow |
+| Cortex-M Modbus layout | `sh src/modbus/rtu/tests/check_arm_layout.sh` | ARM object layout and static RAM assertions |
+| Modbus + UART H7S matrix | [`src/modbus/rtu/tests/hardware/h7s/README.md`](src/modbus/rtu/tests/hardware/h7s/README.md) | independent PC CRC oracle, Bitwise/Table A/B, exact 256-byte ADUs, corruptions, pools, recovery and stress at 115200/1M |
+| UART host matrix | `sh src/uart/tests/host/run.sh` | runtime interleavings, errors, recovery, callbacks, baud changes, torture, invalid configs |
+| UART port matrix | `sh src/uart/tests/port/build.sh` | F1/G4/H7RS compile paths, analyzer, probes, hot symbol/stack budgets |
+| UART H7S bench | [`src/uart/tests/bench/README.md`](src/uart/tests/bench/README.md) | real DMA/IRQ throughput and CPU accounting |
+| COBS + UART H7S matrix | [`src/cobs/tests/hardware/h7s/README.md`](src/cobs/tests/hardware/h7s/README.md) | independent PC codec, vectors, faults, pools, gaps, stress through 10 Mbaud |
 | Matched COBS CRC performance | [`doc/COBS_PERFORMANCE.md`](doc/COBS_PERFORMANCE.md) | 300 live measurements: NoCrc/Bitwise/Table, 253/H1 and 1024/H2, short/long/mixed data, measured CPU and wire throughput through 10M |
 
 Raw current hardware evidence:
 
-- [baseline audited H7S matrix](cobs/tests/hardware/h7s/results_audited_2026-09-01.jsonl);
-- [concise Format/Pool API H7S matrix](cobs/tests/hardware/h7s/results_format_api_2026-09-01.jsonl);
-- [UART default 128x8 10 Mbaud run](uart/tests/bench/results_default128x8_10M_audited_2026-09-01.csv);
-- [UART chunk-size comparison data](uart/tests/bench/README.md#fresh-audited-run-2026-09-01);
-- [Modbus accepted 115200/1M matrix](modbus/rtu/tests/hardware/h7s/results_audited_2026-09-02.jsonl);
-- [Modbus universal-scalar 115200/1M matrix](modbus/rtu/tests/hardware/h7s/results_scalar_api_final_2026-09-02.jsonl);
-- [Modbus final paranoid `-Os` 115200/1M matrix](modbus/rtu/tests/hardware/h7s/results_paranoid_final_2026-09-02.jsonl);
-- [Modbus `-O2` silicon run](modbus/rtu/tests/hardware/h7s/results_paranoid_o2_2026-09-02.jsonl);
-- [Modbus `-O3` + LTO silicon run](modbus/rtu/tests/hardware/h7s/results_paranoid_o3_lto_2026-09-02.jsonl);
-- [Modbus post-extraction CRC library 115200/1M matrix](modbus/rtu/tests/hardware/h7s/results_crc_library_2026-09-05.jsonl);
-- [Modbus Bitwise/Table CRC A/B](modbus/rtu/tests/hardware/h7s/results_crc_policy_2026-09-05.jsonl);
-- [Modbus 3M UART-IDLE boundary probe](modbus/rtu/tests/hardware/h7s/results_high_baud_probe_2026-09-02.jsonl);
-- [Modbus framing policy versus burst framing at 1M/3M/6M/10M](modbus/rtu/tests/hardware/h7s/results_framing_2026-09-05.jsonl).
+- [baseline audited H7S matrix](src/cobs/tests/hardware/h7s/results_audited_2026-09-01.jsonl);
+- [concise Format/Pool API H7S matrix](src/cobs/tests/hardware/h7s/results_format_api_2026-09-01.jsonl);
+- [UART default 128x8 10 Mbaud run](src/uart/tests/bench/results_default128x8_10M_audited_2026-09-01.csv);
+- [UART chunk-size comparison data](src/uart/tests/bench/README.md#fresh-audited-run-2026-09-01);
+- [Modbus accepted 115200/1M matrix](src/modbus/rtu/tests/hardware/h7s/results_audited_2026-09-02.jsonl);
+- [Modbus universal-scalar 115200/1M matrix](src/modbus/rtu/tests/hardware/h7s/results_scalar_api_final_2026-09-02.jsonl);
+- [Modbus final paranoid `-Os` 115200/1M matrix](src/modbus/rtu/tests/hardware/h7s/results_paranoid_final_2026-09-02.jsonl);
+- [Modbus `-O2` silicon run](src/modbus/rtu/tests/hardware/h7s/results_paranoid_o2_2026-09-02.jsonl);
+- [Modbus `-O3` + LTO silicon run](src/modbus/rtu/tests/hardware/h7s/results_paranoid_o3_lto_2026-09-02.jsonl);
+- [Modbus post-extraction CRC library 115200/1M matrix](src/modbus/rtu/tests/hardware/h7s/results_crc_library_2026-09-05.jsonl);
+- [Modbus Bitwise/Table CRC A/B](src/modbus/rtu/tests/hardware/h7s/results_crc_policy_2026-09-05.jsonl);
+- [Modbus 3M UART-IDLE boundary probe](src/modbus/rtu/tests/hardware/h7s/results_high_baud_probe_2026-09-02.jsonl);
+- [Modbus framing policy versus burst framing at 1M/3M/6M/10M](src/modbus/rtu/tests/hardware/h7s/results_framing_2026-09-05.jsonl).
 
 The full post-refactor COBS H7S matrix passed at 115200, 1M, 3M, 6M, and 10M,
 including physical gap/recovery tests. Its extended 10 Mbaud/window-7 run
@@ -1018,11 +1022,11 @@ Read active documents in this order:
    recovery, cache/DMA rules, and code-generation evidence.
 8. [Refactor plan and decision history](doc/COBS_REFACTOR_PLAN.md) — locked
    architectural decisions and completed phases.
-9. [CRC policy guide](crc/README.md) - built-in models, wire codecs, custom
+9. [CRC policy guide](src/crc/README.md) - built-in models, wire codecs, custom
    hardware policies, table emission, and `NoCrc`.
-10. [Modbus RTU usage](modbus/README.md) — public API, UART binding, storage,
+10. [Modbus RTU usage](src/modbus/README.md) — public API, UART binding, storage,
    diagnostics, tests, and the burst-framing limitation.
-11. [Modbus architecture](modbus/ARCHITECTURE.md) — RTU ownership invariants
+11. [Modbus architecture](src/modbus/ARCHITECTURE.md) — RTU ownership invariants
     and the separate future `modbus::tcp` boundary.
 
 Files under [`doc/old`](doc/old) are preserved historical designs and legacy

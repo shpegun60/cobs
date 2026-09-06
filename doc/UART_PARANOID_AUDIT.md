@@ -137,7 +137,7 @@ is required for safe M7 invalidation.
 | `GapHandler` | inside `proceed()` | ordered between bytes before and after physical loss |
 | `ErrorHandler` | HAL error ISR | bounded, non-blocking, non-throwing |
 | `TxHandler` | normally completion/error ISR; watchdog terminal recovery can call it from `proceed()` | must be valid in both contexts and produce exactly one ownership event |
-| `WakeHandler` | RX event, TX completion and error ISRs, after the driver's own state is final | ISR-safe, bounded, must not call the driver; never raised for the ignored half-transfer event; an RTOS integration turns it into a task notification (`uart/FreeRtosWake.h`), whose `FromISR` call requires the USART/DMA interrupts not to be logically more urgent than the kernel's syscall ceiling — on STM32 the HAL/CMSIS priority number `>= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY`, never a comparison against the shifted `configMAX_SYSCALL_INTERRUPT_PRIORITY` |
+| `WakeHandler` | RX event, TX completion and error ISRs, after the driver's own state is final | ISR-safe, bounded, must not call the driver; never raised for the ignored half-transfer event; an RTOS integration turns it into a task notification (`src/uart/FreeRtosWake.h`), whose `FromISR` call requires the USART/DMA interrupts not to be logically more urgent than the kernel's syscall ceiling — on STM32 the HAL/CMSIS priority number `>= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY`, never a comparison against the shifted `configMAX_SYSCALL_INTERRUPT_PRIORITY` |
 | registry forwarding | HAL ISR | fixed-table lookup followed by non-virtual operation dispatch |
 
 Handlers must not throw. A handler must not replace the same delegate while
@@ -343,7 +343,7 @@ The reproduced and extended matrix was:
 That is 40 recorded CSV windows plus two live-baud windows. Every one reported
 `GAP=0`, `OVR=0`, `ERR=0`, and `RST=0`. The 30-window historical matrix is in
 `results_256_audited_2026-09-01.csv`; the additional chunk/default runs are in
-the three correspondingly named audited CSVs under `uart/tests/bench/`.
+the three correspondingly named audited CSVs under `src/uart/tests/bench/`.
 
 At 10 Mbaud, comparing the same `256x4` scenarios against the original sweep:
 
@@ -367,7 +367,7 @@ hardware counters also directly confirm that HT stays disabled: at 10 Mbaud
 continuous TX, `TXDMA.calls == TXFR == 159745`, not two DMA interrupts per
 frame; at 1 Mbaud continuous RX, `RXDMA.calls == CH == 3870`.
 
-`uart/tests/bench/README.md` documents the harness and CPU-accounting rule.
+`src/uart/tests/bench/README.md` documents the harness and CPU-accounting rule.
 
 The following tempting changes remain rejected without contrary target data:
 
@@ -396,15 +396,15 @@ only queues the chunk, so without a wake the task has to poll on a timer, and
 at 10 Mbaud the `Uart<256,4>` pool is about one millisecond of buffering. The
 condition was an A/B measurement, not an estimate.
 
-Method: the RTU comparison harness (`wire/tests/hardware/h7s/run_comparison.py
+Method: the RTU comparison harness (`src/wire/tests/hardware/h7s/run_comparison.py
 --uart-only --protocols rtu --policies bitwise --bauds 1000000 --cases
 random250`), 588 echoes per record, the `uart_probe` DWT counters around the
 HAL interrupt handlers. A is the committed driver before the change, B1 the
 new driver with no handler installed, B2 with the cheapest possible handler
 installed by the harness (`MODBUS_HW_WAKE=1`: a volatile increment). Records:
-[A](../wire/tests/hardware/h7s/results_uart_wake_a_2026-09-06.json),
-[B1](../wire/tests/hardware/h7s/results_uart_wake_b1_2026-09-06.json),
-[B2](../wire/tests/hardware/h7s/results_uart_wake_b2_2026-09-06.json).
+[A](../src/wire/tests/hardware/h7s/results_uart_wake_a_2026-09-06.json),
+[B1](../src/wire/tests/hardware/h7s/results_uart_wake_b1_2026-09-06.json),
+[B2](../src/wire/tests/hardware/h7s/results_uart_wake_b2_2026-09-06.json).
 
 | Interrupt scope (cycles per call) | A | B1: wake unset | B2: trivial handler |
 |---|---:|---:|---:|
@@ -431,14 +431,14 @@ Host: the strict, old-HAL, registered-callback, external-forwarding and
 optimized variants each run the new `WakeHandler` group (one wake per RX
 chunk, TC chunk, TX completion and RX error; none for a half-transfer; none
 from `proceed()`; the handler is optional and replaceable while running), and
-`uart/FreeRtosWake.h` is compiled against a recording FreeRTOS fake
-(`uart/tests/host/fake_freertos`): one `vTaskNotifyGiveFromISR()` per event,
+`src/uart/FreeRtosWake.h` is compiled against a recording FreeRTOS fake
+(`src/uart/tests/host/fake_freertos`): one `vTaskNotifyGiveFromISR()` per event,
 coalescing into one `ulTaskNotifyTake()`, the yield request following what
 the kernel reports, the fallback timeout passed through.
 
 ### 9.3 rx_progress(), 2026-09-06: the second and last addition
 
-The transport adapter's review (`modbus/rtu/UartAdapter.h`) found a case its
+The transport adapter's review (`src/modbus/rtu/UartAdapter.h`) found a case its
 stale-frame rule alone gets wrong: a bridge splits a frame, the first part
 ends with IDLE, the bridge resumes a millisecond later and the remainder is
 physically arriving into the next DMA chunk, but no IDLE or TC has fired

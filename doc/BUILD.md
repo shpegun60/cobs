@@ -8,8 +8,8 @@ SPDX-License-Identifier: MIT
 The repository has two qmake targets with different jobs:
 
 - `COBS.pro` is the Qt Widgets host scaffold and compiles the real non-template
-  COBS codec through `cobs/cobs.pri`;
-- `cobs/tests/qmake_consumer/consumer.pro` is the application-shaped proof. It
+  COBS codec through `src/cobs/cobs.pri`;
+- `src/cobs/tests/qmake_consumer/consumer.pro` is the application-shaped proof. It
   includes only `Cobs.h`, instantiates `Endpoint` with both `Heap` and `Pool`,
   binds delegates, sends, receives, polls, observes `Stats`, and executes.
 
@@ -83,7 +83,7 @@ Run the checked consumer from Git Bash:
 
 ```bash
 export PATH="/c/Qt/6.10.1/mingw_64/bin:/c/Qt/Tools/mingw1310_64/bin:$PATH"
-sh cobs/tests/qmake_consumer/run.sh
+sh src/cobs/tests/qmake_consumer/run.sh
 ```
 
 The default out-of-tree result is
@@ -98,22 +98,22 @@ expected compile-fail contracts with diagnostic validation, and the
 
 ```bash
 export PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH"
-sh cobs/tests/run.sh
+sh src/cobs/tests/run.sh
 ```
 
 WSL ASan+UBSan run (do not run it concurrently with the MinGW command because
-both intentionally reuse `cobs/tests/out`):
+both intentionally reuse `src/cobs/tests/out`):
 
 ```powershell
-wsl -e sh -lc 'cd /mnt/c/Users/admin/Documents/my_workspace/Qt/COBS && CXX=g++ sh cobs/tests/run.sh'
+wsl -e sh -lc 'cd /mnt/c/Users/admin/Documents/my_workspace/Qt/COBS && CXX=g++ sh src/cobs/tests/run.sh'
 ```
 
 Cortex-M compile-only layout assertions with the recorded CubeIDE toolchain:
 
 ```bash
-sh cobs/tests/check_arm_layout.sh
-sh wire/tests/check_arm_hotpath.sh
-sh wire/tests/check_arm_codegen_matrix.sh
+sh src/cobs/tests/check_arm_layout.sh
+sh src/wire/tests/check_arm_hotpath.sh
+sh src/wire/tests/check_arm_codegen_matrix.sh
 ```
 
 The scalar hot-path guard compiles both little- and big-endian Cortex-M7
@@ -127,9 +127,9 @@ than an out-of-line `memcpy` helper.
 The shared host scalar oracle and strict GCC consumer/LTO proof are:
 
 ```bash
-sh wire/tests/run.sh
+sh src/wire/tests/run.sh
 MATRIX_TAG=gcc13 CXX=/c/Qt/Tools/mingw1310_64/bin/g++.exe \
-  sh wire/tests/check_gcc_matrix.sh
+  sh src/wire/tests/check_gcc_matrix.sh
 ```
 
 Repeat the second command with a distinct tag for every installed GCC. It
@@ -141,9 +141,9 @@ function identity and the deliberately different COBS-stream/RTU-ADU boundary.
 ## Shared storage and integrity verification
 
 ```bash
-sh wire/tests/run.sh
-sh wire/tests/check_shared_crc.sh   # ELF objects only: run under WSL or with arm-none-eabi (see below)
-python -B wire/tests/verify_hardware_migration.py
+sh src/wire/tests/run.sh
+sh src/wire/tests/check_shared_crc.sh   # ELF objects only: run under WSL or with arm-none-eabi (see below)
+python -B src/wire/tests/verify_hardware_migration.py
 ```
 
 `check_shared_crc.sh` reads symbol sizes from `nm -S`, which COFF objects do
@@ -151,13 +151,13 @@ not carry, so on a Windows host it refuses MinGW with an explicit message.
 Run it under WSL, or with the ARM toolchain:
 
 ```bash
-CXX=arm-none-eabi-g++ NM=arm-none-eabi-nm CXXFLAGS="-mthumb -mcpu=cortex-m7 -mfloat-abi=soft" sh wire/tests/check_shared_crc.sh
+CXX=arm-none-eabi-g++ NM=arm-none-eabi-nm CXXFLAGS="-mthumb -mcpu=cortex-m7 -mfloat-abi=soft" sh src/wire/tests/check_shared_crc.sh
 ```
 
 MSVC has a separate native x64/x86 runner (no sanitizer claim):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File wire/tests/check_msvc.ps1
+powershell -ExecutionPolicy Bypass -File src/wire/tests/check_msvc.ps1
 ```
 
 The shared suites include raw Pool checks under NDEBUG, real protocol Geometry,
@@ -176,8 +176,8 @@ The protocol-independent CRC module and header-only RTU endpoint have separate
 host suites:
 
 ```bash
-sh crc/tests/run.sh
-sh modbus/rtu/tests/run.sh
+sh src/crc/tests/run.sh
+sh src/modbus/rtu/tests/run.sh
 ```
 
 The CRC suite checks named CRC8/16/32/64 vectors, 20,000 independent random
@@ -190,9 +190,9 @@ stateful fake-hardware injection, storage ownership, and fuzzing.
 The Cortex-M guards are:
 
 ```bash
-sh crc/tests/check_arm_codegen.sh
-sh modbus/rtu/tests/check_arm_crc_codegen.sh
-sh modbus/rtu/tests/check_arm_layout.sh
+sh src/crc/tests/check_arm_codegen.sh
+sh src/modbus/rtu/tests/check_arm_crc_codegen.sh
+sh src/modbus/rtu/tests/check_arm_layout.sh
 ```
 
 They prove that all CRC8/16/32/64 Bitwise and Table calculation loops are
@@ -206,8 +206,8 @@ The downstream qmake and fake-UART integrations are:
 
 ```bash
 export PATH="/c/Qt/6.10.1/mingw_64/bin:/c/Qt/Tools/mingw1310_64/bin:$PATH"
-sh modbus/rtu/tests/qmake_consumer/run.sh
-sh modbus/rtu/tests/run_uart_integration.sh
+sh src/modbus/rtu/tests/qmake_consumer/run.sh
+sh src/modbus/rtu/tests/run_uart_integration.sh
 ```
 
 ## UART regression matrix
@@ -218,15 +218,15 @@ portability/probe matrix are:
 
 ```bash
 export PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH"
-sh uart/tests/host/run.sh
-sh uart/tests/port/build.sh
+sh src/uart/tests/host/run.sh
+sh src/uart/tests/port/build.sh
 ```
 
 ## COBS + UART hardware integration matrix
 
 The real-silicon NUCLEO-H7S3L8 harness, independent PC codec, exact negative
 tests, DWT accounting, baud sweep, raw JSONL evidence, and reproduction steps
-live in `cobs/tests/hardware/h7s/README.md`.
+live in `src/cobs/tests/hardware/h7s/README.md`.
 
 The one-command Windows runner builds and verifies a fresh image at
 115200/1M/3M/6M/10M, executes the complete COBS suite at each rate, performs
@@ -236,9 +236,9 @@ smoke-checked 115200 image:
 ```powershell
 & 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' `
   -NoProfile -ExecutionPolicy Bypass `
-  -File 'cobs/tests/hardware/h7s/run_matrix.ps1' `
+  -File 'src/cobs/tests/hardware/h7s/run_matrix.ps1' `
   -Port COM6 -StLinkSerial <STLINK_SERIAL> `
-  -Output 'cobs/tests/hardware/h7s/results_new.jsonl'
+  -Output 'src/cobs/tests/hardware/h7s/results_new.jsonl'
 ```
 
 ## Running the executable
@@ -252,7 +252,7 @@ C:\Qt\6.10.1\mingw_64\bin\windeployqt.exe build\cli\release\COBS.exe
 ## Adding files to the project
 
 GUI sources, headers, and `.ui` forms are registered in `COBS.pro`. COBS
-library sources and headers are registered once in `cobs/cobs.pri`. After
+library sources and headers are registered once in `src/cobs/cobs.pri`. After
 editing either list, re-run qmake before `mingw32-make`.
 
 ## Cleaning

@@ -183,7 +183,7 @@ fell by approximately 12-44%. Encoder production code is unchanged; encoder
 timing movement between separately linked binaries is treated as layout/noise,
 not as a claimed win.
 
-The durable runner is `cobs/tests/bench/run.sh`. It also reports full fixed-pool
+The durable runner is `src/cobs/tests/bench/run.sh`. It also reports full fixed-pool
 RX and TX paths. Those paths showed no material TX regression; end-to-end RX
 gains depend strongly on COBS block distribution because allocation, queue and
 packet-release work is unchanged.
@@ -241,7 +241,7 @@ release; nested sub-counters are not double-counted.
 
 The exact harness contract, commands, acceptance rules, accounting formula,
 reproduction command, result tables, and the 29-record raw JSONL are under
-`cobs/tests/hardware/h7s/`. The matrix finished by flashing and smoke-checking
+`src/cobs/tests/hardware/h7s/`. The matrix finished by flashing and smoke-checking
 the default 115200-baud image. No production COBS or UART behavior was changed
 to obtain this result.
 

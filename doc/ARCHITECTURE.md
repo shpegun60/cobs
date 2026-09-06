@@ -117,7 +117,7 @@ bool queue_command(cobs::Endpoint<>& engine,
 COBS and Modbus Messages share four writer names: `append_native`, `append_be`,
 `append_le`, and `append_bytes`, with scalar and span overloads. Their receive
 APIs likewise share `read_native`, `read_be`, `read_le`, and `read_bytes`.
-`wire/Read.h` implements the readers once and each protocol namespace re-exports
+`src/wire/Read.h` implements the readers once and each protocol namespace re-exports
 the same functions, so the symmetry adds no forwarding call or runtime state.
 Native I/O uses the target object representation; BE/LE select an explicit byte
 order entirely at compile time. A stable cross-platform protocol uses fixed-
@@ -151,11 +151,11 @@ Normal packet applications use `Endpoint` instead.
 
 ### 2.4 Detail surface
 
-Everything under `cobs/detail/` is implementation detail:
+Everything under `src/cobs/detail/` is implementation detail:
 
 - `detail::Receiver`;
 - `detail::Message.h` and `detail::Packet.h`, reached through `Cobs.h`;
-- private `RxBlock` metadata; the shared pool primitive lives in `wire/detail/`;
+- private `RxBlock` metadata; the shared pool primitive lives in `src/wire/detail/`;
 - `detail::NativeScalar`.
 
 Applications must not include those headers or depend on their fields,
@@ -165,9 +165,9 @@ so explicitly.
 ## 3. Dependency direction and files
 
 ```text
-crc/Crc.h -> cobs/Format.h -> Layout (widths/limits only)
+src/crc/Crc.h -> src/cobs/Format.h -> Layout (widths/limits only)
                                  |
-wire/Storage.h <--- Endpoint computes Geometry and binds Memory::For<Geometry>
+src/wire/Storage.h <--- Endpoint computes Geometry and binds Memory::For<Geometry>
                                  |
                  cobs Receiver / Message / Packet
                      |           |
@@ -176,28 +176,28 @@ wire/Storage.h <--- Endpoint computes Geometry and binds Memory::For<Geometry>
 
 | File | Current responsibility |
 |---|---|
-| `cobs/Codec.h` | pure COBS decoder API and in-place encoder geometry |
-| `cobs/Decoder.cpp` | non-template streaming decoder implementation |
-| `cobs/Encoder.cpp` | non-template canonical in-place encoder |
-| `cobs/Format.h` | protocol limits, length width, byte order, checked sizes |
-| `wire/Scalar.h` | shared constrained native/BE/LE scalar codec |
-| `wire/Read.h` | shared stateless bounds-checked scalar/byte readers |
-| `cobs/Read.h` | zero-cost public `cobs::read_*` names |
-| `wire/Storage.h` | shared raw-byte storage concept, TxBlock, Heap, Pool |
-| `cobs/detail/RxBlock.h` | private typed RX metadata and derived Geometry |
-| `cobs/Stats.h` | public protocol counter snapshot |
-| `cobs/detail/Receiver.h` | RX allocation, validation, queue, and ownership |
-| `cobs/detail/Message.h` | TX builder, growth, encoding, exclusive ownership |
-| `cobs/detail/Packet.h` | intrusive shared RX handle |
-| `wire/detail/BlockPool.h` | shared fixed-block memory primitive |
-| `cobs/Cobs.h` | public umbrella and assembled Endpoint |
-| `cobs/cobs.pri` | reusable qmake source/header boundary |
+| `src/cobs/Codec.h` | pure COBS decoder API and in-place encoder geometry |
+| `src/cobs/Decoder.cpp` | non-template streaming decoder implementation |
+| `src/cobs/Encoder.cpp` | non-template canonical in-place encoder |
+| `src/cobs/Format.h` | protocol limits, length width, byte order, checked sizes |
+| `src/wire/Scalar.h` | shared constrained native/BE/LE scalar codec |
+| `src/wire/Read.h` | shared stateless bounds-checked scalar/byte readers |
+| `src/cobs/Read.h` | zero-cost public `cobs::read_*` names |
+| `src/wire/Storage.h` | shared raw-byte storage concept, TxBlock, Heap, Pool |
+| `src/cobs/detail/RxBlock.h` | private typed RX metadata and derived Geometry |
+| `src/cobs/Stats.h` | public protocol counter snapshot |
+| `src/cobs/detail/Receiver.h` | RX allocation, validation, queue, and ownership |
+| `src/cobs/detail/Message.h` | TX builder, growth, encoding, exclusive ownership |
+| `src/cobs/detail/Packet.h` | intrusive shared RX handle |
+| `src/wire/detail/BlockPool.h` | shared fixed-block memory primitive |
+| `src/cobs/Cobs.h` | public umbrella and assembled Endpoint |
+| `src/cobs/cobs.pri` | reusable qmake source/header boundary |
 
 Protocol geometry uses the codec and CRC wire width. Storage names neither:
 the endpoint binds it to a numeric Geometry. Message/Receiver depend on Layout,
 not calculator type, so equal-width Bitwise/Table share their instantiations.
-`detail/Message.h` uses the transport-neutral `wire/Scalar.h`, while
-`cobs/Read.h` re-exports `wire/Read.h`. Modbus uses those same two primitives,
+`detail/Message.h` uses the transport-neutral `src/wire/Scalar.h`, while
+`src/cobs/Read.h` re-exports `src/wire/Read.h`. Modbus uses those same two primitives,
 so the builders and readers cannot drift in scalar constraints, byte order, or
 failure semantics. The codec never points upward into storage, ownership,
 endpoint, or transport. UART never enters this dependency graph.

@@ -7,12 +7,18 @@
 #   PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH" sh doc/examples/build.sh
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PROJ="$(cd "$HERE/../.." && pwd)"
+ROOT="$HERE"
+while [ ! -f "$ROOT/COBS.pro" ]; do
+	[ "$ROOT" = "/" ] && { echo "repository root (COBS.pro) not found above $HERE" >&2; exit 1; }
+	ROOT="$(dirname "$ROOT")"
+done
+SRC="$ROOT/src"
+LIBS="$ROOT/libs"
 OUT="$HERE/out"
 mkdir -p "$OUT"
 CXX="${CXX:-g++}"
 WARN="-Wall -Wextra -Wpedantic -Wshadow -Wconversion"
-INC="-I$PROJ -I$PROJ/cobs -I$PROJ/uart -I$PROJ/uart/tests/host -I$PROJ/uart/tests/host/fake_freertos      -I$PROJ/modbus/rtu/tests -I$HERE      -isystem $PROJ/libs/spsc -isystem $PROJ/libs/spsc/src -isystem $PROJ/libs/delegate"
+INC="-I$SRC -I$SRC/cobs -I$SRC/uart -I$SRC/uart/tests/host -I$SRC/uart/tests/host/fake_freertos      -I$SRC/modbus/rtu/tests -I$HERE      -isystem $LIBS/spsc -isystem $LIBS/spsc/src -isystem $LIBS/delegate"
 status=0
 run() {
 	name="$1"; shift
@@ -26,8 +32,8 @@ run() {
 		cat "$OUT/$name.log"; status=1
 	fi
 }
-FAKE_HAL="$PROJ/uart/tests/host/fake_hal.cpp"
-COBS_CORE="$PROJ/cobs/Decoder.cpp $PROJ/cobs/Encoder.cpp"
+FAKE_HAL="$SRC/uart/tests/host/fake_hal.cpp"
+COBS_CORE="$SRC/cobs/Decoder.cpp $SRC/cobs/Encoder.cpp"
 run rtu_adapter   "$HERE/rtu_adapter.cpp"   "$FAKE_HAL"
 run cobs_direct   "$HERE/cobs_direct.cpp"   "$FAKE_HAL" $COBS_CORE
 run freertos_wake "$HERE/freertos_wake.cpp" "$FAKE_HAL"

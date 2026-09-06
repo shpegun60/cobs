@@ -22,9 +22,22 @@ The stable documentation is split by boundary:
 - `doc/ARCHITECTURE.md` — canonical component/API/ownership entry point for COBS;
 - `doc/PROTOCOL.md` — normative COBS wire format (v2: length prefix + CRC trailer) and decoder behavior;
 - `doc/STORAGE.md` — the shared raw-byte storage contract used by both protocols;
-- `modbus/ARCHITECTURE.md` and `modbus/README.md` — the Modbus RTU endpoint;
-- `crc/README.md` — the protocol-independent CRC policy library;
+- `src/modbus/ARCHITECTURE.md` and `src/modbus/README.md` — the Modbus RTU endpoint;
+- `src/crc/README.md` — the protocol-independent CRC policy library;
 - `doc/PROTOCOL_COMPARISON.md` and `doc/COBS_PERFORMANCE.md` — measured H7S evidence.
+
+Repository layout: `src/` holds the stack itself (`wire/`, `crc/`, `cobs/`,
+`modbus/`, `uart/`); `libs/` at the root holds the third-party dependencies
+(`spsc`, `delegate`, the vendored STM32 HAL/CMSIS packages) and is never part
+of `src/`, because a dependency is not the stack's source; `app/` is the Qt
+host application (`main.cpp`, `mainwindow.*`); `doc/` documents the whole
+repository; `build/` and `stm32_cube_test/` are local and gitignored. Every
+build and test script derives its paths from an explicit `ROOT` (the
+directory holding `COBS.pro`, found by walking up from the script's own
+directory), `SRC = ROOT/src` and `LIBS = ROOT/libs`, never from a `../..` or
+`parents[N]` chain that encodes the script's depth. Include paths are
+`src`-relative (`#include "modbus/rtu/Rtu.h"` with `-I src`), so moving a
+script or a document never changes an include.
 
 Four libraries share one repository: `wire/` (scalar codec, stateless readers,
 the `wire::Heap` / `wire::Pool<Rx, Tx>` storage specifications and the
@@ -36,17 +49,17 @@ RxMax, TxMax>`, `modbus::rtu::Format<Crc, MaxAdu>`). The RTU endpoint has an
 optional third parameter, `Framer = framing::None`: a
 `framing::Standard<Direction>` policy (or a user type derived from it) adds
 `consume()` for arbitrary stream chunks and a builder-owned length prefix
-for private functions; with the default nothing changes (`modbus/ARCHITECTURE.md` §8).
-`modbus/rtu/UartAdapter.h` is the integration object between `uart/Uart.h` and
+for private functions; with the default nothing changes (`src/modbus/ARCHITECTURE.md` §8).
+`src/modbus/rtu/UartAdapter.h` is the integration object between `src/uart/Uart.h` and
 either RTU endpoint (RX/gap/transport binding, `proceed(now_ms)`
 orchestration, and the stale-frame rule for framed endpoints, which needs the
 driver's chunk geometry and the baud); it does not include the driver, so it
 compiles against the host fake HAL.
 The RTU hardware harness builds either endpoint (`MODBUS_HW_FRAMER`), and
-`modbus/rtu/tests/hardware/h7s/run_framing.py` / `verify_framing.py` produce
+`src/modbus/rtu/tests/hardware/h7s/run_framing.py` / `verify_framing.py` produce
 and recheck the framed-versus-burst record.
 
-A Qt Widgets application (qmake, C++20) intended as a desktop host/testbed for a reusable UART + COBS communication stack. The Qt GUI itself is currently a bare scaffold (`main.cpp`, `mainwindow.*`), but `COBS.pro` includes `cobs/cobs.pri` (which includes `wire/wire.pri`) and therefore compiles the real non-template COBS core. The separate console consumers under `cobs/tests/qmake_consumer/` and `modbus/rtu/tests/qmake_consumer/` instantiate and execute the full public APIs over both built-in storage specifications. The STM32 implementation remains in `uart/Uart.h` (not part of the Qt build — it needs an STM32 HAL).
+A Qt Widgets application (qmake, C++20) intended as a desktop host/testbed for a reusable UART + COBS communication stack. The Qt GUI itself is currently a bare scaffold (`main.cpp`, `mainwindow.*`), but `COBS.pro` includes `src/cobs/cobs.pri` (which includes `src/wire/wire.pri`) and therefore compiles the real non-template COBS core. The separate console consumers under `src/cobs/tests/qmake_consumer/` and `src/modbus/rtu/tests/qmake_consumer/` instantiate and execute the full public APIs over both built-in storage specifications. The STM32 implementation remains in `src/uart/Uart.h` (not part of the Qt build — it needs an STM32 HAL).
 
 Local dependencies live in `libs/` (cloned from the author's GitHub, on `INCLUDEPATH`):
 - `libs/spsc` — wait-free SPSC containers; `spsc::cache_aligned_chunk_fifo` is the RX buffer pool of the UART engine (DMA writes straight into claimed chunk slots). UART builds need both `libs/spsc` and `libs/spsc/src` on the include path: headers live below `src` and resolve the library-owned root `basic_types.h`.
@@ -70,37 +83,37 @@ verified separately:
 
 ```bash
 export PATH="/c/Qt/6.10.1/mingw_64/bin:/c/Qt/Tools/mingw1310_64/bin:$PATH"
-sh cobs/tests/qmake_consumer/run.sh
+sh src/cobs/tests/qmake_consumer/run.sh
 ```
 
 The consumer includes only `Cobs.h`, links `Decoder.cpp` and `Encoder.cpp`
 through `cobs.pri`, and runs the same bind/send/receive flow over `wire::Heap`
 and `wire::Pool`. A downstream qmake project uses
 `include(path/to/cobs/cobs.pri)` or `include(path/to/modbus/rtu/rtu.pri)`;
-both pull in `wire/wire.pri` and `crc/crc.pri`. Set `COBS_DELEGATE_DIR` /
+both pull in `src/wire/wire.pri` and `src/crc/crc.pri`. Set `COBS_DELEGATE_DIR` /
 `MODBUS_DELEGATE_DIR` before the include only when `tiny_delegate` is not at
 the repository default.
 
 GUI source/header/form files must be added to `SOURCES`/`HEADERS`/`FORMS` in
-`COBS.pro`. Library files belong in `cobs/cobs.pri`, `modbus/rtu/rtu.pri`,
-`wire/wire.pri` or `crc/crc.pri`. Re-run qmake after changing any source list.
+`COBS.pro`. Library files belong in `src/cobs/cobs.pri`, `src/modbus/rtu/rtu.pri`,
+`src/wire/wire.pri` or `src/crc/crc.pri`. Re-run qmake after changing any source list.
 
 ### STM32 portability matrix
 
-`uart/Uart.h` is verified by compile-only builds for real STM32 targets (F1 = legacy SR/DR IP, G4 = new ISR/RDR IP + classic DMA, H7RS = Cortex-M7 + D-cache + GPDMA), using the arm-none-eabi-gcc 14.3 shipped with STM32CubeIDE 2.0.0 and HAL drivers in `libs/` / the local Cube repository:
+`src/uart/Uart.h` is verified by compile-only builds for real STM32 targets (F1 = legacy SR/DR IP, G4 = new ISR/RDR IP + classic DMA, H7RS = Cortex-M7 + D-cache + GPDMA), using the arm-none-eabi-gcc 14.3 shipped with STM32CubeIDE 2.0.0 and HAL drivers in `libs/` / the local Cube repository:
 
 ```bash
-sh uart/tests/port/build.sh
+sh src/uart/tests/port/build.sh
 ```
 
-Objects land in `uart/tests/port/out/`; inspect codegen with the same toolchain's `arm-none-eabi-objdump -d -C`. IDE clangd errors like "main.h not found" inside `uart/Uart.h` are expected — that header only compiles against an STM32 HAL via this matrix or the host fake HAL below.
+Objects land in `src/uart/tests/port/out/`; inspect codegen with the same toolchain's `arm-none-eabi-objdump -d -C`. IDE clangd errors like "main.h not found" inside `src/uart/Uart.h` are expected — that header only compiles against an STM32 HAL via this matrix or the host fake HAL below.
 
 ### Host test suite (executable)
 
-`uart/tests/host/` runs the driver against a fake HAL on the desktop — unlike the port matrix it EXECUTES the interleavings:
+`src/uart/tests/host/` runs the driver against a fake HAL on the desktop — unlike the port matrix it EXECUTES the interleavings:
 
 ```bash
-PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH" sh uart/tests/host/run.sh
+PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH" sh src/uart/tests/host/run.sh
 ```
 
 The fake HAL models the real behaviours verified in the ST sources (IDLE/TC end reception before the callback; every RX error is blocking in DMA mode; an abort may raise the completion callback of the transfer it interrupts; aborts can return `HAL_TIMEOUT`), plus a PRIMASK where an interrupt raised while masked becomes **pending** and runs on restore, and a DMA ownership model that asserts DMA-owned memory is never handed to the consumer.
@@ -114,9 +127,9 @@ acceptance (`doc/UART_PARANOID_AUDIT.md` §9.2), and the read-only
 thread-context `rx_progress()` accessor, whose zero cost is proved by
 byte-identical port-matrix objects (§9.3). The public contract is closed:
 anything further belongs in an adapter or the application, not in
-`uart/Uart.h`. `uart/FreeRtosWake.h` is the FreeRTOS glue on top of the
+`src/uart/Uart.h`. `src/uart/FreeRtosWake.h` is the FreeRTOS glue on top of the
 wake hook and is compiled in the host suite against the recording fake in
-`uart/tests/host/fake_freertos`; the port matrix pins the ISR thunk sizes, so
+`src/uart/tests/host/fake_freertos`; the port matrix pins the ISR thunk sizes, so
 a change there must come with a measured reason.
 
 ### Shared, COBS, Modbus and CRC host tests
@@ -125,15 +138,15 @@ None of these layers owns a HAL, so every suite is an ordinary host program — 
 
 ```bash
 export PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH"
-sh wire/tests/run.sh
-sh cobs/tests/run.sh
-sh modbus/rtu/tests/run.sh
-sh crc/tests/run.sh
+sh src/wire/tests/run.sh
+sh src/cobs/tests/run.sh
+sh src/modbus/rtu/tests/run.sh
+sh src/crc/tests/run.sh
 ```
 
 Each runner first compiles its public headers independently and (for the protocols) verifies intentional compile-fail translation units with boundary-specific diagnostic markers (nine for COBS, twelve for RTU): the `wire::Storage` contract, the CRC-in-Format limits, coordinator-only message/packet operations, serializer constraints, the physical absence of old API names, and for RTU the absence of `consume()` without a framing policy, the rejection of a half-written policy and of a non-RTU endpoint handed to `UartAdapter`.
 
-`wire/tests/run.sh` (the shared layer):
+`src/wire/tests/run.sh` (the shared layer):
 
 - `test_scalar` — the native/BE/LE scalar codec both protocols serialize with.
 - `test_block_pool` — `wire::detail::BlockPool`, the raw memory primitive under `wire::Pool`.
@@ -141,7 +154,7 @@ Each runner first compiles its public headers independently and (for the protoco
 - `test_protocol_storage` — one user-written memory specification pushed through both endpoints: over-grants, under-grants, growth failure, retained packets, exact descriptor return.
 - `test_api_parity` — the deliberately shared API shape of the two protocols, and the type identity of `Layout`/`Storage`/`Message`/`Packet` between Bitwise and Table policies.
 
-`cobs/tests/run.sh`:
+`src/cobs/tests/run.sh`:
 
 - `test_decoder` / `test_codec_exhaustive` / `test_encoder` — the pure COBS codec against independent oracles.
 - `test_geometry` — `payload_capacity_for_storage` is the exact inverse of `tx_storage_size_for_capacity` for every grant, on every header/CRC width.
@@ -150,11 +163,11 @@ Each runner first compiles its public headers independently and (for the protoco
 - `test_crc` — the CRC-bearing v2 frame: every built-in policy, sum and stateful policies, corruption of every payload/trailer bit, empty/maximum frames, the H1/H2 threshold, the explicit `Format<crc::NoCrc, 255>` legacy vectors, and the v1/v2 mixing hazard.
 - `test_layout` — exact ABI snapshots; `check_arm_layout.sh` compiles the same file for Cortex-M.
 
-`modbus/rtu/tests/run.sh` mirrors this for RTU (`test_crc`, `test_crc_geometry`, `test_packet`, `test_message`, `test_endpoint`, `test_fuzz`, `test_framing` — the `framing::Layout` rules and the standard function table against the specification's worked examples in both directions —, `test_stream` — the framed endpoint: every cut of a frame, several frames per chunk, every error class and its recovery, the builder-owned length prefix —, `test_layout`, `test_uart_integration` — the real UART driver on the host fake HAL, integrated through `UartAdapter` with both endpoint kinds, including the framed stale-frame rule at 9600 baud with multi-chunk frames, the DMA-progress check that keeps a bridge-split frame alive at 115200 when no IDLE/TC event has fired yet, and the adapter's bind/unbind lifecycle); `crc/tests/run.sh` checks the four default models and seven further catalogue models against their check values plus random inputs against bit-level oracles.
+`src/modbus/rtu/tests/run.sh` mirrors this for RTU (`test_crc`, `test_crc_geometry`, `test_packet`, `test_message`, `test_endpoint`, `test_fuzz`, `test_framing` — the `framing::Layout` rules and the standard function table against the specification's worked examples in both directions —, `test_stream` — the framed endpoint: every cut of a frame, several frames per chunk, every error class and its recovery, the builder-owned length prefix —, `test_layout`, `test_uart_integration` — the real UART driver on the host fake HAL, integrated through `UartAdapter` with both endpoint kinds, including the framed stale-frame rule at 9600 baud with multi-chunk frames, the DMA-progress check that keeps a bridge-split frame alive at 115200 when no IDLE/TC event has fired yet, and the adapter's bind/unbind lifecycle); `src/crc/tests/run.sh` checks the four default models and seven further catalogue models against their check values plus random inputs against bit-level oracles.
 
 The scripts build with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` and add `-fsanitize=address,undefined` when the toolchain provides the runtime. MinGW does not, so for a sanitized run use WSL (the exact command is in each script header); every runner prints whether its build was sanitized. `WIRE_POOL_CHECKS` (on by default in EVERY build, `NDEBUG` included) compiles in the pool's double-free and foreign-pointer detection; a rejected free is counted and ignored rather than corrupting the free list. Set it to 0 explicitly, identically in every translation unit, to opt out.
 
-Codegen guards that need the ARM toolchain or an ELF host: `crc/tests/check_arm_codegen.sh`, `python -B crc/tests/check_arm_matrix.py`, `wire/tests/check_arm_hotpath.sh`, `modbus/rtu/tests/check_arm_crc_codegen.sh`, and `wire/tests/check_shared_crc.sh` (ELF objects only: WSL or arm-none-eabi, not MinGW). MSVC x64/x86 builds run through `wire/tests/check_msvc.ps1`.
+Codegen guards that need the ARM toolchain or an ELF host: `src/crc/tests/check_arm_codegen.sh`, `python -B src/crc/tests/check_arm_matrix.py`, `src/wire/tests/check_arm_hotpath.sh`, `src/modbus/rtu/tests/check_arm_crc_codegen.sh`, and `src/wire/tests/check_shared_crc.sh` (ELF objects only: WSL or arm-none-eabi, not MinGW). MSVC x64/x86 builds run through `src/wire/tests/check_msvc.ps1`.
 
 ## Architecture
 
@@ -171,10 +184,10 @@ are not current. The implemented boundaries are:
 - CRC is a protocol policy, never a UART feature. COBS covers the payload only (the length is checked structurally); RTU covers address, function and data.
 
 For current COBS work, start with `doc/ARCHITECTURE.md` and follow its links
-to `PROTOCOL.md` or `STORAGE.md`; for RTU, `modbus/ARCHITECTURE.md`.
+to `PROTOCOL.md` or `STORAGE.md`; for RTU, `src/modbus/ARCHITECTURE.md`.
 `COBS_ENGINE.md` retains the reviewed decoder state machine and the in-place
 overlap proof, but its storage/API examples predate the shared storage layer.
-For current UART behavior, read `uart/Uart.h` and its executable host and
+For current UART behavior, read `src/uart/Uart.h` and its executable host and
 portability tests rather than treating the old sketch as an API contract.
 
 ## Reference material

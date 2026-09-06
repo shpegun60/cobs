@@ -22,9 +22,9 @@ The three portability-test configuration files below are derived from STM32
 HAL templates and retain their embedded STMicroelectronics copyright and
 license notices:
 
-- `uart/tests/port/f1/stm32f1xx_hal_conf.h`;
-- `uart/tests/port/g4/stm32g4xx_hal_conf.h`;
-- `uart/tests/port/h7rs/stm32h7rsxx_hal_conf.h`.
+- `src/uart/tests/port/f1/stm32f1xx_hal_conf.h`;
+- `src/uart/tests/port/g4/stm32g4xx_hal_conf.h`;
+- `src/uart/tests/port/h7rs/stm32h7rsxx_hal_conf.h`.
 
 Raw `.csv` and `.jsonl` benchmark/audit outputs intentionally contain no
 comment header so they remain directly machine-readable and preserve their

@@ -28,7 +28,7 @@ implementation can be reviewed against recorded reasoning instead of against
 somebody's memory of a conversation, and so that its invariants stay provable.
 
 The byte transport underneath is settled and independently audited: see
-`uart/Uart.h` and `UART_PARANOID_AUDIT.md`. The
+`src/uart/Uart.h` and `UART_PARANOID_AUDIT.md`. The
 only two things COBS may assume about it are `tx_busy()` and `send(span)`.
 
 ---
@@ -949,8 +949,8 @@ capacity. Headroom itself is never copied.
 
 ### 8.3.1.1 What the scalar I/O accepts
 
-COBS and Modbus share one scalar vocabulary in `wire/Scalar.h` and one
-bounds-checked reader implementation in `wire/Read.h`:
+COBS and Modbus share one scalar vocabulary in `src/wire/Scalar.h` and one
+bounds-checked reader implementation in `src/wire/Read.h`:
 
 ```text
 append_native(value)  arithmetic (except bool), enumerations, std::byte

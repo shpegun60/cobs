@@ -6,7 +6,7 @@ protocol endpoints (COBS and Modbus RTU), the RTU transport adapter and the
 FreeRTOS wake glue — and says for each one what the application owns, what
 it must call from where, and where the pattern is verified. The reference
 documents stay where they are: `ARCHITECTURE.md` and `PROTOCOL.md` for COBS,
-`modbus/ARCHITECTURE.md` and `modbus/README.md` for RTU, `STORAGE.md` for
+`src/modbus/ARCHITECTURE.md` and `src/modbus/README.md` for RTU, `STORAGE.md` for
 memory, `UART_PARANOID_AUDIT.md` for the driver. This document only decides
 which of them you need.
 
@@ -28,7 +28,7 @@ Uart / TCP / QSerialPort  cobs::Endpoint, modbus::rtu::Endpoint   Message / Pack
  with gaps announced"      lifetime, TX borrow"
 ```
 
-The two endpoints are deliberately the same shape (`wire/tests/test_api_parity`):
+The two endpoints are deliberately the same shape (`src/wire/tests/test_api_parity`):
 
 | Call | Meaning | Context |
 |---|---|---|
@@ -60,9 +60,9 @@ Choosing a pattern:
 
 | You have | Protocol | Pattern |
 |---|---|---|
-| STM32 with `uart/Uart.h`, bare-metal loop | RTU | §2, `UartAdapter` |
-| STM32 with `uart/Uart.h`, FreeRTOS | RTU or COBS | §4, `FreeRtosWake` on top of §2 or §3 |
-| STM32 with `uart/Uart.h` | COBS | §3, the driver wired directly — COBS needs no adapter |
+| STM32 with `src/uart/Uart.h`, bare-metal loop | RTU | §2, `UartAdapter` |
+| STM32 with `src/uart/Uart.h`, FreeRTOS | RTU or COBS | §4, `FreeRtosWake` on top of §2 or §3 |
+| STM32 with `src/uart/Uart.h` | COBS | §3, the driver wired directly — COBS needs no adapter |
 | STM32 with another driver, or a stale-frame rule of your own | RTU | §5, the endpoint wired directly |
 | desktop, TCP, `QSerialPort`, a test double, a radio | either | §6, any byte transport |
 
@@ -138,10 +138,10 @@ What the adapter does, so the application does not:
   `adapter.prepare(now); serial.proceed(now); adapter.finish(now); link.poll(now);`
   — the hardware harness does.
 
-Verified by `modbus/rtu/tests/test_uart_integration.cpp` (the real driver on
+Verified by `src/modbus/rtu/tests/test_uart_integration.cpp` (the real driver on
 the fake HAL through the adapter: lifecycle, baud changes, the stale rule at
 9600 and 115200, the DMA-progress case, tick wrap) and on the H7S by
-`modbus/rtu/tests/hardware/h7s/modbus_bench.cpp` with its records.
+`src/modbus/rtu/tests/hardware/h7s/modbus_bench.cpp` with its records.
 
 ## 3. COBS on STM32: the driver wired directly
 
@@ -193,14 +193,14 @@ void loop_step() noexcept
 has finished with it, which is what `poll()` checks. The complete
 application-shaped version with a pending-message policy is in the root
 README ("Complete UART + COBS composition"); the exact silicon
-implementation is `cobs/tests/hardware/h7s/cobs_bench.cpp`.
+implementation is `src/cobs/tests/hardware/h7s/cobs_bench.cpp`.
 
 ## 4. FreeRTOS on top of §2 or §3
 
 `proceed()` is a thread-context call and the RX handler runs inside it, so a
 sleeping task sees nothing until something wakes it. The driver's
 `WakeHandler` is raised from the RX event, TX completion and error ISRs
-after the driver's state is final; `uart/FreeRtosWake.h` turns it into a
+after the driver's state is final; `src/uart/FreeRtosWake.h` turns it into a
 task notification. The driver knows no scheduler and the glue knows no
 protocol.
 
@@ -250,12 +250,12 @@ passes. Several interrupts before the task runs coalesce into one wake. Cost
 with no handler installed: 4 cycles per interrupt (`UART_PARANOID_AUDIT.md`
 §9.2).
 
-Verified by `uart/tests/host/test_freertos_wake.cpp` on the recording
-FreeRTOS fake and the `WakeHandler` group of `uart/tests/host/test_uart.cpp`.
+Verified by `src/uart/tests/host/test_freertos_wake.cpp` on the recording
+FreeRTOS fake and the `WakeHandler` group of `src/uart/tests/host/test_uart.cpp`.
 
 ## 5. RTU on STM32 without the adapter
 
-Wire the endpoint yourself when the driver is not `uart/Uart.h` (the
+Wire the endpoint yourself when the driver is not `src/uart/Uart.h` (the
 adapter reads its geometry through `UartTraits<Uart<ChunkSize, ChunkCount>>`
 and calls `instance()` and `rx_progress()`), or when the stale-frame rule
 must differ from the adapter's.
@@ -419,9 +419,9 @@ Two things the STM32 patterns get for free and this one must decide:
   then do the recovery, one frame at a time.
 
 `wire::Heap` is the default memory and the right one here; `poll(now)` takes
-any monotonic millisecond tick. Verified by `cobs/tests/qmake_consumer` and
-`modbus/rtu/tests/qmake_consumer` (a loopback transport, both endpoints,
-both built-in storages) and `wire/tests/test_protocol_storage` (a
+any monotonic millisecond tick. Verified by `src/cobs/tests/qmake_consumer` and
+`src/modbus/rtu/tests/qmake_consumer` (a loopback transport, both endpoints,
+both built-in storages) and `src/wire/tests/test_protocol_storage` (a
 user-written memory specification through both endpoints).
 
 ## 7. Choosing the parameters
@@ -432,13 +432,13 @@ blocks of the endpoint's exact geometry, statically owned, for deterministic
 targets — size `Rx` for the frames in flight plus the packets the
 application holds, `Tx` for the messages being built plus the one the
 transport borrows; a user type with a nested `template<class Geometry> class For`
-plugs in anything else (`STORAGE.md`, `wire/tests/test_protocol_storage`).
+plugs in anything else (`STORAGE.md`, `src/wire/tests/test_protocol_storage`).
 Changing memory changes neither the API nor the wire format.
 
 **Format.** COBS: `cobs::Format<Crc = crc::Crc16Bitwise, RxMax = 255 - Crc::wire_size, TxMax = RxMax>`;
 `Format<crc::NoCrc, 255>` is the byte-identical v1 wire format. RTU:
 `modbus::rtu::Format<Crc = crc::Crc16Bitwise, MaxAdu = 256>`. The CRC policy
-comes from `crc/` (`crc/README.md`): the Bitwise engines are the small ones,
+comes from `crc/` (`src/crc/README.md`): the Bitwise engines are the small ones,
 the Table engines the fast ones, equal-width policies share every type
 (`Layout`, `Storage`, `Message`, `Packet`); measured costs on the H7S are in
 `PROTOCOL_COMPARISON.md`.
@@ -448,7 +448,7 @@ the Table engines the fast ones, equal-width policies share every type
 functions and every exception response, Qt Serial Bus-compatible lengths.
 A type derived from it adds private functions through `layout()`, with a
 library-owned two-byte length prefix for the variable-length ones
-(`modbus/README.md`, "RTU framing").
+(`src/modbus/README.md`, "RTU framing").
 
 **Driver geometry.** `Uart<ChunkSize, ChunkCount>`: `ChunkSize >= 256` for
 the burst RTU endpoint; the pool is `ChunkSize * ChunkCount` bytes of
