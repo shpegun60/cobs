@@ -12,7 +12,12 @@
  * then RtuClient, the QModbus-shaped master: one transaction at a time, a
  * queue behind it, response timeout with retries, request/response matching,
  * exception responses, broadcasts with their turnaround delay, and Qt's own
- * inter-frame delay arithmetic.
+ * inter-frame delay arithmetic; then the lifecycle and failure cases a second
+ * review asked for: the adapter's destructor leaves the endpoint unbound,
+ * write and resource errors while a frame is leaving finish the request at
+ * once, a partial write is a failed transmission, a reentrant send() from a
+ * broadcast's handler cannot shorten the turnaround, and a lowered inter-frame
+ * floor lowers the delay.
  */
 
 #include "adapters/qt/RtuClient.h"
@@ -63,6 +68,10 @@ public:
 
 	void raise(const QSerialPort::SerialPortError error) { emit errorOccurred(error); }
 
+	// Accept at most `limit` bytes per write (-1: everything), as a port whose
+	// write buffer is full does.
+	void set_write_limit(const qint64 limit) noexcept { m_write_limit = limit; }
+
 	// QSerialPort::clear(): drops what the OS holds, in the asked directions.
 	bool clear(const QSerialPort::Directions directions = QSerialPort::AllDirections)
 	{
@@ -107,15 +116,17 @@ protected:
 
 	qint64 writeData(const char* const data, const qint64 size) override
 	{
-		m_written.append(data, static_cast<qsizetype>(size));
-		m_pending += size;
-		return size;
+		const qint64 accepted = m_write_limit < 0 ? size : std::min(size, m_write_limit);
+		m_written.append(data, static_cast<qsizetype>(accepted));
+		m_pending += accepted;
+		return accepted;
 	}
 
 private:
 	QByteArray m_rx;
 	QByteArray m_written;
 	qint64 m_pending = 0;
+	qint64 m_write_limit = -1;
 	qint32 m_baud = 115200;
 };
 
@@ -277,6 +288,28 @@ int main(int argc, char** argv)
 	port.feed(response_bytes);
 	check(static_cast<bool>(client.pop_packet()), "and the stream recovers on the next whole response");
 
+	group("AdapterDestructorUnbinds");
+	check(adapter.unbind(), "the long-lived adapter releases the port and the endpoint");
+	{
+		ClientAdapter scoped{port, client};
+		check(scoped.bind(), "a scoped adapter binds");
+		auto request = client.make_message(0x11u, 0x03u);
+		check(request.append_be<uint16_t>(0u) && request.append_be<uint16_t>(1u) &&
+		      client.send(request) == modbus::SendResult::Sent && client.tx_active() && port.bytesToWrite() == 8,
+		      "a request is on its way out through it");
+	}   // dies with the frame still leaving
+	check(!client.tx_active(), "the dying adapter released the block, whose bytes Qt already holds");
+	check(port.bytesToWrite() == 8, "and did not drop the bytes the port still carries");
+	port.drain();
+	(void)port.take_written();
+	{
+		auto request = client.make_message(0x11u, 0x03u);
+		check(request.append_be<uint16_t>(0u) && request.append_be<uint16_t>(1u) &&
+		      client.send(request) == modbus::SendResult::Unbound,
+		      "send() after the adapter's death is refused as Unbound: no call into a dead adapter");
+	}
+	check(adapter.bind(), "the long-lived adapter binds again");
+
 	group("QtRtuClientTiming");
 	{
 		FakePort timing_port;
@@ -301,6 +334,8 @@ int main(int argc, char** argv)
 		timing_port.setBaudRate(115200);
 		timing_client.update_timing_from_port();
 		check(timing_client.inter_frame_delay_ms() == 80, "and survives a recomputation");
+		timing_client.set_inter_frame_delay_ms(0);
+		check(timing_client.inter_frame_delay_ms() == 2, "lowering the floor lowers the delay back to the computed value");
 	}
 
 	// One port and one endpoint for the transaction groups. The client owns its
@@ -452,6 +487,79 @@ int main(int argc, char** argv)
 		client_port.drain();
 		check(completed == 1u && seen.state == RequestState::Broadcast,
 		      "and completes as a broadcast once the bytes have left: nobody answers address 0");
+	}
+
+	group("QtRtuClientTransportErrors");
+	pump(25);   // the previous group ended with a broadcast: its turnaround is a deadline the next frame respects
+	{
+		unsigned completed = 0;
+		Response seen;
+		const auto capture = [&completed, &seen]() {
+			return RtuClient::Handler{[&completed, &seen](const Response& response) { ++completed; seen = response; }};
+		};
+		check(rtu.send(0x11u, 0x03u, std::vector<uint8_t>{0u, 1u, 0u, 1u}, capture()), "a request is queued");
+		pump(10);
+		check(client_port.bytesToWrite() == 8 && completed == 0u, "it is leaving the port");
+		client_port.raise(QSerialPort::WriteError);
+		check(completed == 1u && seen.state == RequestState::WriteError,
+		      "a write error finishes it as WriteError at once, not after the response timeout");
+		check(client_port.bytesToWrite() == 0 && !client_link.tx_active(),
+		      "the port's output was cleared and the block released");
+		(void)client_port.take_written();
+		completed = 0;
+		check(rtu.send(0x11u, 0x03u, std::vector<uint8_t>{0u, 1u, 0u, 1u}, capture()), "the next request is queued");
+		pump(10);
+		check(!client_port.take_written().empty(), "and goes out: the queue moved on");
+		client_port.drain();
+		client_port.feed(make_adu(0x11u, 0x03u, std::vector<uint8_t>{0x02u, 0x00u, 0x01u}));
+		check(completed == 1u && seen.state == RequestState::Completed, "and completes normally");
+
+		completed = 0;
+		check(rtu.send(0x11u, 0x03u, std::vector<uint8_t>{0u, 1u, 0u, 1u}, capture()), "another request is queued");
+		pump(10);
+		check(client_port.bytesToWrite() == 8, "it is leaving");
+		client_port.raise(QSerialPort::ResourceError);
+		check(completed == 1u && seen.state == RequestState::WriteError && !client_link.tx_active() &&
+		      client_port.bytesToWrite() == 0,
+		      "a resource error while sending finishes the request as WriteError with the block released");
+		(void)client_port.take_written();
+
+		completed = 0;
+		client_port.set_write_limit(3);
+		check(rtu.send(0x11u, 0x03u, std::vector<uint8_t>{0u, 1u, 0u, 1u}, capture()), "a request meets a port that takes 3 bytes");
+		pump(10);
+		check(completed == 1u && seen.state == RequestState::WriteError,
+		      "a partial write is a write error, not a retry behind half a frame");
+		check(client_port.bytesToWrite() == 0 && !client_link.tx_active(),
+		      "what the port still buffered was cleared and the block released");
+		client_port.set_write_limit(-1);
+		(void)client_port.take_written();
+		check(rtu.idle(), "the client is idle again");
+	}
+
+	group("QtRtuClientTurnaroundIsKept");
+	{
+		unsigned broadcasts = 0, completed = 0;
+		check(rtu.send(0x00u, 0x06u, std::vector<uint8_t>{0x00u, 0x01u, 0x00u, 0x03u}, RtuClient::Handler{
+			[&rtu, &broadcasts, &completed](const Response& response) {
+				if (response.state == RequestState::Broadcast) {
+					++broadcasts;
+					// the usual polling-loop shape: the next request from inside the callback
+					(void)rtu.send(0x11u, 0x03u, std::vector<uint8_t>{0u, 1u, 0u, 1u}, RtuClient::Handler{
+						[&completed](const Response&) { ++completed; }});
+				}
+			}}), "a broadcast whose handler queues the next request");
+		pump(10);
+		check(!client_port.take_written().empty(), "the broadcast is written");
+		client_port.drain();
+		check(broadcasts == 1u && rtu.pending() == 1u, "it completed and the handler's request is queued");
+		pump(10);
+		check(client_port.take_written().empty(), "10 ms later the next request has not left: the 20 ms turnaround stands");
+		pump(15);
+		check(!client_port.take_written().empty(), "after the turnaround it goes out");
+		client_port.drain();
+		client_port.feed(make_adu(0x11u, 0x03u, std::vector<uint8_t>{0x02u, 0x00u, 0x01u}));
+		check(completed == 1u, "and completes");
 	}
 
 	group("QtRtuClientLifecycle");

@@ -68,24 +68,44 @@
  * cannot discard a correctly chunked frame, and offers the clean start
  * explicitly rather than tying it to a request queue it does not own.
  *
- * Errors: QSerialPort reports no per-byte framing or parity errors on Qt 6;
- * ReadError, ResourceError and UnknownError mean bytes may have been lost and
- * become notify_gap() (the frame in flight is dropped, counted as a stream
- * gap). Everything else is the port's own business. QModbus reports these
- * errors to the application and leaves its buffer standing; treating them as
- * a discontinuity is this adapter's decision, because a lost byte inside a
- * length-prefixed frame otherwise consumes the frame behind it.
+ * Errors. QSerialPort reports no per-byte framing or parity errors on Qt 6.
+ * A ReadError means bytes may have been lost on the way in: the frame in
+ * flight is dropped through notify_gap(), counted as a stream gap, because a
+ * lost byte inside a length-prefixed frame would otherwise consume the frame
+ * behind it (QModbus reports the error to the application and leaves its
+ * buffer standing; the discontinuity is this adapter's decision). A
+ * WriteError means the frame being sent will not leave: what the port still
+ * buffers is cleared and the endpoint releases the block it was lending, so
+ * nothing waits for a bytesWritten that never comes. A ResourceError (the
+ * device went away) is both. The layer above learns which happened from
+ * take_transport_error(), read inside its service handler, and decides what
+ * it means for its transaction (adapters/qt/RtuClient.h finishes the request
+ * as a write error). Everything else the port reports is its own business.
+ *
+ * Partial writes. QIODevice::write() may accept fewer bytes than offered, and
+ * from Qt 6.10 QSerialPort has a configurable write-buffer limit that makes
+ * it do so. Half a frame on the line followed by the endpoint's retry of the
+ * whole frame would be a hybrid nobody can parse, so a short write is
+ * treated as a failed transmission: the port's output is cleared at once,
+ * the endpoint is told the transport refused (it keeps the message for a
+ * deliberate retry), and TransportError::Write is recorded.
  *
  * Lifetime: the port and the endpoint outlive the adapter while it is bound.
  * bind() is transactional (the endpoint's transport binding first, the
  * signal connections only when it succeeded); unbind() is refused while the
- * transmitted frame has not left the port, and detaches otherwise; the
- * destructor detaches a bound adapter. All connections use the adapter's own
- * timer as their context object, so nothing can call into a destroyed
- * adapter. One adapter per port at a time, and that is the application's
- * duty: a Qt connection is added rather than substituted, so binding a second
- * adapter to a port whose first adapter is still bound leaves both connected
- * and both draining the same readyRead. Unbind the first.
+ * transmitted frame has not left the port, and detaches otherwise. The
+ * endpoint's Sender and BusyQuery point at THIS object — unlike the STM32
+ * adapter's, which point at the driver — so the destructor of a bound
+ * adapter unbinds the endpoint before it goes: the block a frame still on
+ * its way out was lending is released (Qt holds its own copy of the bytes,
+ * which keep leaving), and a later send() on the endpoint is refused as
+ * Unbound instead of calling into a destroyed adapter. All connections use
+ * the adapter's own timer as their context object. One adapter per port at
+ * a time, and that is the application's duty: a Qt connection is added
+ * rather than substituted, so binding a second adapter to a port whose first
+ * adapter is still bound leaves both connected and both draining the same
+ * readyRead, and the first one's destructor would then unbind the endpoint
+ * from under the second. Unbind the first.
  */
 
 #ifndef ADAPTERS_QT_SERIAL_ADAPTER_H_
@@ -145,6 +165,14 @@ concept SerialLike = requires(P& port, const char* data, qint64 size) {
 	&P::errorOccurred;
 };
 
+// What went wrong with the port, as far as the layer above needs to know.
+enum class TransportError : uint8_t {
+	None = 0u,
+	Read,       // bytes may have been lost on the way in; the frame in flight was dropped
+	Write,      // the frame being sent did not (fully) leave; output cleared, its block released
+	Resource,   // the device went away: both of the above
+};
+
 template<class EndpointT, class PortT = QSerialPort>
 class SerialAdapter final {
 	static_assert(StreamEndpoint<EndpointT>,
@@ -159,9 +187,10 @@ public:
 	using Endpoint = EndpointT;
 	using Port = PortT;
 	// "the endpoint may have something for you": raised after a delivery, a
-	// finished transmission, a gap and a stale-frame expiry. A layer above
-	// (adapters/qt/RtuClient.h) drains packets and advances its transaction in
-	// it; an application that polls the endpoint itself leaves it unset.
+	// finished transmission, a transport error and a stale-frame expiry. A
+	// layer above (adapters/qt/RtuClient.h) drains packets, reads
+	// take_transport_error() and advances its transaction in it; an
+	// application that polls the endpoint itself leaves it unset.
 	using ServiceHandler = tiny::delegate<void()>;
 
 	// Whether the stale-frame rule is compiled in (RTU with a framing policy).
@@ -173,6 +202,7 @@ public:
 	SerialAdapter(PortT& port, EndpointT& endpoint)
 		: m_port(port), m_endpoint(endpoint)
 	{
+		m_clock.start();   // monotonic for the adapter's whole life, across bind/unbind cycles
 		m_stale.setSingleShot(true);
 		m_stale.setTimerType(Qt::PreciseTimer);
 		QObject::connect(&m_stale, &QTimer::timeout, &m_stale, [this]() { on_stale(); });
@@ -181,9 +211,16 @@ public:
 	SerialAdapter(const SerialAdapter&) = delete;
 	SerialAdapter& operator=(const SerialAdapter&) = delete;
 
+	// A bound adapter leaves the endpoint unbound: its Sender and BusyQuery
+	// point at this object. A frame still leaving the port keeps leaving (Qt
+	// owns the bytes); the block it was lending is released now, since a
+	// destroyed adapter can no longer answer whether the line is busy.
 	~SerialAdapter()
 	{
 		if (m_bound) {
+			m_releasing = true;
+			m_endpoint.poll(now_ms());
+			(void)m_endpoint.unbind();
 			detach();
 		}
 	}
@@ -210,7 +247,7 @@ public:
 			[this](qint64) { on_bytes_written(); });
 		m_error = QObject::connect(&m_port, &PortT::errorOccurred, &m_stale,
 			[this](QSerialPort::SerialPortError error) { on_error(error); });
-		m_clock.start();
+		m_transport_error = TransportError::None;
 		m_bound = true;
 		return true;
 	}
@@ -234,7 +271,9 @@ public:
 
 	void set_service_handler(ServiceHandler handler) { m_service = static_cast<ServiceHandler&&>(handler); }
 
-	// Milliseconds since bind(): the monotonic tick the endpoint's poll() takes.
+	// Milliseconds since the adapter was created: the monotonic tick the
+	// endpoint's poll() takes, and the clock the layer above dates its
+	// deadlines in. It does not restart on a rebind.
 	[[nodiscard]] uint32_t now_ms() const noexcept
 	{
 		return static_cast<uint32_t>(m_clock.elapsed());
@@ -242,6 +281,17 @@ public:
 
 	// Whether a frame is in flight and its silence timer running (framed RTU).
 	[[nodiscard]] bool deadline_armed() const noexcept { return m_stale.isActive(); }
+
+	// The last transport error since it was last taken: what a failed
+	// transmission or a dropped frame in flight was caused by.
+	[[nodiscard]] TransportError last_transport_error() const noexcept { return m_transport_error; }
+
+	[[nodiscard]] TransportError take_transport_error() noexcept
+	{
+		const TransportError error = m_transport_error;
+		m_transport_error = TransportError::None;
+		return error;
+	}
 
 	// Transport entry points. bind() routes the port's signals here; a test or
 	// another byte source may call deliver() directly.
@@ -295,15 +345,20 @@ public:
 	{
 		switch (error) {
 		case QSerialPort::ReadError:
+			drop_incoming(TransportError::Read);
+			break;
+		case QSerialPort::WriteError:
+			abort_outgoing(TransportError::Write);
+			break;
 		case QSerialPort::ResourceError:
 		case QSerialPort::UnknownError:
-			m_stale.stop();
-			m_endpoint.notify_gap();   // bytes may have been lost: the frame in flight is dropped
-			notify();
+			abort_outgoing(TransportError::Resource);
+			drop_incoming(TransportError::Resource);
 			break;
 		default:
-			break;
+			return;   // the port's own business
 		}
+		notify();
 	}
 
 private:
@@ -324,15 +379,42 @@ private:
 		}
 	}
 
+	// Bytes may have been lost on the way in: the frame in flight cannot be
+	// completed, and the next byte starts a new one.
+	void drop_incoming(const TransportError error)
+	{
+		m_stale.stop();
+		m_endpoint.notify_gap();
+		m_transport_error = error;
+	}
+
+	// The frame being sent will not leave: what the port still buffers is
+	// cleared, and the endpoint takes back the block it was lending (busy()
+	// reads false once the output is empty).
+	void abort_outgoing(const TransportError error)
+	{
+		(void)m_port.clear(QSerialPort::Output);
+		m_endpoint.poll(now_ms());
+		m_transport_error = error;
+	}
+
 	[[nodiscard]] bool send(const std::span<const uint8_t> frame)
 	{
 		const qint64 size = static_cast<qint64>(frame.size());
-		return m_port.write(reinterpret_cast<const char*>(frame.data()), size) == size;
+		const qint64 written = m_port.write(reinterpret_cast<const char*>(frame.data()), size);
+		if (written == size) {
+			return true;
+		}
+		// A short write would put part of a frame on the line and let a retry
+		// follow it with the whole one: it is a failed transmission instead.
+		(void)m_port.clear(QSerialPort::Output);
+		m_transport_error = TransportError::Write;
+		return false;
 	}
 
 	[[nodiscard]] bool busy() const
 	{
-		return m_port.bytesToWrite() != 0;
+		return !m_releasing && m_port.bytesToWrite() != 0;
 	}
 
 	void detach()
@@ -355,7 +437,9 @@ private:
 	QMetaObject::Connection m_tx;
 	QMetaObject::Connection m_error;
 	ServiceHandler m_service;
+	TransportError m_transport_error = TransportError::None;
 	bool m_bound = false;
+	bool m_releasing = false;
 };
 
 } // namespace adapters::qt

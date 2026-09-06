@@ -100,7 +100,7 @@ PC clients' writes produce.
 The tables below are printed by `verify_qmodbus.py` from the record;
 `--check-doc` fails when they drift.
 
-Record: [`results_qmodbus_2026-09-06.json`](results_qmodbus_2026-09-06.json), taken against commit `2d7e90d`; the burst medians are thirty back-to-back reads of ten registers, round trip as the client measures it.
+Record: [`results_qmodbus_2026-09-06.json`](results_qmodbus_2026-09-06.json), taken against commit `2d7e90d`; the burst medians are thirty back-to-back reads of ten registers, round trip as the client measures it. The lifecycle and failure-path cleanup of `SerialAdapter`/`RtuClient` that followed (destructor unbinding the endpoint, write and resource errors ending the transaction, partial writes, the turnaround kept across a reentrant send, a lowerable inter-frame floor) touched no path this normal-flow comparison exercises; those paths are proven on the fake port by `sh src/adapters/qt/tests/run.sh`.
 
 ### The board as a server: Qt's client and this repository's client, same script, same server
 

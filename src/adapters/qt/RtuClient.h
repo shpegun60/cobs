@@ -35,11 +35,24 @@
  * inter-frame delay between transactions, computed exactly as
  * QModbusDevicePrivate::calculateInterFrameDelay does: 3.5 character times of
  * eleven bits below 19200 baud, a flat 2 ms at or above it, never below a
- * value the application set. A turnaround delay (100 ms, Qt's default) after a
- * broadcast to address 0, which is answered by nobody. Matching by address and
- * function code with the exception bit masked off, so an exception response
- * completes its own request — Qt's canMatchRequestAndResponse() and
+ * floor the application set. A turnaround delay (100 ms, Qt's default) after
+ * a broadcast to address 0, which is answered by nobody. Matching by address
+ * and function code with the exception bit masked off, so an exception
+ * response completes its own request — Qt's canMatchRequestAndResponse() and
  * QModbusPdu::functionCode() do the same.
+ *
+ * Gaps between transactions are deadlines, not delays: when a request
+ * finishes, the earliest moment the next frame may leave is fixed BEFORE the
+ * handler runs, so a handler that queues the next request from inside the
+ * callback (the usual shape of a polling loop) cannot shorten the turnaround
+ * after a broadcast or the inter-frame gap after a response.
+ *
+ * A transport error ends the transaction it hit. When the port reports a
+ * write or resource error while a request is leaving or awaiting its answer,
+ * the adapter has already cleared the output and taken the block back; the
+ * request is finished as RequestState::WriteError at once, not after the
+ * response timeout, and the queue moves on. A read error drops the response
+ * in flight; the request keeps waiting for its timeout, as it does in Qt.
  *
  * What it does not copy. Qt's request/reply objects, data units and register
  * models: a request here is an address, a function and its bytes, and a
@@ -51,7 +64,7 @@
  * loop. The port and the endpoint outlive the client; unbind() cancels a
  * queued request with RequestState::Cancelled, while the destructor drops the
  * queue silently, since a handler must not run while its owner is being
- * destroyed.
+ * destroyed; the adapter it owns unbinds the endpoint on the way out.
  */
 
 #ifndef ADAPTERS_QT_RTU_CLIENT_H_
@@ -77,7 +90,7 @@ enum class RequestState : uint8_t {
 	Completed,   // a response matching address and function arrived
 	Broadcast,   // address 0: the request left the port, nobody answers it
 	Timeout,     // no matching response within the timeout, retries exhausted
-	WriteError,  // the endpoint or the port refused the frame
+	WriteError,  // the endpoint or the port refused the frame, or the port failed while it was leaving
 	Cancelled,   // unbind() while the request was queued
 };
 
@@ -137,6 +150,7 @@ public:
 		}
 		m_adapter.set_service_handler(typename Adapter::ServiceHandler{
 			tiny::bind<&RtuClient::service>(*this)});
+		m_earliest_next_ms = m_adapter.now_ms();   // a fresh session owes no gap to a cancelled one
 		return true;
 	}
 
@@ -172,17 +186,20 @@ public:
 	{
 		m_turnaround_delay_ms = std::max(0, milliseconds);
 	}
-	// A floor, as in Qt: the computed delay is used when it is longer.
+	// A floor, as in Qt: the computed delay is used when it is longer. Unlike
+	// Qt's, lowering the floor lowers the delay again.
 	void set_inter_frame_delay_ms(const int milliseconds) noexcept
 	{
 		m_inter_frame_floor_ms = std::max(0, milliseconds);
-		m_inter_frame_delay_ms = std::max(m_inter_frame_floor_ms, m_inter_frame_delay_ms);
 	}
 
 	[[nodiscard]] int response_timeout_ms() const noexcept { return m_response_timeout_ms; }
 	[[nodiscard]] int retries() const noexcept { return m_retries; }
 	[[nodiscard]] int turnaround_delay_ms() const noexcept { return m_turnaround_delay_ms; }
-	[[nodiscard]] int inter_frame_delay_ms() const noexcept { return m_inter_frame_delay_ms; }
+	[[nodiscard]] int inter_frame_delay_ms() const noexcept
+	{
+		return std::max(m_computed_inter_frame_ms, m_inter_frame_floor_ms);
+	}
 
 	/*
 	 * Recomputes the inter-frame delay from the port's current baud rate, the
@@ -201,7 +218,7 @@ public:
 					std::ceil(3500.0 / (static_cast<double>(baud) / 11.0)));
 			}
 		}
-		m_inter_frame_delay_ms = std::max(m_inter_frame_floor_ms, computed);
+		m_computed_inter_frame_ms = computed;
 	}
 
 	/*
@@ -226,7 +243,7 @@ public:
 		pending.handler = static_cast<Handler&&>(on_finished);
 		pending.attempts_left = m_retries + 1;
 		m_queue.push_back(static_cast<Pending&&>(pending));
-		schedule_next(m_inter_frame_delay_ms);
+		schedule_next(inter_frame_delay_ms());
 		return true;
 	}
 
@@ -235,11 +252,21 @@ public:
 
 	/*
 	 * Called by the adapter whenever the endpoint's state may have changed: a
-	 * chunk was consumed, a transmission finished, a gap or a stale frame was
-	 * announced. Drains ready packets and advances the transaction.
+	 * chunk was consumed, a transmission finished or failed, a gap or a stale
+	 * frame was announced. Settles a transport error first, drains ready
+	 * packets, then advances the transaction.
 	 */
 	void service()
 	{
+		const TransportError error = m_adapter.take_transport_error();
+		if ((error == TransportError::Write || error == TransportError::Resource) &&
+		    (m_state == State::Sending || m_state == State::Waiting) && !m_queue.empty()) {
+			// The frame did not (fully) leave and will not: the adapter cleared
+			// the output and took the block back. Nothing can answer it.
+			m_response.stop();
+			finish_head(RequestState::WriteError, {}, false, 0u);
+			schedule_next(inter_frame_delay_ms());
+		}
 		while (auto packet = m_endpoint.pop_packet()) {
 			on_packet(packet);
 		}
@@ -270,13 +297,17 @@ private:
 		unsigned attempts = 0u;
 	};
 
+	// Arms the next transmission no sooner than `delay_ms` from now AND no
+	// sooner than the deadline the last finished request fixed.
 	void schedule_next(const int delay_ms)
 	{
 		if (m_state != State::Idle || m_queue.empty()) {
 			return;
 		}
+		const int32_t until_allowed = static_cast<int32_t>(m_earliest_next_ms - m_adapter.now_ms());
+		const int effective = std::max(std::max(0, delay_ms), until_allowed > 0 ? static_cast<int>(until_allowed) : 0);
 		m_state = State::Scheduled;
-		m_schedule.start(std::max(0, delay_ms));
+		m_schedule.start(effective);
 	}
 
 	void process_queue()
@@ -292,7 +323,7 @@ private:
 		auto message = m_endpoint.make_message(head.address, head.function, head.data.size());
 		if (!message || !message.append_bytes(std::span<const uint8_t>{head.data})) {
 			finish_head(RequestState::WriteError, {}, false, 0u);
-			schedule_next(m_inter_frame_delay_ms);
+			schedule_next(inter_frame_delay_ms());
 			return;
 		}
 		--head.attempts_left;
@@ -305,8 +336,9 @@ private:
 			m_state = State::Idle;
 			schedule_next(1);   // the previous frame is still leaving; look again shortly
 		} else {
+			(void)m_adapter.take_transport_error();   // the refusal is settled here, not in service()
 			finish_head(RequestState::WriteError, {}, false, 0u);
-			schedule_next(m_inter_frame_delay_ms);
+			schedule_next(inter_frame_delay_ms());
 		}
 	}
 
@@ -325,7 +357,7 @@ private:
 		const uint8_t code = (exception && !packet.data().empty()) ? packet.data()[0] : 0u;
 		m_response.stop();
 		finish_head(RequestState::Completed, packet.data(), exception, code);
-		schedule_next(m_inter_frame_delay_ms);
+		schedule_next(inter_frame_delay_ms());
 	}
 
 	void on_response_timeout()
@@ -335,13 +367,16 @@ private:
 		}
 		if (m_queue.front().attempts_left > 0) {
 			m_state = State::Idle;          // retry the same request
-			schedule_next(m_inter_frame_delay_ms);
+			schedule_next(inter_frame_delay_ms());
 			return;
 		}
 		finish_head(RequestState::Timeout, {}, false, 0u);
-		schedule_next(m_inter_frame_delay_ms);
+		schedule_next(inter_frame_delay_ms());
 	}
 
+	// Completes the head request: the queue pops, the gap the next frame must
+	// respect is fixed, and only then does the handler run — so a send() from
+	// inside it cannot shorten that gap.
 	void finish_head(
 			const RequestState state,
 			const std::span<const uint8_t> data,
@@ -351,6 +386,8 @@ private:
 		Pending head = static_cast<Pending&&>(m_queue.front());
 		m_queue.pop_front();
 		m_state = State::Idle;
+		const int gap = state == RequestState::Broadcast ? m_turnaround_delay_ms : inter_frame_delay_ms();
+		m_earliest_next_ms = m_adapter.now_ms() + static_cast<uint32_t>(gap);
 		if (head.handler) {
 			Response response;
 			response.state = state;
@@ -371,11 +408,12 @@ private:
 	QTimer m_schedule;
 	std::deque<Pending> m_queue;
 	State m_state = State::Idle;
+	uint32_t m_earliest_next_ms = 0u;
 	int m_response_timeout_ms = default_response_timeout_ms;
 	int m_retries = default_retries;
 	int m_turnaround_delay_ms = default_turnaround_delay_ms;
 	int m_inter_frame_floor_ms = 0;
-	int m_inter_frame_delay_ms = recommended_inter_frame_delay_ms;
+	int m_computed_inter_frame_ms = recommended_inter_frame_delay_ms;
 };
 
 } // namespace adapters::qt

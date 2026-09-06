@@ -381,11 +381,18 @@ client.send(0x11, 0x03, body, decltype(client)::Handler{[](const adapters::qt::R
 
 `SerialAdapter` alone is enough for a server, for COBS, or for an
 application that drives its own transactions: `readyRead` feeds `consume()`,
-`bytesWritten` releases the transmitted block, a read or resource error
-becomes `notify_gap()`, and a frame that stops arriving is expired 50 ms
-after the last byte. An RTU endpoint here must carry a framing policy, since
-a serial port delivers arbitrary cuts and not IDLE-ended bursts; the
-adapter refuses the burst endpoint at compile time.
+`bytesWritten` releases the transmitted block, a read error becomes
+`notify_gap()`, a write or resource error clears the port's output and takes
+the borrowed block back (the layer above reads which happened from
+`take_transport_error()`), a short `write()` is a failed transmission rather
+than half a frame on the line, and a frame that stops arriving is expired
+50 ms after the last byte. An RTU endpoint here must carry a framing policy,
+since a serial port delivers arbitrary cuts and not IDLE-ended bursts; the
+adapter refuses the burst endpoint at compile time. Unlike the STM32
+adapter, whose transport delegates point at the driver, this one's point at
+the adapter itself, so its destructor unbinds the endpoint: a `send()` after
+the adapter is gone is refused as `Unbound`, never routed into a dead
+object.
 
 `RtuClient` adds what a master needs and what QModbus provides: one
 transaction at a time with a queue behind it, a response timeout with
@@ -393,7 +400,11 @@ retries, matching by address and function with the exception bit masked off,
 broadcasts to address 0 completed without an answer, an inter-frame delay
 between transactions and a turnaround delay after a broadcast, and a clean
 start before every attempt. Its defaults are Qt's: 1000 ms, three retries,
-100 ms turnaround, 2 ms inter-frame at and above 19200 baud.
+100 ms turnaround, 2 ms inter-frame at and above 19200 baud. The gaps are
+deadlines fixed before a request's handler runs, so a handler that queues
+the next request from inside the callback cannot shorten the turnaround; a
+write or resource error while a request is leaving finishes it as
+`WriteError` at once instead of after the response timeout.
 
 Where it deliberately differs from QModbus is written down in
 `SerialAdapter.h`: Qt's RTU server drops a buffered fragment when the next
