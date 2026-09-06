@@ -26,15 +26,19 @@ using Link = modbus::rtu::Endpoint<wire::Pool<8, 2>>;
 
 static Serial uart;
 static Link link;
-static modbus::rtu::UartAdapter adapter{uart, link, huart3.Init.BaudRate};
+static modbus::rtu::UartAdapter adapter{uart, link};   // takes no configuration: safe before main()
 ```
 
 The adapter is the whole integration: UART RX and ordered loss notification
-into the endpoint, the endpoint's borrowed TX onto the driver.
+into the endpoint, the endpoint's borrowed TX onto the driver. It reads the
+line rate from the driver's bound HAL handle, so the driver is initialized
+first and the adapter bound after (a CubeMX `huart3` carries no rate until
+`MX_USART3_UART_Init()` has run, which is why the adapter takes none at
+construction):
 
 ```cpp
 uart.init(&huart3);
-adapter.bind();
+adapter.bind();     // false if the driver is not initialized or a transmission is still active; then nothing changed
 ```
 
 Without the adapter the same wiring is three explicit bindings — RX to
@@ -415,7 +419,7 @@ Server server;
 // chunk, a frame across chunks — and expires a frame whose sender died
 // mid-frame (UartAdapter.h explains the rule and why it needs the chunk
 // geometry and the baud).
-modbus::rtu::UartAdapter adapter{uart, server, huart3.Init.BaudRate};
+modbus::rtu::UartAdapter adapter{uart, server};
 void loop_step() noexcept { adapter.proceed(HAL_GetTick()); }
 
 // The builder knows the same table: a response to 0x03 is a byte count plus
@@ -467,7 +471,11 @@ stops arriving is dropped by `expire_incomplete()` and counted in
 flight. The endpoint holds no clock — when a frame is dead depends on the
 transport's chunk geometry and on whether the line is still busy, so the
 `UartAdapter` decides: 5 ms of silence after a partial (IDLE-ended) chunk,
-one chunk's transfer time plus 5 ms after a full one. With
+one chunk's transfer time (12-bit characters, the widest the driver accepts,
+at the rate read live from the HAL handle) plus 5 ms after a full one. The
+full-chunk rule assumes a continuously transmitting peer or bridge; a strict
+RTU sender that paused below t1.5 after every byte could stretch a chunk
+beyond it. With
 `framing::None` (the default) nothing described in this section is compiled
 in, and the endpoint is the one documented everywhere else in this file.
 

@@ -14,6 +14,10 @@
 #include <cstdint>
 #include <span>
 
+struct FakeHandle {
+	struct { uint32_t BaudRate; } Init;
+};
+
 template<std::size_t ChunkSize, std::size_t ChunkCount>
 class Uart {
 public:
@@ -24,6 +28,7 @@ public:
 	bool send(std::span<const uint8_t>) noexcept { return true; }
 	bool tx_busy() const noexcept { return false; }
 	void proceed(uint32_t) noexcept {}
+	FakeHandle* instance() const noexcept { return nullptr; }
 };
 
 struct NotAnRtuEndpoint {
@@ -33,4 +38,4 @@ struct NotAnRtuEndpoint {
 
 Uart<256, 4> uart;
 NotAnRtuEndpoint endpoint;
-modbus::rtu::UartAdapter<Uart<256, 4>, NotAnRtuEndpoint> adapter{uart, endpoint, 115200u};
+modbus::rtu::UartAdapter<Uart<256, 4>, NotAnRtuEndpoint> adapter{uart, endpoint};

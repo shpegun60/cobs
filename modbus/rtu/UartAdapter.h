@@ -12,11 +12,11 @@
  *     using Link   = modbus::rtu::Endpoint<wire::Pool<8, 2>, modbus::rtu::Format<>,
  *                        modbus::rtu::framing::Standard<framing::Direction::Request>>;
  *
- *     Serial uart;
- *     Link link;
- *     modbus::rtu::UartAdapter adapter{uart, link, huart3.Init.BaudRate};
+ *     static Serial uart;
+ *     static Link link;
+ *     static modbus::rtu::UartAdapter adapter{uart, link};   // safe at static-init time
  *
- *     uart.init(&huart3);
+ *     uart.init(&huart3);      // first: the adapter reads the line rate from the bound handle
  *     adapter.bind();
  *
  *     // main loop, or one communication task
@@ -31,6 +31,21 @@
  * Uart<ChunkSize, ChunkCount> type through UartTraits, and how each chunk
  * ended, read from its size. The endpoint itself keeps no clock: it exposes
  * assembling() and expire_incomplete(), and stays transport-agnostic.
+ *
+ * Lifetime and binding. The driver and the endpoint must outlive the adapter
+ * while it is bound; the destructor detaches the driver's RX and gap handlers
+ * so a destroyed adapter can never be called. bind() is transactional: the
+ * endpoint's transport binding is attempted first and, only when it succeeded,
+ * the driver's handlers are pointed at the adapter (the driver's setters
+ * cannot fail), so a false return leaves both objects exactly as they were.
+ * bind() requires an initialized driver, because the line rate is read from
+ * the bound HAL handle — the single source of truth; the adapter keeps no
+ * configuration of its own and re-reads that rate on every proceed(), so
+ * Uart::setBaudRate() is followed without a second call. One adapter serves
+ * one driver at a time: binding a second adapter over a bound one replaces
+ * the driver's handlers (the endpoint permits rebinding while no transmission
+ * is active), and the first adapter's unbind() or destructor would then
+ * detach the second's handlers — unbind the first before binding another.
  *
  * The stale-frame rule. The driver publishes a chunk either because the
  * line went idle (a PARTIAL chunk, size < ChunkSize) or because the chunk
@@ -48,18 +63,29 @@
  *     ChunkSize character times to arrive, and only silence longer than that
  *     plus a guard is a dead frame. This is what a sender that dies exactly on
  *     a chunk boundary is caught by, and what keeps a 1024-byte private ADU
- *     alive across four 256-byte chunks at 9600 baud (about 300 ms each).
- *     Character time is taken as 11 bits (start, 8 data, parity, stop): on
- *     8N1 links the deadline is a tenth longer than necessary, never shorter.
+ *     alive across four 256-byte chunks at 9600 baud (about 320 ms each).
+ *     A character is taken as 12 bits — start, up to nine data/parity bits
+ *     (the driver accepts 8N and 9B-with-parity) and up to two stop bits —
+ *     so the deadline is never shorter than the wire, and on 8N1 a fifth
+ *     longer than necessary. The full-chunk deadline assumes a continuously
+ *     transmitting peer or bridge whose stalls inside a frame are small
+ *     against a chunk's transmission; strict RTU permits pauses below t1.5
+ *     between EVERY character, and a peer that used that allowance on every
+ *     byte could stretch a chunk beyond this deadline. This adapter targets
+ *     DMA peers and USB bridges, which do not; it is not a t1.5 timer.
  *
  * No time is recorded in the receive path. on_rx() stamps a deadline with
- * the tick proceed() was given; the deadline is checked in proceed(), after
- * the driver has delivered what it had.
+ * the tick proceed() was given; the deadline is checked in proceed() AFTER
+ * the driver has delivered what it had, so a continuation that already sits
+ * in the driver's queue is never outrun by its own deadline. A loop that must
+ * keep its own timing scopes around the driver composes the same steps with
+ * prepare(now) → uart.proceed(now) → finish(now) → endpoint.poll(now); that
+ * order is part of the contract.
  *
  * The adapter does not include Uart.h: it needs only the driver's type
- * shape and the four members every driver instantiation has (setRxHandler,
- * setRxGapHandler, send, tx_busy, proceed), so it compiles against the host
- * fake HAL in the test suite exactly as against the silicon driver.
+ * shape and the members every driver instantiation has (setRxHandler,
+ * setRxGapHandler, send, tx_busy, proceed, instance), so it compiles against
+ * the host fake HAL in the test suite exactly as against the silicon driver.
  */
 
 #ifndef MODBUS_RTU_UART_ADAPTER_H_
@@ -91,7 +117,7 @@ struct UartTraits<::Uart<ChunkSize, ChunkCount>> {
 
 // What the adapter needs from its endpoint: the RTU endpoint's shape.
 template<class E>
-concept RtuEndpoint = requires(E& endpoint, std::span<const uint8_t> bytes, uint32_t now_ms) {
+concept RtuEndpoint = requires(E& endpoint, uint32_t now_ms) {
 	{ E::framed } -> std::convertible_to<bool>;
 	endpoint.notify_gap();
 	endpoint.poll(now_ms);
@@ -112,76 +138,117 @@ public:
 	static constexpr uint32_t idle_stale_ms = 5u;
 	// Added to one chunk's transfer time after a full chunk.
 	static constexpr uint32_t full_chunk_guard_ms = 5u;
-	// Worst-case wire character: start + 8 data + parity + stop.
-	static constexpr uint32_t bits_per_character = 11u;
+	// The widest character the driver accepts: start + 9 data/parity + 2 stop.
+	static constexpr uint32_t bits_per_character = 12u;
 	// deadline_in_ms() when no frame is in flight.
 	static constexpr uint32_t no_deadline = UINT32_MAX;
 
-	// `baud` is the line rate the UART handle was initialized with
-	// (huart.Init.BaudRate): the handle is the single source of truth and the
-	// driver exposes no copy of it.
-	UartAdapter(SerialT& uart, EndpointT& endpoint, const uint32_t baud) noexcept
-		: m_uart(uart), m_endpoint(endpoint), m_full_chunk_ms(chunk_time_ms(baud)) {}
+	static_assert(static_cast<uint64_t>(chunk_size) * bits_per_character * 1000u <= UINT32_MAX,
+		"chunk transfer time arithmetic must fit 32 bits");
+
+	// No configuration is taken here: it is safe to construct at static-init
+	// time, before the HAL handle carries any line rate.
+	UartAdapter(SerialT& uart, EndpointT& endpoint) noexcept
+		: m_uart(uart), m_endpoint(endpoint) {}
 
 	UartAdapter(const UartAdapter&) = delete;
 	UartAdapter& operator=(const UartAdapter&) = delete;
 
+	// A bound adapter detaches itself from the driver, which must still be
+	// alive (see the lifetime contract above). The endpoint's transport binding
+	// is left in place: it points at the driver, not at the adapter.
+	~UartAdapter()
+	{
+		if (m_bound) {
+			detach();
+		}
+	}
+
 	// Milliseconds one full chunk takes on the wire at `baud`, rounded up; 0
-	// for a baud of 0, which bind() refuses.
+	// for a baud of 0.
 	[[nodiscard]] static constexpr uint32_t chunk_time_ms(const uint32_t baud) noexcept
 	{
 		if (baud == 0u) {
 			return 0u;
 		}
-		const uint64_t bit_milliseconds =
-			static_cast<uint64_t>(chunk_size) * bits_per_character * 1000u;
-		return static_cast<uint32_t>((bit_milliseconds + baud - 1u) / baud);
+		const uint32_t bit_milliseconds =
+			static_cast<uint32_t>(chunk_size) * bits_per_character * 1000u;
+		return (bit_milliseconds + baud - 1u) / baud;
 	}
 
+	[[nodiscard]] uint32_t baud() const noexcept { return m_baud; }
 	[[nodiscard]] uint32_t full_chunk_ms() const noexcept { return m_full_chunk_ms; }
+	[[nodiscard]] bool bound() const noexcept { return m_bound; }
 
 	/*
-	 * Wires the driver to the endpoint: RX chunks and gaps into on_rx()/on_gap(),
-	 * the endpoint's transmit path onto the driver's send()/tx_busy(). Callable
-	 * before or after Uart::init(). False when the baud is 0 (no deadline can be
-	 * computed) or when the endpoint refuses the transport binding (a
-	 * transmission is still active).
+	 * Wires the driver to the endpoint. Requires an initialized driver (the
+	 * line rate comes from its bound HAL handle). Transactional: false — the
+	 * driver is not initialized, its handle carries no rate, or the endpoint
+	 * refuses the transport binding because a transmission is still active —
+	 * leaves both the driver's handlers and the endpoint untouched.
 	 */
 	[[nodiscard]] bool bind() noexcept
 	{
-		if (m_full_chunk_ms == 0u) {
+		if (!refresh_timing()) {
+			return false;
+		}
+		if (!m_endpoint.bind(
+				typename EndpointT::Sender{tiny::bind<&SerialT::send>(m_uart)},
+				typename EndpointT::BusyQuery{tiny::bind<&SerialT::tx_busy>(m_uart)})) {
 			return false;
 		}
 		m_uart.setRxHandler(typename SerialT::RxHandler{
 			tiny::bind<&UartAdapter::on_rx>(*this)});
 		m_uart.setRxGapHandler(typename SerialT::GapHandler{
 			tiny::bind<&UartAdapter::on_gap>(*this)});
-		return m_endpoint.bind(
-			typename EndpointT::Sender{tiny::bind<&SerialT::send>(m_uart)},
-			typename EndpointT::BusyQuery{tiny::bind<&SerialT::tx_busy>(m_uart)});
+		m_bound = true;
+		return true;
+	}
+
+	// The reverse, equally transactional: false while a transmission is still
+	// borrowed by the driver, and then nothing has changed.
+	[[nodiscard]] bool unbind() noexcept
+	{
+		if (!m_bound) {
+			return true;
+		}
+		if (!m_endpoint.unbind()) {
+			return false;
+		}
+		detach();
+		return true;
 	}
 
 	/*
 	 * The one slow-path call: the driver delivers what it has (on_rx/on_gap run
-	 * inside), an overdue frame is expired, the endpoint reclaims a finished
-	 * transmission. `now_ms` is the application's monotonic millisecond tick;
-	 * on_rx() stamps deadlines with it.
+	 * inside), THEN an overdue frame is expired, then the endpoint reclaims a
+	 * finished transmission. `now_ms` is the application's monotonic
+	 * millisecond tick; on_rx() stamps deadlines with it.
 	 */
 	void proceed(const uint32_t now_ms) noexcept
 	{
-		m_now_ms = now_ms;
+		prepare(now_ms);
 		m_uart.proceed(now_ms);
-		expire_due(now_ms);
+		finish(now_ms);
 		m_endpoint.poll(now_ms);
 	}
 
-	// The adapter's own step, for a loop that calls the driver and the endpoint
-	// itself (the hardware harness keeps its own timing scopes around them):
-	// records the tick on_rx() will stamp deadlines with and expires an overdue
-	// frame. Call it before the driver's proceed() in such a loop.
-	void service(const uint32_t now_ms) noexcept
+	/*
+	 * The two halves of proceed() around the driver, for a loop that keeps its
+	 * own timing scopes (the hardware harness): prepare() records the tick
+	 * on_rx() will stamp deadlines with and follows a changed line rate;
+	 * finish() expires an overdue frame. finish() must come AFTER the driver's
+	 * proceed(): a continuation already queued in the driver must be delivered
+	 * before its frame can be judged stale.
+	 */
+	void prepare(const uint32_t now_ms) noexcept
 	{
 		m_now_ms = now_ms;
+		(void)refresh_timing();
+	}
+
+	void finish(const uint32_t now_ms) noexcept
+	{
 		expire_due(now_ms);
 	}
 
@@ -224,6 +291,24 @@ public:
 	[[nodiscard]] bool deadline_armed() const noexcept { return m_deadline_active; }
 
 private:
+	// The line rate lives in the driver's HAL handle and may change through
+	// Uart::setBaudRate(); one load and one compare per call, the division
+	// only when it changed. False when the driver is not initialized or the
+	// handle carries no rate.
+	[[nodiscard]] bool refresh_timing() noexcept
+	{
+		const auto* const handle = m_uart.instance();
+		if (handle == nullptr || handle->Init.BaudRate == 0u) {
+			return false;
+		}
+		const uint32_t baud = handle->Init.BaudRate;
+		if (baud != m_baud) {
+			m_baud = baud;
+			m_full_chunk_ms = chunk_time_ms(baud);
+		}
+		return true;
+	}
+
 	void expire_due(const uint32_t now_ms) noexcept
 	{
 		if constexpr (framed) {
@@ -237,12 +322,22 @@ private:
 		}
 	}
 
+	void detach() noexcept
+	{
+		m_uart.setRxHandler(typename SerialT::RxHandler{});
+		m_uart.setRxGapHandler(typename SerialT::GapHandler{});
+		m_deadline_active = false;
+		m_bound = false;
+	}
+
 	SerialT& m_uart;
 	EndpointT& m_endpoint;
-	const uint32_t m_full_chunk_ms;
+	uint32_t m_baud = 0u;
+	uint32_t m_full_chunk_ms = 0u;
 	uint32_t m_now_ms = 0u;
 	uint32_t m_deadline_ms = 0u;
 	bool m_deadline_active = false;
+	bool m_bound = false;
 };
 
 } // namespace modbus::rtu

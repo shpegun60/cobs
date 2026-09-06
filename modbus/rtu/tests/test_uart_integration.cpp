@@ -9,7 +9,10 @@
  * application uses on the STM32. Two endpoints: the default burst-candidate
  * one, and one with a framing policy, whose stale-frame rule is exercised
  * with the fake HAL's clock at 9600 baud, where one 256-byte DMA chunk takes
- * about 300 ms to arrive.
+ * 320 ms of 12-bit characters to arrive. The adapter's lifecycle contract is
+ * covered too: construction before the handle carries a rate, transactional
+ * bind()/unbind(), a changed line rate, a continuation queued at the
+ * deadline, and the tick wrapping around.
  */
 
 #define UART_ENGINE_IMPLEMENT
@@ -48,6 +51,13 @@ struct WideFramer : framing::Standard<framing::Direction::Request> {
 	}
 };
 
+// Counts chunks that reach a handler the application installed itself: the
+// proof that a failed bind() left the driver's handlers alone.
+struct Sentinel final {
+	unsigned chunks = 0;
+	void on_rx(std::span<const uint8_t>) noexcept { ++chunks; }
+};
+
 template<class LinkT>
 struct Fixture final {
 	using Link = LinkT;
@@ -58,19 +68,15 @@ struct Fixture final {
 	DMA_Channel_TypeDef channel_tx{};
 	DMA_HandleTypeDef dma_rx{};
 	DMA_HandleTypeDef dma_tx{};
-	UART_HandleTypeDef huart{};
+	UART_HandleTypeDef huart{};   // zero-initialized, like a CubeMX global before MX_USARTx_UART_Init()
 	Serial uart{};
 	Link link{};
-	Adapter adapter;
+	Adapter adapter{uart, link};  // constructed while huart.Init.BaudRate is still 0
 
-	explicit Fixture(const uint32_t baud) noexcept : adapter(uart, link, baud)
-	{
-		huart.Init.BaudRate = baud;
-	}
-
-	void configure() noexcept
+	void configure(const uint32_t baud) noexcept
 	{
 		huart.Instance = &usart;
+		huart.Init.BaudRate = baud;
 		huart.Init.WordLength = UART_WORDLENGTH_8B;
 		huart.Init.StopBits = UART_STOPBITS_1;
 		huart.Init.Parity = UART_PARITY_NONE;
@@ -98,10 +104,10 @@ struct Fixture final {
 		fake::model().huart = &huart;
 	}
 
-	// The application's whole setup: driver init and one adapter bind.
-	bool start() noexcept
+	// The application's whole setup: configure, driver init, one adapter bind.
+	bool start(const uint32_t baud) noexcept
 	{
-		configure();
+		configure(baud);
 		return uart.init(&huart) && adapter.bind();
 	}
 
@@ -110,9 +116,9 @@ struct Fixture final {
 	// ownership model can assert that no DMA-owned memory reaches the endpoint.
 	// The plain start() proves the adapter's own RX routing; this proves the
 	// ownership discipline of the framed copy path under it.
-	bool start_observed() noexcept
+	bool start_observed(const uint32_t baud) noexcept
 	{
-		if (!start()) {
+		if (!start(baud)) {
 			return false;
 		}
 		uart.setRxHandler(typename Serial::RxHandler{
@@ -141,6 +147,7 @@ struct Fixture final {
 using BurstLink = modbus::rtu::Endpoint<wire::Pool<4, 2>>;
 using FramedLink = modbus::rtu::Endpoint<wire::Pool<4, 2>,
 	modbus::rtu::Format<::crc::Crc16Bitwise, 1024>, WideFramer>;
+using FramedAdapter = Fixture<FramedLink>::Adapter;
 
 std::vector<uint8_t> wide_frame(const std::size_t body_size, const uint8_t seed)
 {
@@ -169,8 +176,8 @@ int main()
 {
 	group("BurstEndpointThroughAdapter");
 	fake::reset();
-	Fixture<BurstLink> burst{115200u};
-	check(burst.start(), "Uart<256,4>, default RTU endpoint and adapter bind in one call");
+	Fixture<BurstLink> burst;
+	check(burst.start(115200u), "Uart<256,4>, default RTU endpoint and adapter bind in one call");
 	const auto short_adu = make_adu(1u, 3u, std::vector<uint8_t>{0x00u, 0x10u, 0x00u, 0x02u});
 	feed(short_adu, false);
 	burst.loop();
@@ -220,6 +227,7 @@ int main()
 	      ::crc::verify<::crc::Crc16Bitwise>(
 			std::span<const uint8_t>{fake::model().tx_src, fake::model().tx_len}),
 	      "UART DMA sees address/function/data/CRC in the same owned block");
+	check(!burst.adapter.unbind(), "unbind() is refused while the driver still borrows the frame");
 	fake::tx_done();
 	burst.loop();
 	check(!burst.uart.tx_busy() && !burst.link.tx_active() &&
@@ -227,18 +235,60 @@ int main()
 	      "adapter.proceed() releases the RTU block after UART stops borrowing it");
 	check(fake::model().violations.empty(), "fake HAL observed no DMA/consumer ownership violation");
 
+	group("BindLifecycle");
+	{
+		// Construction happened with a zero-initialized handle (the CubeMX
+		// static-init situation); binding before the driver is initialized must
+		// fail without side effects, and succeed afterwards with the rate read
+		// from the handle.
+		fake::reset();
+		Fixture<FramedLink> f;
+		Sentinel sentinel;
+		f.uart.setRxHandler(Serial::RxHandler{tiny::bind<&Sentinel::on_rx>(sentinel)});
+		check(!f.adapter.bind() && !f.adapter.bound(), "bind() before Uart::init() is refused");
+		f.configure(9600u);
+		check(f.uart.init(&f.huart), "driver initialized at 9600");
+		feed(short_adu, false);
+		f.loop();
+		check(sentinel.chunks == 1u && !f.link.has_packet(),
+		      "the refused bind() left the application's own RX handler in place");
+		check(f.adapter.bind() && f.adapter.bound() && f.adapter.baud() == 9600u &&
+		      f.adapter.full_chunk_ms() == 320u,
+		      "bind() after init reads 9600 baud from the handle: 320 ms per 256-byte chunk of 12-bit characters");
+		check(FramedAdapter::chunk_time_ms(1000000u) == 4u && FramedAdapter::chunk_time_ms(0u) == 0u,
+		      "4 ms at 1M; 0 for an invalid rate");
+		const auto frame = wide_frame(20u, 1u);
+		feed(frame, false);
+		f.loop();
+		check(equal(f.pop_adu(), frame) && sentinel.chunks == 1u, "after bind() the adapter receives, the sentinel no longer does");
+
+		// A failed bind() must not touch the driver's handlers: with a
+		// transmission in flight the endpoint refuses the transport binding.
+		auto tx2 = f.link.make_message(0x11u, 0x41u);
+		check(tx2.append_bytes(std::vector<uint8_t>{1u, 2u}) && f.link.send(tx2) == modbus::SendResult::Sent,
+		      "a transmission is in flight");
+		FramedAdapter second{f.uart, f.link};
+		check(!second.bind() && !second.bound(), "a second adapter's bind() is refused while TX is active");
+		feed(frame, false);
+		f.loop();
+		check(equal(f.pop_adu(), frame), "and the first adapter still receives: the refused bind() changed nothing");
+		check(!f.adapter.unbind(), "unbind() is refused too while TX is active");
+		fake::tx_done();
+		f.loop();
+		check(f.adapter.unbind() && !f.adapter.bound(), "unbind() succeeds once the frame is released");
+		feed(frame, false);
+		f.loop();
+		check(!f.link.has_packet(), "after unbind() nothing reaches the endpoint");
+		check(f.adapter.bind(), "and bind() works again");
+		check(fake::model().violations.empty(), "no ownership violation across the lifecycle");
+	}
+
 	group("FramedEndpointAt9600");
 	fake::reset();
-	Fixture<FramedLink> framed{9600u};
-	check(framed.start_observed(), "Uart<256,4>, framed 1024-byte endpoint and adapter bind");
-	check(Fixture<FramedLink>::Adapter::chunk_time_ms(9600u) == 294u &&
-	      framed.adapter.full_chunk_ms() == 294u,
-	      "one 256-byte chunk at 9600 baud is 294 ms of 11-bit characters, rounded up");
-	check(Fixture<FramedLink>::Adapter::chunk_time_ms(1000000u) == 3u &&
-	      Fixture<FramedLink>::Adapter::chunk_time_ms(0u) == 0u,
-	      "3 ms at 1M; 0 for an invalid baud");
+	Fixture<FramedLink> framed;
+	check(framed.start_observed(9600u), "Uart<256,4>, framed 1024-byte endpoint and adapter bind");
 	{
-		// A 700-byte ADU: two full chunks and a partial one, each about 290 ms
+		// A 700-byte ADU: two full chunks and a partial one, each about 310 ms
 		// apart — the transfer time of a chunk at this baud. The frame must
 		// stay in flight across the silences that are really the line still
 		// busy filling the next chunk.
@@ -248,21 +298,21 @@ int main()
 		feed(bytes.first(256u), true);
 		framed.loop();
 		check(framed.link.assembling() && framed.adapter.deadline_armed() &&
-		      framed.adapter.deadline_in_ms(fake::model().tick) == 294u + 5u,
+		      framed.adapter.deadline_in_ms(fake::model().tick) == 320u + 5u,
 		      "after a full chunk the deadline is one chunk time plus the guard");
-		fake::advance_tick(290u);
+		fake::advance_tick(310u);
 		framed.loop();
 		check(framed.link.assembling() && framed.link.framing_stats().stale_frames == 0u,
-		      "290 ms of software silence after a full chunk is the line at work, not a dead frame");
+		      "310 ms of software silence after a full chunk is the line at work, not a dead frame");
 		feed(bytes.subspan(256u, 256u), true);
 		framed.loop();
-		fake::advance_tick(290u);
+		fake::advance_tick(310u);
 		framed.loop();
 		feed(bytes.subspan(512u), false);
 		framed.loop();
 		check(equal(framed.pop_adu(), adu), "the 700-byte frame arrives whole across three chunks");
 		check(!framed.adapter.deadline_armed() &&
-		      framed.adapter.deadline_in_ms(fake::model().tick) == Fixture<FramedLink>::Adapter::no_deadline,
+		      framed.adapter.deadline_in_ms(fake::model().tick) == FramedAdapter::no_deadline,
 		      "a completed frame disarms the deadline");
 		check(framed.link.framing_stats().stale_frames == 0u, "nothing was expired");
 	}
@@ -272,14 +322,14 @@ int main()
 		const auto adu = wide_frame(694u, 2u);
 		feed(std::span<const uint8_t>{adu}.first(256u), true);
 		framed.loop();
-		fake::advance_tick(298u);
+		fake::advance_tick(324u);
 		framed.loop();
-		check(framed.link.assembling(), "298 ms: still within one chunk time plus the guard");
+		check(framed.link.assembling(), "324 ms: still within one chunk time plus the guard");
 		fake::advance_tick(1u);
 		framed.loop();
 		check(!framed.link.assembling() && framed.link.framing_stats().stale_frames == 1u &&
 		      framed.link.storage().rx_available() == 4u,
-		      "299 ms: the frame is expired and its block returned");
+		      "325 ms: the frame is expired and its block returned");
 	}
 	{
 		// An orphan half ended by IDLE: the line is silent, five milliseconds
@@ -296,15 +346,42 @@ int main()
 		framed.loop();
 		check(!framed.link.assembling() && framed.link.framing_stats().stale_frames == 2u,
 		      "5 ms: expired");
-		// The next frame is unaffected by the orphan.
 		const auto next = wide_frame(50u, 4u);
 		feed(next, false);
 		framed.loop();
 		check(equal(framed.pop_adu(), next), "the frame after an orphan is delivered");
 	}
 	{
-		// A bridge-like split: a partial chunk resumed 1 ms later.
+		// A continuation that is already queued in the driver when the deadline
+		// falls due must be delivered, not outrun: proceed() drains the driver
+		// before it judges the frame.
 		const auto adu = wide_frame(300u, 5u);
+		const std::span<const uint8_t> bytes{adu};
+		feed(bytes.first(150u), false);
+		framed.loop();
+		fake::advance_tick(5u);
+		feed(bytes.subspan(150u), false);   // arrives before the loop runs at t+5
+		framed.loop();
+		check(equal(framed.pop_adu(), adu) && framed.link.framing_stats().stale_frames == 2u,
+		      "a continuation queued at the deadline completes the frame instead of expiring it");
+		// The same with the instrumented composition of the steps.
+		feed(bytes.first(150u), false);
+		framed.adapter.prepare(fake::model().tick);
+		framed.uart.proceed(fake::model().tick);
+		framed.adapter.finish(fake::model().tick);
+		framed.link.poll(fake::model().tick);
+		fake::advance_tick(5u);
+		feed(bytes.subspan(150u), false);
+		framed.adapter.prepare(fake::model().tick);
+		framed.uart.proceed(fake::model().tick);
+		framed.adapter.finish(fake::model().tick);
+		framed.link.poll(fake::model().tick);
+		check(equal(framed.pop_adu(), adu) && framed.link.framing_stats().stale_frames == 2u,
+		      "prepare -> uart.proceed -> finish -> poll keeps that order");
+	}
+	{
+		// A bridge-like split: a partial chunk resumed 1 ms later.
+		const auto adu = wide_frame(300u, 6u);
 		const std::span<const uint8_t> bytes{adu};
 		feed(bytes.first(150u), false);
 		framed.loop();
@@ -317,14 +394,14 @@ int main()
 	{
 		// A UART loss mid-frame: the ordered gap reaches notify_gap() and
 		// disarms the deadline; the next complete frame is accepted.
-		const auto adu = wide_frame(300u, 6u);
+		const auto adu = wide_frame(300u, 7u);
 		fake::rx_bytes(adu.data(), 100u);
 		fake::rx_error(HAL_UART_ERROR_ORE);
 		framed.loop();
 		check(!framed.adapter.deadline_armed() && !framed.link.assembling() &&
 		      framed.link.stats().rx.stream_gaps == 1u && framed.link.storage().rx_available() == 4u,
 		      "a gap during a frame releases it through the adapter");
-		const auto next = wide_frame(60u, 7u);
+		const auto next = wide_frame(60u, 8u);
 		feed(next, false);
 		framed.loop();
 		check(equal(framed.pop_adu(), next), "the frame after the gap is delivered");
@@ -332,8 +409,8 @@ int main()
 	{
 		// Two frames glued in one full chunk plus a tail: the first is
 		// delivered from the chunk, the second completes from the next one.
-		const auto first = wide_frame(100u, 8u);   // 106 bytes
-		const auto second = wide_frame(300u, 9u);  // 306 bytes
+		const auto first = wide_frame(100u, 9u);   // 106 bytes
+		const auto second = wide_frame(300u, 10u); // 306 bytes
 		std::vector<uint8_t> glued(first);
 		glued.insert(glued.end(), second.begin(), second.end());
 		const std::span<const uint8_t> bytes{glued};
@@ -341,13 +418,54 @@ int main()
 		framed.loop();
 		check(equal(framed.pop_adu(), first) && framed.link.assembling(),
 		      "the first glued frame is delivered while the second waits for its chunk");
-		fake::advance_tick(250u);
+		fake::advance_tick(300u);
 		framed.loop();
 		feed(bytes.subspan(256u), false);
 		framed.loop();
 		check(equal(framed.pop_adu(), second), "the second glued frame completes from the partial chunk");
 		check(framed.link.framing_stats().stale_frames == 2u && framed.link.storage().rx_available() == 4u,
 		      "no expiry, no leak");
+	}
+	{
+		// The millisecond tick wraps: deadlines are differences, never
+		// comparisons of absolute values.
+		fake::model().tick = 0xFFFFFFFEu;
+		const auto adu = wide_frame(300u, 11u);
+		feed(std::span<const uint8_t>{adu}.first(100u), false);
+		framed.loop();                                   // deadline at 3, past the wrap
+		check(framed.adapter.deadline_in_ms(0xFFFFFFFEu) == 5u, "5 ms left at 0xFFFFFFFE");
+		fake::model().tick = 0xFFFFFFFFu;
+		framed.loop();
+		check(framed.link.assembling(), "1 ms before the wrap: alive");
+		fake::model().tick = 2u;
+		framed.loop();
+		check(framed.link.assembling() && framed.adapter.deadline_in_ms(2u) == 1u, "1 ms after the wrap: alive, 1 ms left");
+		fake::model().tick = 3u;
+		framed.loop();
+		check(!framed.link.assembling() && framed.link.framing_stats().stale_frames == 3u,
+		      "5 ms across the wrap: expired");
+		fake::model().tick = 100000u;
+	}
+	{
+		// The line rate changes at runtime through the driver: the adapter
+		// follows the handle on the next proceed(), with no second call.
+		const auto adu = wide_frame(694u, 12u);
+		check(framed.uart.setBaudRate(1000000u) && framed.huart.Init.BaudRate == 1000000u,
+		      "the driver reconfigures to 1M");
+		framed.loop();                                   // the rate change is a gap; proceed() follows the new rate
+		check(framed.adapter.baud() == 1000000u && framed.adapter.full_chunk_ms() == 4u,
+		      "the adapter now times chunks at 1M: 4 ms");
+		feed(std::span<const uint8_t>{adu}.first(256u), true);
+		framed.loop();
+		check(framed.adapter.deadline_in_ms(fake::model().tick) == 4u + 5u,
+		      "a full chunk at 1M gets a 9 ms deadline, not the 325 ms of 9600");
+		fake::advance_tick(9u);
+		framed.loop();
+		check(!framed.link.assembling() && framed.link.framing_stats().stale_frames == 4u,
+		      "and is expired accordingly when nothing follows");
+		check(framed.uart.setBaudRate(9600u), "back to 9600");
+		framed.loop();
+		check(framed.adapter.full_chunk_ms() == 320u, "followed again");
 	}
 	{
 		// Transmit through the adapter's binding on the framed endpoint: the
@@ -366,12 +484,27 @@ int main()
 	}
 	check(fake::model().violations.empty(), "fake HAL observed no ownership violation on the framed link");
 
-	group("AdapterRefusesAnInvalidBaud");
+	group("DestructorDetaches");
 	{
 		fake::reset();
-		Fixture<FramedLink> broken{0u};
-		broken.configure();
-		check(!broken.adapter.bind(), "bind() refuses a baud of 0: no deadline can be computed");
+		Fixture<FramedLink> f;
+		check(f.start(115200u), "bound");
+		{
+			FramedAdapter temporary{f.uart, f.link};
+			check(temporary.bind() && temporary.bound(),
+			      "a second adapter binds over the first while no transmission is active");
+			// `temporary` now owns the driver's handlers and dies here: it must
+			// detach them on the way out rather than leave them pointing at a
+			// dead object.
+		}
+		const auto frame = wide_frame(20u, 13u);
+		feed(frame, false);
+		f.loop();
+		check(!f.link.has_packet(), "after the bound adapter died nothing is routed into its dead this-pointer");
+		check(f.adapter.bind(), "the surviving adapter binds again");
+		feed(frame, false);
+		f.loop();
+		check(equal(f.pop_adu(), frame), "and receives");
 	}
 
 	return finish();

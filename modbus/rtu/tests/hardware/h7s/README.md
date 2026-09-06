@@ -416,9 +416,12 @@ lives in `modbus::rtu::UartAdapter`, which knows the driver's chunk size and
 whether a chunk ended by IDLE or by transfer-complete, and the endpoint
 exposes only `expire_incomplete()`. The harness runs through the adapter
 (`bind()` for the gap and transport binding, the adapter's `on_rx()` under
-the `rtu_receive` timing scope, `service()` before the driver's `proceed()`),
-both endpoints rerun at 1M
-([record](results_framing_adapter_2026-09-06.jsonl), `verify_framing.py`):
+the `rtu_receive` timing scope, `prepare()` before and `finish()` after the
+driver's `proceed()`), both endpoints rerun at 1M
+([record](results_framing_adapter_2026-09-06.jsonl), then again after the
+lifecycle review — line rate read from the handle, transactional `bind()`,
+12-bit characters, deadline judged after the driver has delivered —
+[record](results_framing_lifecycle_2026-09-06.jsonl); `verify_framing.py`):
 
 ### RTU frame boundaries on the H7S ST-Link bridge: default burst framing versus the framing policy
 

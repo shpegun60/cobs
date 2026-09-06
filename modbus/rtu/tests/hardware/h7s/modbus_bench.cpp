@@ -685,7 +685,7 @@ void apply_pending_action(const uint32_t now) noexcept
 // the adapter's on_rx() (consume()/receive_adu() plus the deadline
 // arithmetic) — that is the rtu_receive counter.
 using Adapter = modbus::rtu::UartAdapter<Serial, Link>;
-Adapter s_adapter{s_uart, s_link, MODBUS_HW_BAUD};
+Adapter s_adapter{s_uart, s_link}; // the line rate is read from huart3 at bind()
 #if MODBUS_HW_WAKE
 volatile uint32_t s_wakes = 0u;
 #endif
@@ -720,7 +720,8 @@ extern "C" void bench_init(void)
 #if MODBUS_HW_WAKE
 	s_uart.setWakeHandler([]() noexcept { s_wakes = s_wakes + 1u; }); // volatile read-modify-write; ++ on a volatile is deprecated in C++20
 #endif
-	if (!s_adapter.bind() || !s_uart.init(&huart3)) {
+	// init() first: bind() reads the line rate from the driver's bound handle.
+	if (!s_uart.init(&huart3) || !s_adapter.bind()) {
 		Error_Handler();
 	}
 	// After bind(): the measuring wrapper replaces the adapter's direct RX
@@ -733,11 +734,14 @@ extern "C" void bench_init(void)
 
 extern "C" void bench_loop(void)
 {
-	// The adapter's proceed() is these three calls; the harness composes them
-	// itself to keep its DWT scopes around the driver and the release.
+	// The adapter's proceed() is these four calls in this order; the harness
+	// composes them itself to keep its DWT scopes around the driver and the
+	// release. finish() after the driver: a continuation already queued must
+	// be delivered before its frame can be judged stale.
 	const uint32_t now = HAL_GetTick();
-	s_adapter.service(now);
+	s_adapter.prepare(now);
 	s_uart.proceed(now);
+	s_adapter.finish(now);
 	poll_link(now);
 	apply_pending_action(now);
 
