@@ -4,7 +4,7 @@
  */
 
 /*
- * uart/FreeRtosWake.h on the real driver and the recording fakes of the HAL
+ * adapters/freertos/FreeRtosWake.h on the real driver and the recording fakes of the HAL
  * and of FreeRTOS: a wake object is built without a task and refuses a null
  * handle, every ISR event with work becomes exactly one task notification,
  * several before the task runs coalesce into one take, the yield request
@@ -13,7 +13,7 @@
  */
 #define UART_ENGINE_IMPLEMENT
 #include "uart_test_fixture.h"
-#include "FreeRtosWake.h"
+#include "adapters/freertos/FreeRtosWake.h"
 
 #include <cstdio>
 #include <string>

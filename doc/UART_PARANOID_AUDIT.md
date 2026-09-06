@@ -137,7 +137,7 @@ is required for safe M7 invalidation.
 | `GapHandler` | inside `proceed()` | ordered between bytes before and after physical loss |
 | `ErrorHandler` | HAL error ISR | bounded, non-blocking, non-throwing |
 | `TxHandler` | normally completion/error ISR; watchdog terminal recovery can call it from `proceed()` | must be valid in both contexts and produce exactly one ownership event |
-| `WakeHandler` | RX event, TX completion and error ISRs, after the driver's own state is final | ISR-safe, bounded, must not call the driver; never raised for the ignored half-transfer event; an RTOS integration turns it into a task notification (`src/uart/FreeRtosWake.h`), whose `FromISR` call requires the USART/DMA interrupts not to be logically more urgent than the kernel's syscall ceiling — on STM32 the HAL/CMSIS priority number `>= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY`, never a comparison against the shifted `configMAX_SYSCALL_INTERRUPT_PRIORITY` |
+| `WakeHandler` | RX event, TX completion and error ISRs, after the driver's own state is final | ISR-safe, bounded, must not call the driver; never raised for the ignored half-transfer event; an RTOS integration turns it into a task notification (`src/adapters/freertos/FreeRtosWake.h`), whose `FromISR` call requires the USART/DMA interrupts not to be logically more urgent than the kernel's syscall ceiling — on STM32 the HAL/CMSIS priority number `>= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY`, never a comparison against the shifted `configMAX_SYSCALL_INTERRUPT_PRIORITY` |
 | registry forwarding | HAL ISR | fixed-table lookup followed by non-virtual operation dispatch |
 
 Handlers must not throw. A handler must not replace the same delegate while
@@ -431,14 +431,14 @@ Host: the strict, old-HAL, registered-callback, external-forwarding and
 optimized variants each run the new `WakeHandler` group (one wake per RX
 chunk, TC chunk, TX completion and RX error; none for a half-transfer; none
 from `proceed()`; the handler is optional and replaceable while running), and
-`src/uart/FreeRtosWake.h` is compiled against a recording FreeRTOS fake
-(`src/uart/tests/host/fake_freertos`): one `vTaskNotifyGiveFromISR()` per event,
+`src/adapters/freertos/FreeRtosWake.h` is compiled against a recording FreeRTOS fake
+(`src/adapters/tests/fake_freertos`): one `vTaskNotifyGiveFromISR()` per event,
 coalescing into one `ulTaskNotifyTake()`, the yield request following what
 the kernel reports, the fallback timeout passed through.
 
 ### 9.3 rx_progress(), 2026-09-06: the second and last addition
 
-The transport adapter's review (`src/modbus/rtu/UartAdapter.h`) found a case its
+The transport adapter's review (`src/adapters/rtu/UartAdapter.h`) found a case its
 stale-frame rule alone gets wrong: a bridge splits a frame, the first part
 ends with IDLE, the bridge resumes a millisecond later and the remainder is
 physically arriving into the next DMA chunk, but no IDLE or TC has fired

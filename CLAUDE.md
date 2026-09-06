@@ -27,7 +27,11 @@ The stable documentation is split by boundary:
 - `doc/PROTOCOL_COMPARISON.md` and `doc/COBS_PERFORMANCE.md` — measured H7S evidence.
 
 Repository layout: `src/` holds the stack itself (`wire/`, `crc/`, `cobs/`,
-`modbus/`, `uart/`); `libs/` at the root holds the third-party dependencies
+`modbus/`, `uart/`) and `src/adapters/`, the glue that knows both a transport
+and an endpoint while neither knows it (`rtu/UartAdapter.h`,
+`freertos/FreeRtosWake.h`, later `qt/`); `uart/` is only the driver, its
+tests and the probe header, and `modbus/` names no transport; `libs/` at the
+root holds the third-party dependencies
 (`spsc`, `delegate`, the vendored STM32 HAL/CMSIS packages) and is never part
 of `src/`, because a dependency is not the stack's source; `app/` is the Qt
 host application (`main.cpp`, `mainwindow.*`); `doc/` documents the whole
@@ -50,7 +54,7 @@ optional third parameter, `Framer = framing::None`: a
 `framing::Standard<Direction>` policy (or a user type derived from it) adds
 `consume()` for arbitrary stream chunks and a builder-owned length prefix
 for private functions; with the default nothing changes (`src/modbus/ARCHITECTURE.md` §8).
-`src/modbus/rtu/UartAdapter.h` is the integration object between `src/uart/Uart.h` and
+`src/adapters/rtu/UartAdapter.h` is the integration object between `src/uart/Uart.h` and
 either RTU endpoint (RX/gap/transport binding, `proceed(now_ms)`
 orchestration, and the stale-frame rule for framed endpoints, which needs the
 driver's chunk geometry and the baud); it does not include the driver, so it
@@ -127,14 +131,14 @@ acceptance (`doc/UART_PARANOID_AUDIT.md` §9.2), and the read-only
 thread-context `rx_progress()` accessor, whose zero cost is proved by
 byte-identical port-matrix objects (§9.3). The public contract is closed:
 anything further belongs in an adapter or the application, not in
-`src/uart/Uart.h`. `src/uart/FreeRtosWake.h` is the FreeRTOS glue on top of the
+`src/uart/Uart.h`. `src/adapters/freertos/FreeRtosWake.h` is the FreeRTOS glue on top of the
 wake hook and is compiled in the host suite against the recording fake in
-`src/uart/tests/host/fake_freertos`; the port matrix pins the ISR thunk sizes, so
+`src/adapters/tests/fake_freertos`; the port matrix pins the ISR thunk sizes, so
 a change there must come with a measured reason.
 
-### Shared, COBS, Modbus and CRC host tests
+### Shared, COBS, Modbus, CRC and adapter host tests
 
-None of these layers owns a HAL, so every suite is an ordinary host program — no fake anything. Run all four after a change to any of them; the protocol suites instantiate the shared storage and CRC libraries, and the parity suite instantiates both protocols:
+None of the four library layers owns a HAL, so their suites are ordinary host programs — no fake anything; the adapters suite is the exception, it runs the real driver on the host fake HAL and the FreeRTOS glue on a recording FreeRTOS fake. Run all five after a change to any of them; the protocol suites instantiate the shared storage and CRC libraries, and the parity suite instantiates both protocols:
 
 ```bash
 export PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH"
@@ -142,9 +146,10 @@ sh src/wire/tests/run.sh
 sh src/cobs/tests/run.sh
 sh src/modbus/rtu/tests/run.sh
 sh src/crc/tests/run.sh
+sh src/adapters/tests/run.sh
 ```
 
-Each runner first compiles its public headers independently and (for the protocols) verifies intentional compile-fail translation units with boundary-specific diagnostic markers (nine for COBS, twelve for RTU): the `wire::Storage` contract, the CRC-in-Format limits, coordinator-only message/packet operations, serializer constraints, the physical absence of old API names, and for RTU the absence of `consume()` without a framing policy, the rejection of a half-written policy and of a non-RTU endpoint handed to `UartAdapter`.
+Each runner first compiles its public headers independently and (for the protocols) verifies intentional compile-fail translation units with boundary-specific diagnostic markers (nine for COBS, eleven for RTU, one for the adapters): the `wire::Storage` contract, the CRC-in-Format limits, coordinator-only message/packet operations, serializer constraints, the physical absence of old API names, and for RTU the absence of `consume()` without a framing policy, the rejection of a half-written policy and of a non-RTU endpoint handed to `UartAdapter`.
 
 `src/wire/tests/run.sh` (the shared layer):
 
@@ -163,7 +168,9 @@ Each runner first compiles its public headers independently and (for the protoco
 - `test_crc` — the CRC-bearing v2 frame: every built-in policy, sum and stateful policies, corruption of every payload/trailer bit, empty/maximum frames, the H1/H2 threshold, the explicit `Format<crc::NoCrc, 255>` legacy vectors, and the v1/v2 mixing hazard.
 - `test_layout` — exact ABI snapshots; `check_arm_layout.sh` compiles the same file for Cortex-M.
 
-`src/modbus/rtu/tests/run.sh` mirrors this for RTU (`test_crc`, `test_crc_geometry`, `test_packet`, `test_message`, `test_endpoint`, `test_fuzz`, `test_framing` — the `framing::Layout` rules and the standard function table against the specification's worked examples in both directions —, `test_stream` — the framed endpoint: every cut of a frame, several frames per chunk, every error class and its recovery, the builder-owned length prefix —, `test_layout`, `test_uart_integration` — the real UART driver on the host fake HAL, integrated through `UartAdapter` with both endpoint kinds, including the framed stale-frame rule at 9600 baud with multi-chunk frames, the DMA-progress check that keeps a bridge-split frame alive at 115200 when no IDLE/TC event has fired yet, and the adapter's bind/unbind lifecycle); `src/crc/tests/run.sh` checks the four default models and seven further catalogue models against their check values plus random inputs against bit-level oracles.
+`src/modbus/rtu/tests/run.sh` mirrors this for RTU (`test_crc`, `test_crc_geometry`, `test_packet`, `test_message`, `test_endpoint`, `test_fuzz`, `test_framing` — the `framing::Layout` rules and the standard function table against the specification's worked examples in both directions —, `test_stream` — the framed endpoint: every cut of a frame, several frames per chunk, every error class and its recovery, the builder-owned length prefix —, `test_layout`); `src/crc/tests/run.sh` checks the four default models and seven further catalogue models against their check values plus random inputs against bit-level oracles.
+
+`src/adapters/tests/run.sh` covers the glue: `test_uart_integration` — the real UART driver on the host fake HAL, integrated through `UartAdapter` with both endpoint kinds, including the framed stale-frame rule at 9600 baud with multi-chunk frames, the DMA-progress check that keeps a bridge-split frame alive at 115200 when no IDLE/TC event has fired yet, and the adapter's bind/unbind lifecycle; `test_freertos_wake` — `FreeRtosWake` on the recording FreeRTOS fake (one notification per ISR event with work, coalescing, the yield request, a refused null task handle); both adapter headers compiled on their own; one compile-fail contract (a non-RTU endpoint handed to `UartAdapter`).
 
 The scripts build with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` and add `-fsanitize=address,undefined` when the toolchain provides the runtime. MinGW does not, so for a sanitized run use WSL (the exact command is in each script header); every runner prints whether its build was sanitized. `WIRE_POOL_CHECKS` (on by default in EVERY build, `NDEBUG` included) compiles in the pool's double-free and foreign-pointer detection; a rejected free is counted and ignored rather than corrupting the free list. Set it to 0 explicitly, identically in every translation unit, to opt out.
 

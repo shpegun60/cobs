@@ -52,7 +52,7 @@ struct FramingStats final {
 	// send(): message data disagrees with its function's layout.
 	uint32_t tx_layout_rejected = 0;
 	// expire_incomplete(): a frame in flight was dropped on the transport
-	// adapter's stale-frame rule (UartAdapter.h) and its block returned.
+	// adapter's stale-frame rule (adapters/rtu/UartAdapter.h) and its block returned.
 	uint32_t stale_frames = 0;
 };
 

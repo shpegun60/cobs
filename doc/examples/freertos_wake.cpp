@@ -3,8 +3,8 @@
 #define UART_ENGINE_IMPLEMENT
 #include "Uart.h"
 #include "modbus/rtu/Rtu.h"
-#include "modbus/rtu/UartAdapter.h"
-#include "FreeRtosWake.h"
+#include "adapters/rtu/UartAdapter.h"
+#include "adapters/freertos/FreeRtosWake.h"
 #include "platform_fake.h"
 #include <algorithm>
 #include "Test.h"

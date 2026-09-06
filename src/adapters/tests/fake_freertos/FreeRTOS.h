@@ -4,7 +4,7 @@
  */
 
 /*
- * Recording stand-in for the two FreeRTOS headers uart/FreeRtosWake.h
+ * Recording stand-in for the two FreeRTOS headers adapters/freertos/FreeRtosWake.h
  * includes. It models only what that adapter uses — the task-notification
  * FromISR call, the yield request, the blocking take and the tick
  * conversion — and records every call so a host test can assert on them.

@@ -69,7 +69,7 @@
  * transport's chunk geometry and on whether the line is still busy, facts
  * only the transport adapter has. The endpoint therefore exposes
  * assembling() and expire_incomplete() (framing_stats().stale_frames), and
- * UartAdapter.h holds the rule for the STM32 UART driver. consume() is
+ * adapters/rtu/UartAdapter.h holds the rule for the STM32 UART driver. consume() is
  * untouched by any of this; the hot path records nothing.
  */
 

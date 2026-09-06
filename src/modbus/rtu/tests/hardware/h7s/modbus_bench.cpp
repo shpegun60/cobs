@@ -31,7 +31,7 @@
 #include "Uart.h"
 
 #include "modbus/rtu/Rtu.h"
-#include "modbus/rtu/UartAdapter.h"
+#include "adapters/rtu/UartAdapter.h"
 #include "uart_bench.h"
 #include "usart.h"
 

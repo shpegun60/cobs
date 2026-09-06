@@ -21,7 +21,7 @@
 #include "Uart.h"
 #include "fake_hal.h"
 #include "modbus/rtu/Rtu.h"
-#include "modbus/rtu/UartAdapter.h"
+#include "adapters/rtu/UartAdapter.h"
 #include "Test.h"
 
 #include <cstddef>

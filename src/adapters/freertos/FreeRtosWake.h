@@ -73,7 +73,7 @@
  *
  * This header is not part of the driver; the driver knows no scheduler. It is
  * compiled in the host suite against a recording fake of the two FreeRTOS
- * headers it includes (uart/tests/host/fake_freertos), never against a real
+ * headers it includes (src/adapters/tests/fake_freertos), never against a real
  * kernel here.
  */
 

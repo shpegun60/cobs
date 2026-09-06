@@ -2,7 +2,7 @@
 #define UART_ENGINE_IMPLEMENT          // in exactly one translation unit
 #include "Uart.h"
 #include "modbus/rtu/Rtu.h"
-#include "modbus/rtu/UartAdapter.h"
+#include "adapters/rtu/UartAdapter.h"
 #include "platform_fake.h"
 #include "Test.h"
 #include <cstdio>

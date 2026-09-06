@@ -5,8 +5,9 @@
 
 /*
  * modbus::rtu::UartAdapter — the whole integration between the STM32 UART
- * driver (uart/Uart.h) and an RTU endpoint, in one object the application
- * services with one call.
+ * driver (src/uart/Uart.h) and an RTU endpoint, in one object the application
+ * services with one call. It lives in src/adapters because it knows both
+ * sides; neither the driver nor the protocol knows it exists.
  *
  *     using Serial = Uart<256, 4>;
  *     using Link   = modbus::rtu::Endpoint<wire::Pool<8, 2>, modbus::rtu::Format<>,
@@ -95,7 +96,7 @@
  *
  * A task that sleeps between calls must not sleep past the deadline:
  * deadline_in_ms(now) bounds the wait (no_deadline when nothing is in
- * flight, 0 when due), see uart/FreeRtosWake.h.
+ * flight, 0 when due), see adapters/freertos/FreeRtosWake.h.
  *
  * The adapter does not include Uart.h: it needs only the driver's type
  * shape and the members every driver instantiation has (setRxHandler,

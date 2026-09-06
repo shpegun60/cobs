@@ -8,7 +8,7 @@
  * handing it any other endpoint type must fail at the adapter's own boundary,
  * not deep inside its template body.
  */
-#include "modbus/rtu/UartAdapter.h"
+#include "adapters/rtu/UartAdapter.h"
 
 #include <cstddef>
 #include <cstdint>

@@ -355,7 +355,7 @@ public:
 	// Raised from ISR context when proceed() has work: a chunk or a gap marker
 	// was queued, a transmission ended (well or badly), or an error left
 	// recovery for the thread. It carries no data and knows no scheduler: an
-	// RTOS integration turns it into a task notification (uart/FreeRtosWake.h),
+	// RTOS integration turns it into a task notification (adapters/freertos/FreeRtosWake.h),
 	// a bare-metal loop into a flag or a WFE exit, and a loop that runs
 	// proceed() unconditionally leaves it unset. Half-transfer events, which
 	// this driver ignores, never raise it. Unset, it costs one null test per
@@ -643,7 +643,7 @@ public:
 	// The target runs in ISR context: it must be ISR-safe, bounded, and must
 	// not call the driver. With FreeRTOS that is vTaskNotifyGiveFromISR(), which
 	// also requires the USART and DMA interrupt priorities to stay within
-	// configMAX_SYSCALL_INTERRUPT_PRIORITY (see uart/FreeRtosWake.h).
+	// configMAX_SYSCALL_INTERRUPT_PRIORITY (see adapters/freertos/FreeRtosWake.h).
 	void setWakeHandler(WakeHandler h) noexcept
 	{
 		uart::detail::IrqGuard guard;
@@ -954,7 +954,7 @@ public:
 	// the pool ran dry (bytes are going to the drop buffer). Nothing on any
 	// ISR path pays for it; it exists so a transport adapter can tell "the
 	// line fell silent" from "the next chunk is still filling" without a
-	// timing policy of its own (modbus/rtu/UartAdapter.h). The driver knows
+	// timing policy of its own (adapters/rtu/UartAdapter.h). The driver knows
 	// nothing of what the caller concludes.
 	[[nodiscard]] uint16_t rx_progress() const noexcept
 	{

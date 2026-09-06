@@ -22,7 +22,7 @@ desktop or TCP transport, FreeRTOS on top — are enumerated in
 
 ```cpp
 #include "modbus/rtu/Rtu.h"
-#include "modbus/rtu/UartAdapter.h"
+#include "adapters/rtu/UartAdapter.h"
 #include "Uart.h"
 
 using Serial = Uart<256, 4>;
@@ -421,7 +421,7 @@ Server server;
 
 // The adapter feeds any cut of the stream to consume() — several ADUs per
 // chunk, a frame across chunks — and expires a frame whose sender died
-// mid-frame (UartAdapter.h explains the rule and why it needs the chunk
+// mid-frame (adapters/rtu/UartAdapter.h explains the rule and why it needs the chunk
 // geometry and the baud).
 modbus::rtu::UartAdapter adapter{serial, server};
 void loop_step() noexcept { adapter.proceed(HAL_GetTick()); }
@@ -522,7 +522,7 @@ PATH="/c/Qt/6.10.1/mingw_64/bin:/c/Qt/Tools/mingw1310_64/bin:$PATH" \
     sh src/modbus/rtu/tests/qmake_consumer/run.sh
 
 PATH="/c/Qt/Tools/mingw1310_64/bin:$PATH" \
-    sh src/modbus/rtu/tests/run_uart_integration.sh
+    sh src/adapters/tests/run.sh
 
 sh src/modbus/rtu/tests/check_arm_layout.sh
 sh src/crc/tests/check_arm_codegen.sh

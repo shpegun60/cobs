@@ -424,7 +424,8 @@ above this one.
 
 ### 8a. UartAdapter: the integration object
 
-`src/modbus/rtu/UartAdapter.h` is the whole glue between the STM32 driver
+`src/adapters/rtu/UartAdapter.h` — outside `src/modbus/`, because the endpoint must
+not know that a concrete STM32 driver exists — is the whole glue between the STM32 driver
 (`src/uart/Uart.h`) and an RTU endpoint, for either endpoint kind:
 
 ```cpp

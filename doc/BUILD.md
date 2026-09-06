@@ -207,7 +207,7 @@ The downstream qmake and fake-UART integrations are:
 ```bash
 export PATH="/c/Qt/6.10.1/mingw_64/bin:/c/Qt/Tools/mingw1310_64/bin:$PATH"
 sh src/modbus/rtu/tests/qmake_consumer/run.sh
-sh src/modbus/rtu/tests/run_uart_integration.sh
+sh src/adapters/tests/run.sh
 ```
 
 ## UART regression matrix

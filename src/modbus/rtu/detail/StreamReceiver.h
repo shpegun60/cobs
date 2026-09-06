@@ -27,7 +27,7 @@
  *
  * This receiver holds no clock. A frame that stopped arriving is dropped by
  * expire_incomplete(), and WHEN that is due is decided by the transport
- * adapter (../UartAdapter.h), which alone knows the driver's chunk geometry
+ * adapter (adapters/rtu/UartAdapter.h), which alone knows the driver's chunk geometry
  * and how each chunk ended. Nothing in consume() records time.
  */
 

@@ -71,15 +71,17 @@ Choosing a pattern:
 The adapter is the whole integration between the driver and an RTU endpoint:
 RX and gap handlers, the endpoint's transport binding, the order of the
 slow-path calls, and — for an endpoint with a framing policy — the rule that
-decides when a frame that stopped arriving is dead. It does not include the
-driver; it reads the chunk geometry from the `Uart<ChunkSize, ChunkCount>`
-type and the line rate from the driver's bound HAL handle.
+decides when a frame that stopped arriving is dead. It lives in
+`src/adapters/rtu/`, not in `src/modbus/`: it knows both the driver and the
+endpoint, and neither of them knows it. It does not include the driver; it
+reads the chunk geometry from the `Uart<ChunkSize, ChunkCount>` type and the
+line rate from the driver's bound HAL handle.
 
 ```cpp
 #define UART_ENGINE_IMPLEMENT          // in exactly one translation unit
 #include "Uart.h"
 #include "modbus/rtu/Rtu.h"
-#include "modbus/rtu/UartAdapter.h"
+#include "adapters/rtu/UartAdapter.h"
 
 namespace framing = modbus::rtu::framing;
 using Serial = Uart<256, 4>;
@@ -138,7 +140,7 @@ What the adapter does, so the application does not:
   `adapter.prepare(now); serial.proceed(now); adapter.finish(now); link.poll(now);`
   — the hardware harness does.
 
-Verified by `src/modbus/rtu/tests/test_uart_integration.cpp` (the real driver on
+Verified by `src/adapters/tests/test_uart_integration.cpp` (the real driver on
 the fake HAL through the adapter: lifecycle, baud changes, the stale rule at
 9600 and 115200, the DMA-progress case, tick wrap) and on the H7S by
 `src/modbus/rtu/tests/hardware/h7s/modbus_bench.cpp` with its records.
@@ -200,12 +202,12 @@ implementation is `src/cobs/tests/hardware/h7s/cobs_bench.cpp`.
 `proceed()` is a thread-context call and the RX handler runs inside it, so a
 sleeping task sees nothing until something wakes it. The driver's
 `WakeHandler` is raised from the RX event, TX completion and error ISRs
-after the driver's state is final; `src/uart/FreeRtosWake.h` turns it into a
+after the driver's state is final; `src/adapters/freertos/FreeRtosWake.h` turns it into a
 task notification. The driver knows no scheduler and the glue knows no
 protocol.
 
 ```cpp
-#include "FreeRtosWake.h"
+#include "adapters/freertos/FreeRtosWake.h"
 #include <algorithm>
 
 static uart::FreeRtosWake wake;                    // takes no task: safe at static-init time
@@ -250,7 +252,7 @@ passes. Several interrupts before the task runs coalesce into one wake. Cost
 with no handler installed: 4 cycles per interrupt (`UART_PARANOID_AUDIT.md`
 §9.2).
 
-Verified by `src/uart/tests/host/test_freertos_wake.cpp` on the recording
+Verified by `src/adapters/tests/test_freertos_wake.cpp` on the recording
 FreeRTOS fake and the `WakeHandler` group of `src/uart/tests/host/test_uart.cpp`.
 
 ## 5. RTU on STM32 without the adapter

@@ -424,7 +424,10 @@ lifecycle review — line rate read from the handle, transactional `bind()`,
 [record](results_framing_lifecycle_2026-09-06.jsonl), and a third time with
 the deadline asking the driver's `rx_progress()` whether DMA is already
 taking the remainder before it expires a frame —
-[record](results_framing_progress_2026-09-06.jsonl); `verify_framing.py`):
+[record](results_framing_progress_2026-09-06.jsonl), and once more after the
+repository migration, the adapter now living in `src/adapters/rtu/` and the
+harness including it from there —
+[record](results_framing_layout_2026-09-06.jsonl); `verify_framing.py`):
 
 ### RTU frame boundaries on the H7S ST-Link bridge: default burst framing versus the framing policy
 

@@ -18,7 +18,7 @@ OUT="$HERE/out"
 mkdir -p "$OUT"
 CXX="${CXX:-g++}"
 WARN="-Wall -Wextra -Wpedantic -Wshadow -Wconversion"
-INC="-I$SRC -I$SRC/cobs -I$SRC/uart -I$SRC/uart/tests/host -I$SRC/uart/tests/host/fake_freertos      -I$SRC/modbus/rtu/tests -I$HERE      -isystem $LIBS/spsc -isystem $LIBS/spsc/src -isystem $LIBS/delegate"
+INC="-I$SRC -I$SRC/cobs -I$SRC/uart -I$SRC/uart/tests/host -I$SRC/adapters/tests/fake_freertos      -I$SRC/modbus/rtu/tests -I$HERE      -isystem $LIBS/spsc -isystem $LIBS/spsc/src -isystem $LIBS/delegate"
 status=0
 run() {
 	name="$1"; shift

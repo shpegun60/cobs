@@ -16,6 +16,7 @@ src/uart/tests/host/out/
 src/cobs/tests/out/
 src/crc/tests/out/
 src/modbus/rtu/tests/out/
+src/adapters/tests/out/
 src/wire/tests/out/
 src/wire/tests/*.o
 

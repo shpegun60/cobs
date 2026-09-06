@@ -44,15 +44,6 @@ build_run registered-callbacks -O1 -g -DUSE_HAL_UART_REGISTER_CALLBACKS=1
 build_run external-callbacks -O1 -g -DUART_ENGINE_INTERNAL_CALLBACKS_ON=0
 build_run optimized -O3 -DNDEBUG
 
-# uart/FreeRtosWake.h against the recording FreeRTOS fake: the driver's wake
-# becomes exactly one task notification per ISR event with work.
-echo "=== freertos-wake ==="
-"$CXX" -std=gnu++20 $WARN -D_GLIBCXX_ASSERTIONS -O1 -g   -I"$HERE" -I"$HERE/fake_freertos" -I"$SRC/uart"   -isystem "$LIBS/spsc" -isystem "$LIBS/spsc/src"   -isystem "$LIBS/delegate"   "$HERE/fake_hal.cpp" "$HERE/test_freertos_wake.cpp" -o "$OUT/freertos-wake.exe"
-if ! "$OUT/freertos-wake.exe" >"$OUT/freertos-wake.log"; then
-  cat "$OUT/freertos-wake.log"
-  exit 1
-fi
-tail -n 1 "$OUT/freertos-wake.log"
 
 expect_config_failure() {
   name="$1"
