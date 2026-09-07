@@ -1,0 +1,39 @@
+{
+  "backup_sha256": "a5903024dba85fab5121150ca8ad13482f97384aa450aab67413881991fb9456",
+  "bauds": [
+    115200
+  ],
+  "completed": true,
+  "framers": [
+    1
+  ],
+  "images": [
+    {
+      "baud": 115200,
+      "binary_sha256": "f4d809b7bb4881d6a6d3a19a01861200715c0b138f72c88158272d3c16690f3d",
+      "elf_sha256": "35627872d1b8894801f54f336f1d7d71ccb820339f43a93a36e5dbe946e38d31",
+      "flash_attempts": 1,
+      "framer": 1,
+      "role": 1,
+      "tag": "server-bitwise-115200-framer1"
+    },
+    {
+      "baud": 115200,
+      "binary_sha256": "7e628f31cf988851b653fd8997fb56a6a4bba41a2532904eab31dd4bf8f84d9a",
+      "elf_sha256": "d8bcea3e6a59ad804364448ea613da259c2463b0242249e9dd2b6fc88b586ac8",
+      "flash_attempts": 1,
+      "framer": 1,
+      "role": 2,
+      "tag": "client-bitwise-115200-framer1"
+    }
+  ],
+  "policy": "bitwise",
+  "port": "COM6",
+  "restored_and_verified": true,
+  "results_sha256": "b00b812b972bf362f34fdc079ae785d7adc1f795575358a2ab6c31a430889c25",
+  "runner_sha256": "b6ca7fe968e816358fab734b57f562e2c90383d95496f5ecef6cbe724f00c4b2",
+  "schema": 1,
+  "serial": "002A001F3033510135393935",
+  "session": "C:\\Users\\admin\\Documents\\my_workspace\\Qt\\COBS\\stm32_cube_test\\h7s_cobs_test\\out\\qmodbus-20260907T191010Z",
+  "started": "20260907T191010Z"
+}

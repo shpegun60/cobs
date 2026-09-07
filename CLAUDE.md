@@ -22,10 +22,13 @@ QtSerialBus interop  HARDWARE VERIFIED (src/adapters/qt/tests/hardware/h7s/READM
 
 The 7 September live repeat is recorded in `doc/HARDWARE_REGRESSION_2026-09-07.md`:
 the full COBS/RTU fault matrix and framed high-baud trials passed. Two Qt-server
-timeouts are retained as failures alongside passing repeats; one is traced to
-Qt discarding host-delivered fragments, the first is not diagnosed. Do not
-turn the last passing control run into an unconditional Qt/VCP reliability
-claim or count host-only fault injection as on-board coverage.
+timeouts are retained as failures alongside passing repeats. The follow-up
+`doc/QT_USB_TIMEOUT_DIAGNOSIS.md` reproduces the step-0 failure mechanism by
+stalling host fragment processing, and verifies the Qt reference server's
+USB-aware 50-ms RX deadline. Production headers and MCU images are unchanged.
+The runner keeps a trace by default and returns the verifier's failure after
+restoring the board. Do not reinterpret the old untraced failure as proved,
+claim unbounded Qt/VCP reliability, or count host-only tests as board coverage.
 
 Two documented properties are not bugs: a length-table framer (ours framed,
 Qt's server alike) cannot answer an unknown function code with exception 01
@@ -193,9 +196,11 @@ sh src/adapters/qt/tests/run.sh
 ```
 
 It runs `adapters/qt/SerialAdapter.h` and the QModbus-shaped
-`adapters/qt/RtuClient.h` on a `QIODevice` stand-in for the port (82 checks,
+`adapters/qt/RtuClient.h` on a `QIODevice` stand-in for the port (164 checks,
 a real event loop, no COM port), the compile-fail contract, and builds
 `qmodbus_bench`, the PC side of the hardware comparison against QtSerialBus.
+An additional 22-check test exercises its in-memory journal and one-shot
+host-stall injection without opening a COM port.
 That comparison itself — the board as a reference server against Qt's client
 and ours, then the board as a client against Qt's server, one shared 55-step
 script and one reference model (`src/modbus/rtu/tests/reference_model.h`)

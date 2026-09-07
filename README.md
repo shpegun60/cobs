@@ -28,6 +28,9 @@ Fresh verification: [shared policies validation](doc/SHARED_POLICIES_VALIDATION.
 Latest [live fault regression, 7 September](doc/HARDWARE_REGRESSION_2026-09-07.md):
 237 passed COBS/RTU suite records, framed RTU through 10M, and Qt repeats
 with both observed timeouts retained alongside the passing final control.
+The [Qt/USB follow-up](doc/QT_USB_TIMEOUT_DIAGNOSIS.md) reproduces the fragment
+discard, verifies the reference server's USB-aware RX deadline, and makes
+hardware-runner failures propagate after firmware restoration.
 Matched live performance: [COBS NoCrc / CRC16 Bitwise / Table through 10M](doc/COBS_PERFORMANCE.md)
 (300 measurements; actual wire throughput alongside instrumented CPU work).
 Direct comparison: [COBS versus Modbus RTU](doc/PROTOCOL_COMPARISON.md)

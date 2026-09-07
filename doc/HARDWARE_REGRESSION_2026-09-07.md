@@ -3,6 +3,12 @@ SPDX-License-Identifier: MIT -->
 
 # Live hardware regression, 7 September 2026
 
+Follow-up: [Qt/USB timeout diagnosis and correction](QT_USB_TIMEOUT_DIAGNOSIS.md)
+reproduces the first-request timeout mechanism with a controlled host stall,
+configures the Qt reference server's RX deadline for USB delivery, and records
+the passing A/B/control runs. The original results and caveats below are
+historical evidence and remain unchanged.
+
 The COBS/RTU fault matrix passed: **33 images, 93 COBS and 144 RTU suite
 records**. The framed RTU endpoint also passed all 240 single/split/glued/
 orphan trials through 10M, plus its smoke and vector suites. The final full

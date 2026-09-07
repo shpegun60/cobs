@@ -206,6 +206,47 @@ int main(int argc, char** argv)
 		      "the response is one packet with the six register bytes behind the count");
 	}
 
+	group("RequestFragmentReplay");
+	{
+		// The two requests in the H7S Qt-server timeout observations. Replay
+		// every cut through OUR request-side adapter with a host-delivery gap,
+		// independently of QtSerialBus's fragment timer and any COM bridge.
+		using Server = modbus::rtu::Endpoint<wire::Heap, modbus::rtu::Format<>,
+			framing::Standard<framing::Direction::Request>>;
+		FakePort server_port;
+		Server server;
+		adapters::qt::SerialAdapter<Server, FakePort> server_adapter{server_port, server};
+		check(server_adapter.bind(), "the request-side serial adapter binds");
+		for (const uint8_t function : {uint8_t{0x03u}, uint8_t{0x04u}}) {
+			const auto adu = make_adu(0x0au, function, std::vector<uint8_t>{0u, 0u, 0u, 10u});
+			const std::span<const uint8_t> bytes{adu};
+			for (std::size_t cut = 1u; cut < bytes.size(); ++cut) {
+				server_port.feed(bytes.first(cut));
+				check(!server.has_packet(), "a request prefix is not published");
+				pump(10);
+				server_port.feed(bytes.subspan(cut));
+				auto packet = server.pop_packet();
+				check(packet && equal(packet.adu(), bytes) && !server.has_packet() &&
+					!server_adapter.deadline_armed() && server.framing_stats().stale_frames == 0u,
+					"10 ms host gap: exactly one intact CRC-checked request at every cut");
+			}
+		}
+		auto corrupt = make_adu(0x0au, 0x03u, std::vector<uint8_t>{0u, 0u, 0u, 10u});
+		corrupt.back() ^= 0x01u;
+		server_port.feed(std::span<const uint8_t>{corrupt}.first(5u));
+		pump(10);
+		server_port.feed(std::span<const uint8_t>{corrupt}.subspan(5u));
+		check(!server.has_packet() && server.stats().rx.crc_errors == 1u,
+			"tolerating delivery gaps does not accept a corrupt CRC");
+		const auto intact = make_adu(0x0au, 0x03u, std::vector<uint8_t>{0u, 0u, 0u, 10u});
+		server_port.feed(std::span<const uint8_t>{intact}.first(5u));
+		pump(60);
+		check(!server.assembling() && server.framing_stats().stale_frames == 1u,
+			"a request that really stops expires at the existing 50 ms boundary");
+		server_port.feed(intact);
+		check(static_cast<bool>(server.pop_packet()), "a whole request after the orphan is delivered");
+	}
+
 	group("StaleFrame");
 	port.feed(response_bytes.first(4u));
 	check(client.assembling() && adapter.deadline_armed(), "half a response is in flight");

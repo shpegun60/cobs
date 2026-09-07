@@ -88,7 +88,7 @@ def source_identities() -> dict:
     return identities
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", required=True)
     parser.add_argument("--serial", required=True, help="ST-LINK serial number")
@@ -102,7 +102,8 @@ def main() -> None:
     parser.add_argument("--client-delay-ms", type=int, default=2500, help="the board's head start given to Qt's server")
     parser.add_argument("--server-inter-frame-us", type=int, default=50000,
                         help="Qt server RX fragment deadline for USB/OS delivery; -1 keeps Qt's native default")
-    parser.add_argument("--server-trace", action="store_true", help="capture Qt server decisions in memory")
+    parser.add_argument("--server-trace", action=argparse.BooleanOptionalAction, default=True,
+                        help="capture Qt server decisions in memory (default on; disable explicitly for untraced timing)")
     parser.add_argument("--stall-first-read-fragment-ms", type=int, default=0,
                         help="test only: one host-side stall after a partial FC03 request; requires --server-trace")
     parser.add_argument("--programmer", default=PROGRAMMERS[-1] if PROGRAMMERS else None)

@@ -25,6 +25,8 @@ Current COBS documentation is split by boundary:
 - `SHARED_POLICIES_VALIDATION.md` — fresh shared-storage/CRC migration evidence.
 - [HARDWARE_REGRESSION_2026-09-07.md](HARDWARE_REGRESSION_2026-09-07.md) — repeatable
   live fault coverage, restored firmware, Qt/VCP failures and control repeats.
+- [QT_USB_TIMEOUT_DIAGNOSIS.md](QT_USB_TIMEOUT_DIAGNOSIS.md) — controlled Qt
+  fragment-loss reproduction, USB receive deadline, trace and regression tests.
 
 ## Toolchain
 

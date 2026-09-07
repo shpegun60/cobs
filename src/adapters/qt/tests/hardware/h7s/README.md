@@ -1,5 +1,11 @@
 # The Modbus RTU stack against QtSerialBus, on the NUCLEO-H7S3L8
 
+The [Qt/USB timeout follow-up](../../../../../../doc/QT_USB_TIMEOUT_DIAGNOSIS.md)
+reproduces the native Qt server's 2-ms fragment-discard failure and verifies
+the USB-aware 50-ms RX configuration. The runner now uses that setting,
+keeps an in-memory trace by default, and returns the verifier's exit code
+after restoring the board. Response timeout/retries/wire bytes are unchanged.
+
 The [7 September repeat](../../../../../../doc/HARDWARE_REGRESSION_2026-09-07.md)
 retains two unexpected Qt-server timeouts, a diagnostic fragment-discard
 trace and the passing targeted/full control repeats. The original failing
@@ -59,7 +65,9 @@ the bytes, the harness control function as a private length-prefixed one).
 ```powershell
 python -B src/adapters/qt/tests/hardware/h7s/run_qmodbus.py --port COM6 `
   --serial 002A001F3033510135393935 `
-  --output src/adapters/qt/tests/hardware/h7s/results_qmodbus_2026-09-06.json
+  --output src/adapters/qt/tests/hardware/h7s/results_qmodbus_NEW.json
+
+# Recheck the historical 6 September tables below, without flashing:
 python -B src/adapters/qt/tests/hardware/h7s/verify_qmodbus.py `
   src/adapters/qt/tests/hardware/h7s/results_qmodbus_2026-09-06.json `
   --check-doc src/adapters/qt/tests/hardware/h7s/README.md
@@ -74,6 +82,12 @@ record carries the SHA-256 of every source it was built from and the flashed
 images; `verify_qmodbus.py` rechecks every verdict against the expectations
 below, the writes in Qt's final map, the flash restore and the provenance,
 and prints the tables that follow.
+
+Normal runs use `--server-inter-frame-us 50000` and `--server-trace` by
+default; `--server-inter-frame-us -1` retains Qt's native RX timer, and
+`--no-server-trace` disables the journal explicitly. The optional
+`--stall-first-read-fragment-ms 10` is a host-side fault-injection test, not
+part of normal traffic; see the follow-up report before using it.
 
 ## What the run showed
 
