@@ -210,6 +210,31 @@ sh src/modbus/rtu/tests/qmake_consumer/run.sh
 sh src/adapters/tests/run.sh
 ```
 
+## Integration examples and evidence regressions
+
+From the repository root, with a C++20 compiler on `PATH`:
+
+```bash
+sh doc/examples/build.sh
+python -B src/wire/tests/hardware/h7s/test_comparison.py
+```
+
+Run the integration examples and `src/modbus/rtu/tests/run.sh` on both
+Linux/WSL GCC and MinGW, sequentially: each script reuses its own `out/`
+directory. The Linux RTU run keeps `-Wsign-conversion -Werror` and
+ASan+UBSan enabled; no warning suppression is needed for the reference
+model. Its packed-bit tests cover every byte value, unaligned coil writes
+and preservation of neighbouring bits. The examples use `g_endpoint` for
+their global objects to avoid POSIX `link()` and template-parameter shadowing.
+
+The Python regression suite rejects UART row protocol/policy/baud mismatches,
+HELLO baud mismatches and swapped core-group policies. Its positive controls
+are the original committed comparison records; negative tests mutate copies
+in memory, never the raw evidence. It isolates source provenance in those
+tests, so also run `verify_comparison.py <record> --check-doc
+doc/PROTOCOL_COMPARISON.md` to verify real source identities and published
+rows. Neither command opens a serial port or flashes the board.
+
 ## UART regression matrix
 
 The current UART ownership, callback, recovery, and performance contracts are

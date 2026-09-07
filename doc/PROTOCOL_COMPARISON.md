@@ -550,7 +550,14 @@ lives in `src/wire/tests/provenance.py` and also governs the COBS performance an
 migration verifiers.
 Policy labels are checked against the board's own HELLO: RTU has always
 reported its CRC policy identifier, COBS reports it since harness protocol 3.
-The records in this document were taken with COBS harness protocol 2, whose
+Each UART row must also match its enclosing run's protocol, policy and baud,
+and the run's baud must match HELLO. Each endpoint-only group must match its
+run's policy. Wire validation alone cannot establish this attribution:
+Bitwise and Table produce the same bytes, so swapping their row labels can
+otherwise preserve a complete matrix while reversing the performance result.
+`test_comparison.py` rejects these substitutions on in-memory copies of the
+recorded matrices and accepts all six original records without modifying them.
+The two earliest records in this document used COBS harness protocol 2, whose
 HELLO carries only the trailer width, so their COBS Bitwise/Table labels are
 confirmed only by the flashed images; without `--nm` the verifier says so.
 Optional `--nm <arm-none-eabi-nm.exe>` checks all retained ELF identities,

@@ -14,8 +14,8 @@ using Server = modbus::rtu::Endpoint<wire::Pool<8, 2>, modbus::rtu::Format<>,
                                      framing::Standard<framing::Direction::Request>>;
 
 static Serial serial;                                    // section attribute omitted on the host
-static Server link;
-static modbus::rtu::UartAdapter adapter{serial, link};   // takes no configuration: safe before main()
+static Server g_endpoint;
+static modbus::rtu::UartAdapter adapter{serial, g_endpoint};   // takes no configuration: safe before main()
 
 static bool build_reply(Server::Message& reply, const Server::Packet& request) noexcept
 {
@@ -35,13 +35,13 @@ static unsigned g_replies = 0;
 
 void loop_step() noexcept
 {
-	adapter.proceed(HAL_GetTick());   // uart.proceed -> frame verdict -> link.poll
-	while (auto request = link.pop_packet()) {
-		auto reply = link.make_message(request.address(), request.function());
+	adapter.proceed(HAL_GetTick());   // uart.proceed -> frame verdict -> g_endpoint.poll
+	while (auto request = g_endpoint.pop_packet()) {
+		auto reply = g_endpoint.make_message(request.address(), request.function());
 		if (!build_reply(reply, request)) {
 			continue;
 		}
-		if (link.send(reply) == modbus::SendResult::Sent) {
+		if (g_endpoint.send(reply) == modbus::SendResult::Sent) {
 			++g_replies;
 		}
 	}
@@ -57,10 +57,10 @@ int main()
 	fake::rx_bytes(adu.data(), adu.size());
 	fake::rx_idle();
 	loop_step();
-	const bool ok = g_replies == 1u && serial.tx_busy() && link.tx_active();
+	const bool ok = g_replies == 1u && serial.tx_busy() && g_endpoint.tx_active();
 	fake::tx_done();
 	loop_step();
 	std::printf("rtu_adapter: replies=%u released=%d violations=%zu -> %s\n", g_replies,
-	            !link.tx_active(), fake::model().violations.size(), ok && !link.tx_active() ? "ok" : "FAIL");
-	return ok && !link.tx_active() && fake::model().violations.empty() ? 0 : 1;
+	            !g_endpoint.tx_active(), fake::model().violations.size(), ok && !g_endpoint.tx_active() ? "ok" : "FAIL");
+	return ok && !g_endpoint.tx_active() && fake::model().violations.empty() ? 0 : 1;
 }

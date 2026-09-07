@@ -80,7 +80,7 @@ struct Model final {
 	template<std::size_t N>
 	[[nodiscard]] static bool bit(const std::array<uint8_t, N>& bits, const std::size_t index) noexcept
 	{
-		return (bits[index / 8u] >> (index % 8u)) & 1u;
+		return ((static_cast<unsigned>(bits[index / 8u]) >> (index % 8u)) & 1u) != 0u;
 	}
 
 	template<std::size_t N>
@@ -315,7 +315,7 @@ template<std::size_t N>
 			break;
 		}
 		for (std::size_t i = 0u; i < quantity; ++i) {
-			const bool value = (data[5u + i / 8u] >> (i % 8u)) & 1u;
+			const bool value = ((static_cast<unsigned>(data[5u + i / 8u]) >> (i % 8u)) & 1u) != 0u;
 			Model::set_bit(model.coils, start + i, value);
 		}
 		reply.respond = true;

@@ -1,4 +1,4 @@
-// INTEGRATION.md §5 verbatim: the burst endpoint wired directly, and the
+// INTEGRATION.md §5 verbatim: the burst g_endpoint wired directly, and the
 // framed skeleton with its own stale rule.
 #define UART_ENGINE_IMPLEMENT
 #include "Uart.h"
@@ -12,27 +12,27 @@ using Serial = Uart<256, 4>;
 using Link = modbus::rtu::Endpoint<wire::Pool<8, 2>>;   // framing::None
 
 static Serial serial;
-static Link link;
+static Link g_endpoint;
 static unsigned g_served = 0;
 static void serve(const Link::Packet&) noexcept { ++g_served; }
 
 bool start() noexcept
 {
 	serial.setRxHandler(Serial::RxHandler{
-		[](std::span<const uint8_t> burst) noexcept { link.receive_adu(burst); }});
+		[](std::span<const uint8_t> burst) noexcept { g_endpoint.receive_adu(burst); }});
 	serial.setRxGapHandler(Serial::GapHandler{
-		[]() noexcept { link.notify_gap(); }});
+		[]() noexcept { g_endpoint.notify_gap(); }});
 	return serial.init(&huart3) &&
-	       link.bind(Link::Sender{tiny::bind<&Serial::send>(serial)},
-	                 Link::BusyQuery{tiny::bind<&Serial::tx_busy>(serial)});
+	       g_endpoint.bind(Link::Sender{tiny::bind<&Serial::send>(serial)},
+	                       Link::BusyQuery{tiny::bind<&Serial::tx_busy>(serial)});
 }
 
 void loop_step() noexcept
 {
 	const uint32_t now = HAL_GetTick();
 	serial.proceed(now);
-	link.poll(now);
-	while (auto request = link.pop_packet()) { serve(request); }
+	g_endpoint.poll(now);
+	while (auto request = g_endpoint.pop_packet()) { serve(request); }
 }
 
 // ---- the framed skeleton ----

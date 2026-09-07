@@ -113,6 +113,7 @@ def verify(data, core_only=False):
     for run in data["core"]:
         assert run["header"]["core_clock"] == 600000000
         for group in run["groups"]:
+            assert group["policy"] == run["policy"], "core group policy does not match run"
             key = (group["protocol"], group["policy"], group["size"], group["pattern"], group["chunk"])
             assert key not in core
             body = bench.payload(group["size"], bench.PATTERNS.index(group["pattern"]))
@@ -134,10 +135,16 @@ def verify(data, core_only=False):
         geometry = run_uart(run)
         built = (run["hello"]["uart_chunk_size"], run["hello"]["uart_chunk_count"])
         check_hello(run)
+        assert run["hello"]["baud"] == run["baud"], "UART HELLO baud does not match run"
         if geometry is not None:
             # HELLO is the board's own statement of what was built in.
             assert built == geometry
         for row in run["rows"]:
+            # Attribute every measurement to the run whose HELLO/ELF we check.
+            # Bitwise and Table have identical wire bytes, so CRC validation
+            # and a complete matrix alone cannot detect swapped row labels.
+            for field in ("protocol", "policy", "baud"):
+                assert row[field] == run[field], f"UART row {field} does not match run"
             key = (row["protocol"], row["policy"], row["baud"], row["case"], row["repeat"], geometry)
             assert key not in uart
             row["_uart"] = built  # in-memory only, for the geometry table's labels

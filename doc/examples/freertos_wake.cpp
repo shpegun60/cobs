@@ -15,8 +15,8 @@ using Serial = Uart<256, 4>;
 using Server = modbus::rtu::Endpoint<wire::Pool<8, 2>, modbus::rtu::Format<>,
                                      framing::Standard<framing::Direction::Request>>;
 static Serial serial;
-static Server link;
-static modbus::rtu::UartAdapter adapter{serial, link};
+static Server g_endpoint;
+static modbus::rtu::UartAdapter adapter{serial, g_endpoint};
 
 // --- what the fake FreeRTOS does not model: task creation ---
 using TaskFunction_t = void (*)(void*);
@@ -39,7 +39,7 @@ static void comm_task_iteration() noexcept        // one pass of the for(;;) bod
 	const uint32_t now = HAL_GetTick();
 	(void)uart::FreeRtosWake::wait(std::min(50u, adapter.deadline_in_ms(now)));
 	adapter.proceed(HAL_GetTick());
-	while (auto request = link.pop_packet()) {
+	while (auto request = g_endpoint.pop_packet()) {
 		serve(request);
 	}
 }

@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 # Author: shpegun60
 # SPDX-License-Identifier: MIT
+import copy
+import json
 import unittest
+from unittest.mock import patch
 import run_comparison as bench
+import verify_comparison as verifier
 
 
 class ComparisonTests(unittest.TestCase):
@@ -155,6 +159,83 @@ class ComparisonTests(unittest.TestCase):
             self.assertEqual(provenance.uncommitted, {"src.h"})
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertTrue(any(line.startswith("CAVEAT") for line in provenance.report()))
+
+
+class RecordIdentityTests(unittest.TestCase):
+    """Exercise the actual verifier on copies of the committed observations.
+
+    Source provenance has its own test above and CLI validation; these tests
+    isolate attribution without needing git history, retained ELFs or a board.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.records = {
+            path.name: json.loads(path.read_text(encoding="utf-8"))
+            for path in bench.HERE.glob("results_comparison*.json")
+        }
+
+    def setUp(self):
+        sources = patch.object(verifier, "verify_sources", return_value=[])
+        sources.start()
+        self.addCleanup(sources.stop)
+        framed = patch.object(bench.rtu, "FRAMED", False)
+        framed.start()
+        self.addCleanup(framed.stop)
+
+    def record(self, name="results_comparison_framed_2026-09-05.json"):
+        return copy.deepcopy(self.records[name])
+
+    def test_saved_records_are_still_accepted(self):
+        self.assertGreaterEqual(len(self.records), 6)
+        for name in self.records:
+            with self.subTest(record=name):
+                data = self.record(name)
+                core, uart, _ = verifier.verify(data)
+                self.assertEqual(len(core), sum(len(run["groups"]) for run in data["core"]))
+                self.assertEqual(len(uart), sum(len(run["rows"]) for run in data["uart"]))
+
+    def test_uart_rows_cannot_override_run_identity(self):
+        for protocol in bench.PROTOCOLS:
+            for field, wrong in (("protocol", "wrong-protocol"), ("policy", "table"), ("baud", 9600)):
+                with self.subTest(protocol=protocol, field=field):
+                    data = self.record()
+                    run = next(r for r in data["uart"] if r["protocol"] == protocol and r["policy"] == "bitwise")
+                    run["rows"][0][field] = wrong
+                    with self.assertRaisesRegex(AssertionError, f"UART row {field} does not match run"):
+                        verifier.verify(data)
+
+    def test_swapped_uart_policy_labels_are_rejected_even_when_the_matrix_is_complete(self):
+        for protocol in bench.PROTOCOLS:
+            with self.subTest(protocol=protocol):
+                data = self.record()
+                changed = 0
+                for run in data["uart"]:
+                    if run["protocol"] == protocol and run["policy"] in ("bitwise", "table"):
+                        for row in run["rows"]:
+                            row["policy"] = {"bitwise": "table", "table": "bitwise"}[row["policy"]]
+                            changed += 1
+                self.assertEqual(changed, 4)  # two policies, two repeats; same CRC bytes and matrix keys
+                with self.assertRaisesRegex(AssertionError, "UART row policy does not match run"):
+                    verifier.verify(data)
+
+    def test_core_groups_cannot_swap_policy_labels(self):
+        data = self.record("results_comparison_2026-09-05.json")
+        for run in data["core"]:
+            if run["policy"] in ("bitwise", "table"):
+                for group in run["groups"]:
+                    group["policy"] = {"bitwise": "table", "table": "bitwise"}[group["policy"]]
+        with self.assertRaisesRegex(AssertionError, "core group policy does not match run"):
+            verifier.verify(data)
+
+    def test_uart_run_baud_must_match_hello(self):
+        for protocol in bench.PROTOCOLS:
+            with self.subTest(protocol=protocol):
+                data = self.record()
+                run = next(r for r in data["uart"] if r["protocol"] == protocol)
+                run["hello"]["baud"] = 9600
+                with self.assertRaisesRegex(AssertionError, "UART HELLO baud does not match run"):
+                    verifier.verify(data)
 
 
 if __name__ == "__main__":

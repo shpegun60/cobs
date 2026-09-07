@@ -17,6 +17,11 @@ platform symbols such as `huart3` and `HAL_GetTick()` are the CubeMX ones
 and come from `doc/examples/platform_fake.h` there. A snippet that stops
 compiling fails that script.
 
+Run it on both Linux/WSL (`CXX=g++ sh doc/examples/build.sh`) and MinGW
+(put the MinGW compiler on `PATH` first). They share the output directory,
+so run those two builds sequentially. The global endpoint objects below are
+named `g_endpoint`: `link` is already a global POSIX function on Linux.
+
 ## 1. What every pattern shares
 
 Three layers, and the boundary between them never moves:
@@ -88,13 +93,13 @@ namespace framing = modbus::rtu::framing;
 using Serial = Uart<256, 4>;
 // A device that answers requests receives Direction::Request; a client
 // receives Direction::Response. Drop the third parameter for the default
-// burst endpoint (one complete ADU per IDLE-ended burst, no stale rule).
+// burst g_endpoint (one complete ADU per IDLE-ended burst, no stale rule).
 using Server = modbus::rtu::Endpoint<wire::Pool<8, 2>, modbus::rtu::Format<>,
                                      framing::Standard<framing::Direction::Request>>;
 
 __attribute__((section(".dma"))) static Serial serial;   // DMA-reachable RAM: the application's choice
-static Server link;
-static modbus::rtu::UartAdapter adapter{serial, link};   // takes no configuration: safe before main()
+static Server g_endpoint;
+static modbus::rtu::UartAdapter adapter{serial, g_endpoint};   // takes no configuration: safe before main()
 
 bool start() noexcept
 {
@@ -105,13 +110,13 @@ bool start() noexcept
 
 void loop_step() noexcept
 {
-    adapter.proceed(HAL_GetTick());   // uart.proceed -> frame verdict -> link.poll
-    while (auto request = link.pop_packet()) {
-        auto reply = link.make_message(request.address(), request.function());
+    adapter.proceed(HAL_GetTick());   // uart.proceed -> frame verdict -> g_endpoint.poll
+    while (auto request = g_endpoint.pop_packet()) {
+        auto reply = g_endpoint.make_message(request.address(), request.function());
         if (!build_reply(reply, request)) {
             continue;
         }
-        (void)link.send(reply);       // Sent moves ownership; Busy keeps the message for a retry
+        (void)g_endpoint.send(reply);       // Sent moves ownership; Busy keeps the message for a retry
     }
 }
 ```
@@ -138,7 +143,7 @@ What the adapter does, so the application does not:
   while nothing is in flight, 0 when due (§4).
 - A loop that must keep its own timing scopes around the driver composes the
   same steps itself, in this order and with one tick:
-  `adapter.prepare(now); serial.proceed(now); adapter.finish(now); link.poll(now);`
+  `adapter.prepare(now); serial.proceed(now); adapter.finish(now); g_endpoint.poll(now);`
   — the hardware harness does.
 
 Verified by `src/adapters/tests/test_uart_integration.cpp` (the real driver on
@@ -166,17 +171,17 @@ using Serial = Uart<256, 4>;
 using Link = cobs::Endpoint<wire::Pool<8, 2>, cobs::Format<crc::Crc16Bitwise, 1024>>;
 
 __attribute__((section(".dma"))) static Serial serial;
-static Link link;
+static Link g_endpoint;
 
 bool start() noexcept
 {
     serial.setRxHandler(Serial::RxHandler{
-        [](std::span<const uint8_t> bytes) noexcept { link.consume(bytes); }});
+        [](std::span<const uint8_t> bytes) noexcept { g_endpoint.consume(bytes); }});
     serial.setRxGapHandler(Serial::GapHandler{
-        []() noexcept { link.notify_gap(); }});
+        []() noexcept { g_endpoint.notify_gap(); }});
     // Either order works here: COBS needs nothing from the handle.
-    return link.bind(Link::Sender{tiny::bind<&Serial::send>(serial)},
-                     Link::BusyQuery{tiny::bind<&Serial::tx_busy>(serial)}) &&
+    return g_endpoint.bind(Link::Sender{tiny::bind<&Serial::send>(serial)},
+                           Link::BusyQuery{tiny::bind<&Serial::tx_busy>(serial)}) &&
            serial.init(&huart3);
 }
 
@@ -184,8 +189,8 @@ void loop_step() noexcept
 {
     const uint32_t now = HAL_GetTick();
     serial.proceed(now);   // the RX and gap handlers run here, in stream order
-    link.poll(now);      // returns a transmitted block once the driver stops borrowing it
-    while (auto packet = link.pop_packet()) {
+    g_endpoint.poll(now);      // returns a transmitted block once the driver stops borrowing it
+    while (auto packet = g_endpoint.pop_packet()) {
         handle(packet.data());
     }
 }
@@ -220,11 +225,11 @@ void comm_task_body(void*)
         const uint32_t now = HAL_GetTick();
         // The adapter's deadline bounds the sleep: a frame whose remainder
         // never comes must be expired when it falls due, not when the next
-        // unrelated frame wakes the task. For a COBS link (no adapter) the
+        // unrelated frame wakes the task. For a COBS g_endpoint (no adapter) the
         // fallback alone is the bound.
         (void)uart::FreeRtosWake::wait(std::min(50u, adapter.deadline_in_ms(now)));
         adapter.proceed(HAL_GetTick());
-        while (auto request = link.pop_packet()) {
+        while (auto request = g_endpoint.pop_packet()) {
             serve(request);
         }
     }
@@ -273,25 +278,25 @@ using Serial = Uart<256, 4>;
 using Link = modbus::rtu::Endpoint<wire::Pool<8, 2>>;   // framing::None
 
 __attribute__((section(".dma"))) static Serial serial;
-static Link link;
+static Link g_endpoint;
 
 bool start() noexcept
 {
     serial.setRxHandler(Serial::RxHandler{
-        [](std::span<const uint8_t> burst) noexcept { link.receive_adu(burst); }});
+        [](std::span<const uint8_t> burst) noexcept { g_endpoint.receive_adu(burst); }});
     serial.setRxGapHandler(Serial::GapHandler{
-        []() noexcept { link.notify_gap(); }});
+        []() noexcept { g_endpoint.notify_gap(); }});
     return serial.init(&huart3) &&
-           link.bind(Link::Sender{tiny::bind<&Serial::send>(serial)},
-                     Link::BusyQuery{tiny::bind<&Serial::tx_busy>(serial)});
+           g_endpoint.bind(Link::Sender{tiny::bind<&Serial::send>(serial)},
+                           Link::BusyQuery{tiny::bind<&Serial::tx_busy>(serial)});
 }
 
 void loop_step() noexcept
 {
     const uint32_t now = HAL_GetTick();
     serial.proceed(now);
-    link.poll(now);
-    while (auto request = link.pop_packet()) { serve(request); }
+    g_endpoint.poll(now);
+    while (auto request = g_endpoint.pop_packet()) { serve(request); }
 }
 ```
 
@@ -323,15 +328,15 @@ from `serial.instance()->Init.BaudRate`):
 namespace framing = modbus::rtu::framing;
 using Framed = modbus::rtu::Endpoint<wire::Pool<8, 2>, modbus::rtu::Format<>,
                                      framing::Standard<framing::Direction::Request>>;
-static Framed link;
+static Framed g_endpoint;
 constexpr std::size_t kChunkSize = 256;   // the ChunkSize of Serial
 static uint32_t g_now = 0, g_deadline = 0;
 static bool g_armed = false;
 
 void on_rx(std::span<const uint8_t> bytes) noexcept
 {
-    link.consume(bytes);
-    g_armed = link.assembling();
+    g_endpoint.consume(bytes);
+    g_armed = g_endpoint.assembling();
     g_deadline = g_now + (bytes.size() < kChunkSize ? 5u : chunk_time_ms_at_current_baud() + 5u);
 }
 
@@ -342,9 +347,9 @@ void loop_step() noexcept
     serial.proceed(g_now);                                  // may run on_rx / on_gap
     if (g_armed && int32_t(g_now - g_deadline) >= 0) {
         if (resumed) { g_deadline = g_now + chunk_time_ms_at_current_baud() + 5u; }
-        else         { g_armed = false; link.expire_incomplete(); }
+        else         { g_armed = false; g_endpoint.expire_incomplete(); }
     }
-    link.poll(g_now);
+    g_endpoint.poll(g_now);
 }
 ```
 
@@ -368,8 +373,8 @@ port.setPortName("COM6");
 port.setBaudRate(9600);
 port.open(QIODevice::ReadWrite);
 
-Link link;
-adapters::qt::RtuClient client{port, link};
+Link g_endpoint;
+adapters::qt::RtuClient client{port, g_endpoint};
 client.update_timing_from_port();     // 3.5 character times below 19200 baud, as Qt computes it
 client.bind();
 
@@ -440,7 +445,7 @@ frame's block once `busy()` is false.
 
 // A transport that copies the frame (sockets, QSerialPort::write) may
 // report busy() == false at once; one that borrows the memory (DMA) must
-// report busy until it is done with it. The endpoint releases the frame in
+// report busy until it is done with it. The g_endpoint releases the frame in
 // poll() either way.
 struct Transport final {
     bool send(std::span<const uint8_t> frame) noexcept { return write_all(frame); }
@@ -450,7 +455,7 @@ struct Transport final {
 namespace framing = modbus::rtu::framing;
 // Off the STM32 driver there are no IDLE-ended bursts: TCP, the OS serial
 // buffers and QSerialPort deliver arbitrary cuts, so the RTU framing policy
-// is mandatory here. Direction is what THIS endpoint receives.
+// is mandatory here. Direction is what THIS g_endpoint receives.
 using RtuClient = modbus::rtu::Endpoint<wire::Heap, modbus::rtu::Format<>,
                                         framing::Standard<framing::Direction::Response>>;
 using CobsLink = cobs::Endpoint<>;   // wire::Heap, Crc16Bitwise, 253-byte payloads

@@ -12,6 +12,7 @@
 #include "Test.h"
 #include "reference_model.h"
 
+#include <array>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -41,6 +42,38 @@ int main()
 	check(Model::bit(model.coils, 0) && !Model::bit(model.coils, 1) && Model::bit(model.coils, 3),
 	      "every third coil is on");
 	check(Model::bit(model.discrete, 0) && !Model::bit(model.discrete, 1), "every second discrete input is on");
+
+	group("PackedBits");
+	{
+		bool reads_match = true, writes_match = true, neighbours_unchanged = true;
+		for (unsigned value = 0u; value <= 255u; ++value) {
+			const std::array<uint8_t, 2> packed{static_cast<uint8_t>(value), static_cast<uint8_t>(value ^ 0xFFu)};
+			for (std::size_t index = 0u; index < 16u; ++index) {
+				const unsigned source = index < 8u ? value : value ^ 0xFFu;
+				reads_match &= Model::bit(packed, index) == ((source & (1u << (index % 8u))) != 0u);
+			}
+			// Nine coils starting at bit 7 cross both a source-byte boundary
+			// and destination-byte boundaries. Also check bits outside the write.
+			model.coils.fill(0xA5u);
+			const Reply r = ask(model, kBoardUnit, 0x0Fu,
+				bytes({0x00u, 0x07u, 0x00u, 0x09u, 0x02u, packed[0], packed[1]}));
+			writes_match &= r.respond && r.function == 0x0Fu && equal(r.span(), bytes({0x00u, 0x07u, 0x00u, 0x09u}));
+			for (std::size_t index = 0u; index < kCoilCount; ++index) {
+				const bool actual = (static_cast<unsigned>(model.coils[index / 8u]) & (1u << (index % 8u))) != 0u;
+				if (index >= 7u && index < 16u) {
+					const std::size_t offset = index - 7u;
+					const unsigned source = offset < 8u ? value : value ^ 0xFFu;
+					writes_match &= actual == ((source & (1u << (offset % 8u))) != 0u);
+				} else {
+					neighbours_unchanged &= actual == ((0xA5u & (1u << (index % 8u))) != 0u);
+				}
+			}
+		}
+		check(reads_match, "all 256 byte values read LSB first across byte boundaries");
+		check(writes_match, "0F: all 256 byte values write correctly at an unaligned coil address");
+		check(neighbours_unchanged, "0F: bits outside the nine-coil write are unchanged");
+		model.reset();
+	}
 
 	group("Reads");
 	{
