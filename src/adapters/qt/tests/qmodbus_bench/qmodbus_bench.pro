@@ -24,3 +24,4 @@ include($$PWD/../../../../modbus/rtu/rtu.pri)
 INCLUDEPATH += $$PWD/../../../../modbus/rtu/tests
 
 SOURCES += $$PWD/main.cpp
+HEADERS += $$PWD/ServerTrace.h

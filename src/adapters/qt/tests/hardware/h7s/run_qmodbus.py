@@ -67,6 +67,7 @@ SOURCES = [
     "src/adapters/qt/RtuClient.h",
     "src/adapters/qt/qt.pri",
     "src/adapters/qt/tests/qmodbus_bench/main.cpp",
+    "src/adapters/qt/tests/qmodbus_bench/ServerTrace.h",
     "src/adapters/qt/tests/qmodbus_bench/qmodbus_bench.pro",
     "src/adapters/qt/tests/hardware/h7s/run_qmodbus.py",
     "src/uart/Uart.h",
@@ -99,11 +100,20 @@ def main() -> None:
     parser.add_argument("--retries", type=int, default=0, help="retries of both PC clients (0: every failure is visible)")
     parser.add_argument("--server-seconds", type=int, default=10, help="how long Qt's server serves the board's script")
     parser.add_argument("--client-delay-ms", type=int, default=2500, help="the board's head start given to Qt's server")
+    parser.add_argument("--server-inter-frame-us", type=int, default=50000,
+                        help="Qt server RX fragment deadline for USB/OS delivery; -1 keeps Qt's native default")
+    parser.add_argument("--server-trace", action="store_true", help="capture Qt server decisions in memory")
+    parser.add_argument("--stall-first-read-fragment-ms", type=int, default=0,
+                        help="test only: one host-side stall after a partial FC03 request; requires --server-trace")
     parser.add_argument("--programmer", default=PROGRAMMERS[-1] if PROGRAMMERS else None)
     parser.add_argument("--bash", default="C:/Program Files/Git/bin/bash.exe")
     parser.add_argument("--qt-kit", default="C:/Qt/6.4.3/mingw_64")
     parser.add_argument("--mingw-bin", default="C:/Qt/Tools/mingw1120_64/bin")
     args = parser.parse_args()
+    if not -1 <= args.server_inter_frame_us <= 1000000 or not 0 <= args.stall_first_read_fragment_ms <= 200:
+        parser.error("server deadline or diagnostic stall is outside its supported range")
+    if args.stall_first_read_fragment_ms and not args.server_trace:
+        parser.error("--stall-first-read-fragment-ms requires --server-trace")
     bauds = [int(b) for b in args.bauds.split(",")]
     framers = [int(m) for m in args.framers.split(",")]
     assert all(m in (0, 1) for m in framers) and bauds and framers
@@ -167,6 +177,8 @@ def main() -> None:
     record = dict(schema=1, started=stamp, port=args.port, policy=args.policy, bauds=bauds, framers=framers,
                   timeout_ms=args.timeout_ms, retries=args.retries, server_seconds=args.server_seconds,
                   client_delay_ms=args.client_delay_ms,
+                  server_inter_frame_us=args.server_inter_frame_us, server_trace=args.server_trace,
+                  stall_first_read_fragment_ms=args.stall_first_read_fragment_ms,
                   qt_logging_rules=qt_env.get("QT_LOGGING_RULES", ""),
                   source_base_commit=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
                   source_sha256=source_identities(), runner_sha256=sha256(runner), runs=[])
@@ -233,7 +245,12 @@ def main() -> None:
                     idle = board.role_report(0)
                     assert idle["role"] == 2 and not idle["running"] and not idle["done"], idle
                     board.start_client(args.client_delay_ms)
-                qt_server = run_pc(tag, "qtserver", baud, ("--seconds", str(args.server_seconds)))
+                server_options = ["--seconds", str(args.server_seconds),
+                                  "--server-inter-frame-us", str(args.server_inter_frame_us),
+                                  "--stall-first-read-fragment-ms", str(args.stall_first_read_fragment_ms)]
+                if args.server_trace:
+                    server_options.append("--server-trace")
+                qt_server = run_pc(tag, "qtserver", baud, server_options)
                 with link(baud, framer) as board:
                     results = board.client_results()
                     board_stats = board.stats()  # after the script: diagnose loss without changing its traffic
@@ -264,6 +281,10 @@ def main() -> None:
             json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(f"RESTORED {receipt['restored_and_verified']}; record {output}", flush=True)
 
+    # Completing the runner is not equivalent to passing its scenarios. Keep
+    # failed records/receipts, restore first, then return the verifier's verdict.
+    return subprocess.run([sys.executable, "-B", str(HERE / "verify_qmodbus.py"), str(output)], cwd=REPO).returncode
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

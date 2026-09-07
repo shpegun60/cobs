@@ -68,4 +68,12 @@ mkdir -p "$OUT/qmodbus_bench"
 )
 "$OUT/qmodbus_bench/bin/qmodbus_bench.exe" --help >/dev/null
 echo "  ok    qmodbus_bench built and answers --help"
+echo "=== Qt server trace/injection self-test (no COM port) ==="
+mkdir -p "$OUT/server_trace"
+(
+	cd "$OUT/server_trace"
+	qmake "$HERE/qmodbus_bench/trace_test.pro" >qmake.log 2>&1
+	mingw32-make -j >make.log 2>&1 || { cat make.log; exit 1; }
+)
+"$OUT/server_trace/bin/server_trace_test.exe"
 echo "=== all Qt adapter suites passed ==="

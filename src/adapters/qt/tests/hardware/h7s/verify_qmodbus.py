@@ -25,6 +25,7 @@ read back byte for byte, and every source hash must be a committed version.
   python -B src/adapters/qt/tests/hardware/h7s/verify_qmodbus.py <record.json> [--check-doc README.md]
 """
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -65,6 +66,34 @@ def expected_board_status(step: int, framer: int) -> set[str]:
     return {"ok"}
 
 
+def check_server_trace(record, run, require):
+    """New diagnostic/configuration fields are absent in historical records."""
+    if "server_inter_frame_us" not in record:
+        return
+    requested = record["server_inter_frame_us"]
+    # Qt 6.4.3 rounds to milliseconds and never goes below its baud minimum.
+    baud = run["baud"]
+    minimum_ms = 2 if baud >= 19200 else (38500 + baud - 1) // baud
+    expected_us = max(minimum_ms, (requested + 999) // 1000) * 1000
+    server = run["qtserver"]
+    require(server.get("inter_frame_delay_us") == expected_us, "Qt server fragment deadline disagrees with the selected configuration")
+    trace = server.get("trace", {})
+    require(trace.get("enabled") == record["server_trace"], "Qt server trace enable flag disagrees with the record")
+    require(trace.get("overflow") is False, "Qt server trace overflowed or is absent")
+    stall = record["stall_first_read_fragment_ms"]
+    require(trace.get("stall_requested_ms") == stall, "diagnostic stall request was relabelled")
+    require(trace.get("stall_injected") == bool(stall), "requested diagnostic stall was not injected exactly once")
+    if stall:
+        require(trace.get("stall_elapsed_us", 0) >= stall * 1000, "diagnostic host stall was shorter than requested")
+        require(bool(trace.get("stall_fragment")), "diagnostic stall has no observed partial request")
+    else:
+        require(trace.get("stall_elapsed_us") == 0 and trace.get("stall_fragment") == "", "unexpected injected stall")
+    entries = trace.get("entries", [])
+    require(bool(entries) == record["server_trace"], "enabled Qt server trace is empty, or disabled trace contains events")
+    times = [entry["at_us"] for entry in entries]
+    require(times == sorted(times) and all(t >= 0 for t in times), "Qt server trace timestamps are not monotonic")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("record", type=Path)
@@ -79,6 +108,14 @@ def main() -> None:
 
     require(record.get("restored_and_verified") is True, "the board's flash was not restored and read back")
     require(record.get("retries") == 0, "clients must run without retries so every failure is visible")
+    expected = {(role, baud, framer) for role in ("server", "client")
+                for baud in record["bauds"] for framer in record["framers"]}
+    keys = [(run["role"], run["baud"], run["framer"]) for run in record["runs"]]
+    require(len(keys) == len(expected) and set(keys) == expected, "missing or duplicate board role/baud/framer run")
+    receipt = json.loads(Path(str(args.record) + ".session.json").read_text(encoding="utf-8"))
+    require(receipt.get("completed") and receipt.get("restored_and_verified"), "session did not complete and restore")
+    require(receipt.get("results_sha256") == hashlib.sha256(args.record.read_bytes()).hexdigest(), "record bytes disagree with the session receipt")
+    require([run["image"] for run in record["runs"]] == receipt["images"], "run image identities disagree with the flashed-image receipt")
 
     # ---- provenance
     # check() raises on a hash no committed version at or after the base has;
@@ -97,6 +134,8 @@ def main() -> None:
         baud, framer = run["baud"], run["framer"]
         require(run["image"]["role"] == (1 if run["role"] == "server" else 2), f"{run['role']} run at {baud}: wrong image role")
         require(run["hello"]["framer"] == framer, f"{run['role']} run at {baud}: HELLO framer disagrees with the image")
+        require(run["image"]["baud"] == baud and run["image"]["framer"] == framer and run["hello"]["baud"] == baud,
+                f"{run['role']} run at {baud}: baud/framer metadata mismatch")
         if run["role"] == "server":
             cells = []
             for client in ("qtclient", "ourclient"):
@@ -112,6 +151,7 @@ def main() -> None:
             served = run["board_counters_after"]["served"] - run["board_counters_before"]["served"]
             rows_server.append((baud, framer, cells, served))
         else:
+            check_server_trace(record, run, require)
             entries = run["board"]["entries"]
             require(len(entries) == STEPS, f"board client at {baud}/framer{framer}: {len(entries)} steps reported")
             bad = [e for e in entries if e["status"] not in expected_board_status(e["index"], framer)]

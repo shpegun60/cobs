@@ -29,6 +29,7 @@
 #include "adapters/qt/RtuClient.h"
 #include "modbus/rtu/Rtu.h"
 #include "reference_model.h"
+#include "ServerTrace.h"
 
 #include <QCommandLineParser>
 #include <QCoreApplication>
@@ -66,6 +67,9 @@ struct Options final {
 	int timeout_ms = 1000;
 	int retries = 0;
 	int seconds = 12;
+	int server_inter_frame_us = -1;
+	bool server_trace = false;
+	int stall_first_read_fragment_ms = 0;
 	QString out;
 };
 
@@ -405,6 +409,7 @@ int run_our_client(const Options& options)
 // ------------------------------------------------------------------ Qt's server
 int run_qt_server(const Options& options)
 {
+	ServerTrace trace(options.server_trace, options.stall_first_read_fragment_ms);
 	QModbusRtuSerialServer server;
 	server.setConnectionParameter(QModbusDevice::SerialPortNameParameter, options.port);
 	server.setConnectionParameter(QModbusDevice::SerialBaudRateParameter, options.baud);
@@ -412,6 +417,9 @@ int run_qt_server(const Options& options)
 	server.setConnectionParameter(QModbusDevice::SerialParityParameter, QSerialPort::NoParity);
 	server.setConnectionParameter(QModbusDevice::SerialStopBitsParameter, QSerialPort::OneStop);
 	server.setServerAddress(ref::kPcUnit);
+	if (options.server_inter_frame_us >= 0) {
+		server.setInterFrameDelay(options.server_inter_frame_us);
+	}
 
 	QModbusDataUnitMap map;
 	map.insert(QModbusDataUnit::HoldingRegisters, {QModbusDataUnit::HoldingRegisters, 0, static_cast<quint16>(ref::kHoldingCount)});
@@ -474,6 +482,8 @@ int run_qt_server(const Options& options)
 	document["baud"] = options.baud;
 	document["unit"] = ref::kPcUnit;
 	document["seconds"] = options.seconds;
+	document["inter_frame_delay_us"] = server.interFrameDelay();
+	document["trace"] = trace.document();
 	document["writes"] = writes;
 	document["errors"] = errors;
 	QJsonArray holding, coils;
@@ -508,6 +518,9 @@ int main(int argc, char** argv)
 	parser.addOption({"timeout", "response timeout in ms (clients)", "ms", "1000"});
 	parser.addOption({"retries", "retries per request (clients)", "n", "0"});
 	parser.addOption({"seconds", "how long the server serves", "s", "12"});
+	parser.addOption({"server-inter-frame-us", "Qt server RX fragment deadline; -1 keeps Qt's default", "us", "-1"});
+	parser.addOption({"server-trace", "capture Qt server decisions in memory"});
+	parser.addOption({"stall-first-read-fragment-ms", "test only: stall host processing once after an incomplete FC03 request", "ms", "0"});
 	parser.addOption({"out", "JSON output file", "path"});
 	parser.process(app);
 
@@ -518,8 +531,14 @@ int main(int argc, char** argv)
 	options.timeout_ms = parser.value("timeout").toInt();
 	options.retries = parser.value("retries").toInt();
 	options.seconds = parser.value("seconds").toInt();
+	options.server_inter_frame_us = parser.value("server-inter-frame-us").toInt();
+	options.server_trace = parser.isSet("server-trace");
+	options.stall_first_read_fragment_ms = parser.value("stall-first-read-fragment-ms").toInt();
 	options.out = parser.value("out");
-	if (options.out.isEmpty() || options.baud <= 0) {
+	if (options.out.isEmpty() || options.baud <= 0 || options.server_inter_frame_us < -1 ||
+		options.server_inter_frame_us > 1000000 || options.stall_first_read_fragment_ms < 0 ||
+		options.stall_first_read_fragment_ms > 200 ||
+		(options.stall_first_read_fragment_ms > 0 && !options.server_trace)) {
 		parser.showHelp(1);
 	}
 	if (options.role == "qtclient") {
