@@ -49,11 +49,14 @@ def verify(results: Path):
     assert receipt["results_sha256"] == hashlib.sha256(results.read_bytes()).hexdigest(), "results file differs from the receipt"
     images = {(i["mode"], i["baud"]): i for i in receipt["images"]}
     assert len(images) == len(receipt["modes"]) * len(receipt["bauds"])
+    exits = {(s["mode"], s["baud"], s["suite"]): s["exit_code"] for s in receipt["suites"]}
     provenance = Provenance(REPO)
     seen = {}
     for row in rows:
         key = (int(row["framer"]), row["baud"], row["suite"])
         assert key not in seen, f"duplicate record {key}"
+        assert key in exits and row["status"] in ("passed", "failed"), f"unrecognized suite outcome {key}"
+        assert (exits[key] == 0) == (row["status"] == "passed"), f"record/exit status mismatch {key}"
         seen[key] = row
         image = row["image"]
         assert image is not None and bool(image["framer"]) == bool(row["framer"]) and image["baud"] == row["baud"]
@@ -62,11 +65,15 @@ def verify(results: Path):
         assert image["policy"] == receipt["policy"] and image["optimization"] == "-Os" and not image["lto"]
         provenance.check(image["source_base_commit"], image["source_sha256"])
         if row["suite"] == "framing":
-            assert row["status"] == "passed"  # the suite records, it does not assert
+            if row["status"] == "failed":
+                # Burst framing can lose even a control response through VCP.
+                # The failed run is evidence of that limitation, not a set of
+                # successful (or zero-success) trials. Keep its cells unavailable.
+                assert not row["framer"], f"framed framing suite failed at {row['baud']}"
+                continue
             for shape in SHAPES + tuple(s for s in OPTIONAL_SHAPES if s in row["summary"]):
                 trials = [t for t in row["trials"] if t["shape"] == shape]
                 assert len(trials) == 12 and row["summary"][shape] == f"{sum(t['exact'] for t in trials)}/12"
-    exits = {(s["mode"], s["baud"], s["suite"]): s["exit_code"] for s in receipt["suites"]}
     for mode in receipt["modes"]:
         for baud in receipt["bauds"]:
             for suite in SUITES:
@@ -99,8 +106,9 @@ def brief(error):
 
 
 def table(receipt, seen):
-    orphan = all("orphan" in seen[(mode, baud, "framing")]["summary"]
-                 for mode in receipt["modes"] for baud in receipt["bauds"])
+    summaries = [seen[(mode, baud, "framing")].get("summary", {})
+                 for mode in receipt["modes"] for baud in receipt["bauds"]]
+    orphan = any(summaries) and all("orphan" in summary for summary in summaries if summary)
     print("\n### RTU frame boundaries on the H7S ST-Link bridge: default burst framing versus the framing policy\n")
     print("| Baud | Endpoint | single-write echoes | split-write echoes | two frames in one write |"
           + (" orphan half then a whole frame |" if orphan else "") + " smoke | vectors suite |")
@@ -113,9 +121,11 @@ def table(receipt, seen):
             name = "framing policy (length-prefixed)" if mode else "framing::None (burst candidate)"
             outcome = "passed" if vectors["status"] == "passed" else "FAILED " + brief(vectors.get("error", ""))
             smoke_outcome = "passed" if smoke["status"] == "passed" else "FAILED " + brief(smoke.get("error", ""))
-            print(f"| {baud} | {name} | {framing['summary']['single']} | {framing['summary']['split']} | "
-                  f"{framing['summary']['glued']} | "
-                  + (f"{framing['summary']['orphan']} | " if orphan else "")
+            unavailable = "unavailable: " + brief(framing.get("error", "suite failed"))
+            summary = framing.get("summary", {}) if framing["status"] == "passed" else {}
+            print(f"| {baud} | {name} | {summary.get('single', unavailable)} | {summary.get('split', unavailable)} | "
+                  f"{summary.get('glued', unavailable)} | "
+                  + (f"{summary.get('orphan', unavailable)} | " if orphan else "")
                   + f"{smoke_outcome} | {outcome} |")
 
 

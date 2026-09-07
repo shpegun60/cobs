@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "record": "results_qmodbus_2026-09-07_repeat2_full.json",
+  "results_sha256": "7bbd0c2d9e364c735d5f2101432324dfe68f5af74d06cfc830e3ff7aaf5599bd",
+  "session": "C:\\Users\\admin\\Documents\\my_workspace\\Qt\\COBS\\stm32_cube_test\\h7s_cobs_test\\out\\qmodbus-20260907T182835Z",
+  "source_log": "client-bitwise-115200-framer0-qtserver.log",
+  "source_log_sha256": "be0e1e205fd46b7b439d83479df973dc40f0de3e473146ec79b56c0a7c707f58",
+  "qt_logging_rules": "qt.modbus*=true",
+  "qt_message_pattern": "[%{time process}] %{category}: %{message}",
+  "qt_force_stderr_logging": "1",
+  "first_line": 1,
+  "lines": [
+    "[     0.000] qt.modbus.lowlevel: (RTU server) Received ADU: \"0a030000000ac4\"",
+    "[     0.000] qt.modbus: (RTU server) ADU does not match expected size, ignoring",
+    "[     0.000] qt.modbus.lowlevel: (RTU server) Received ADU: \"0a030000000ac4b6\"",
+    "[     0.000] qt.modbus: (RTU server) Request PDU: 0x030000000a",
+    "[     0.000] qt.modbus: (RTU server) Response PDU: 0x03141000100110021003100410051006100710081009",
+    "[     0.000] qt.modbus.lowlevel: (RTU server) Response ADU: \"0a03141000100110021003100410051006100710081009eeae\"",
+    "[     0.005] qt.modbus.lowlevel: (RTU server) Received ADU: \"0a\"",
+    "[     0.012] qt.modbus: (RTU server) Incomplete ADU received, ignoring",
+    "[     0.012] qt.modbus.lowlevel: (RTU server) Dropping older ADU fragments due to larger than 3.5 char delay (expected: 2 , max: 6 )",
+    "[     0.012] qt.modbus.lowlevel: (RTU server) Received ADU: \"040000000a7176\"",
+    "[     0.012] qt.modbus: (RTU server) ADU does not match expected size, ignoring",
+    "[     1.007] qt.modbus.lowlevel: (RTU server) Dropping older ADU fragments due to larger than 3.5 char delay (expected: 2 , max: 994 )",
+    "[     1.007] qt.modbus.lowlevel: (RTU server) Received ADU: \"0a01\""
+  ]
+}

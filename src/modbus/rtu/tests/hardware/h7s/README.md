@@ -5,6 +5,12 @@ SPDX-License-Identifier: MIT
 
 # NUCLEO-H7S3L8 Modbus RTU + UART hardware verification
 
+Latest [live regression, 7 September](../../../../../../doc/HARDWARE_REGRESSION_2026-09-07.md):
+144 passed fault/vector/pool/CRC/stress records across all nine policies at
+115200/1M, and a fresh 30-record burst/framed matrix through 10M. All framed
+trials passed; burst losses and unavailable trial summaries remain visible.
+The report also retains two intermittent Qt-server timeouts and their repeats.
+
 The [direct comparison with COBS](../../../../../../doc/PROTOCOL_COMPARISON.md)
 has matched endpoint-only DWT measurements and equal-work UART results.
 Its 3M/6M/10M probes retain incomplete-ADU failures separately from valid

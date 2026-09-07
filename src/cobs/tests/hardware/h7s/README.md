@@ -5,6 +5,12 @@ SPDX-License-Identifier: MIT
 
 # NUCLEO-H7S3L8 COBS + UART hardware integration test
 
+Latest [live regression, 7 September](../../../../../doc/HARDWARE_REGRESSION_2026-09-07.md):
+all three configurations repeated at all five baud rates, 93 passed COBS
+suite records, including physical UART overrun/recovery at every baud.
+The original firmware was restored and read back. Historical measurements
+below are unchanged.
+
 ## Matched performance comparison through 10M
 
 See also the [direct COBS/RTU comparison](../../../../../doc/PROTOCOL_COMPARISON.md):

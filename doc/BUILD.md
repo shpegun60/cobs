@@ -23,6 +23,8 @@ Current COBS documentation is split by boundary:
 - `STORAGE.md` — checked storage extension contract and custom strategies;
 - `COBS_ENGINE.md` — historical v1 rationale and the unchanged codec overlap proof.
 - `SHARED_POLICIES_VALIDATION.md` — fresh shared-storage/CRC migration evidence.
+- [HARDWARE_REGRESSION_2026-09-07.md](HARDWARE_REGRESSION_2026-09-07.md) — repeatable
+  live fault coverage, restored firmware, Qt/VCP failures and control repeats.
 
 ## Toolchain
 

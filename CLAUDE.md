@@ -20,6 +20,13 @@ Qt RtuClient         CLOSED
 QtSerialBus interop  HARDWARE VERIFIED (src/adapters/qt/tests/hardware/h7s/README.md)
 ```
 
+The 7 September live repeat is recorded in `doc/HARDWARE_REGRESSION_2026-09-07.md`:
+the full COBS/RTU fault matrix and framed high-baud trials passed. Two Qt-server
+timeouts are retained as failures alongside passing repeats; one is traced to
+Qt discarding host-delivered fragments, the first is not diagnosed. Do not
+turn the last passing control run into an unconditional Qt/VCP reliability
+claim or count host-only fault injection as on-board coverage.
+
 Two documented properties are not bugs: a length-table framer (ours framed,
 Qt's server alike) cannot answer an unknown function code with exception 01
 because it cannot frame it, only the burst endpoint can; and Qt's client

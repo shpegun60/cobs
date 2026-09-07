@@ -25,6 +25,9 @@ Author: [shpegun60](https://github.com/shpegun60)
 
 Current migration and its acceptance criteria: [shared policies plan](doc/SHARED_POLICIES_PLAN.md).
 Fresh verification: [shared policies validation](doc/SHARED_POLICIES_VALIDATION.md).
+Latest [live fault regression, 7 September](doc/HARDWARE_REGRESSION_2026-09-07.md):
+237 passed COBS/RTU suite records, framed RTU through 10M, and Qt repeats
+with both observed timeouts retained alongside the passing final control.
 Matched live performance: [COBS NoCrc / CRC16 Bitwise / Table through 10M](doc/COBS_PERFORMANCE.md)
 (300 measurements; actual wire throughput alongside instrumented CPU work).
 Direct comparison: [COBS versus Modbus RTU](doc/PROTOCOL_COMPARISON.md)

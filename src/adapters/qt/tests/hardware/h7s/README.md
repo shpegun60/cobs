@@ -1,5 +1,12 @@
 # The Modbus RTU stack against QtSerialBus, on the NUCLEO-H7S3L8
 
+The [7 September repeat](../../../../../../doc/HARDWARE_REGRESSION_2026-09-07.md)
+retains two unexpected Qt-server timeouts, a diagnostic fragment-discard
+trace and the passing targeted/full control repeats. The original failing
+records still fail `verify_qmodbus.py`; see `test_regression_evidence.py`.
+The tables and findings below describe the **6 September** session and are
+not an assertion that every subsequent exchange was successful.
+
 Qt's `QtSerialBus` is the reference this repository's Modbus RTU stack is
 measured against: the stack has to be a usable replacement, "не гірше".
 This directory holds the measurement, both ways round, over the board's real

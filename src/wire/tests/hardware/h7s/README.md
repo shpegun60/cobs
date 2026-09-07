@@ -3,6 +3,13 @@ SPDX-License-Identifier: MIT -->
 
 # Paired COBS / Modbus RTU hardware benchmark
 
+For the separate [7 September live fault regression](../../../../../doc/HARDWARE_REGRESSION_2026-09-07.md),
+`run_fault_matrix.py` repeats the existing COBS/RTU suites with a fixed
+33-image plan and original-firmware restoration. `verify_fault_matrix.py`
+checks all 237 suite records; `test_fault_matrix.py` exercises its negative
+evidence checks offline. Qt and framing observations, including failures,
+are linked in that report. This is not a replacement performance benchmark.
+
 See [methodology, results and limitations](../../../../../doc/PROTOCOL_COMPARISON.md).
 
 - `protocol_bench.cpp` / `build.sh`: endpoint-only live DWT measurements;

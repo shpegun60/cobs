@@ -167,6 +167,7 @@ def main() -> None:
     record = dict(schema=1, started=stamp, port=args.port, policy=args.policy, bauds=bauds, framers=framers,
                   timeout_ms=args.timeout_ms, retries=args.retries, server_seconds=args.server_seconds,
                   client_delay_ms=args.client_delay_ms,
+                  qt_logging_rules=qt_env.get("QT_LOGGING_RULES", ""),
                   source_base_commit=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
                   source_sha256=source_identities(), runner_sha256=sha256(runner), runs=[])
 
@@ -235,13 +236,14 @@ def main() -> None:
                 qt_server = run_pc(tag, "qtserver", baud, ("--seconds", str(args.server_seconds)))
                 with link(baud, framer) as board:
                     results = board.client_results()
+                    board_stats = board.stats()  # after the script: diagnose loss without changing its traffic
                 assert results["done"] and not results["running"], results
                 statuses = {}
                 for entry in results["entries"]:
                     statuses[entry["status"]] = statuses.get(entry["status"], 0) + 1
                 print(f"  board client vs QModbusRtuSerialServer: {statuses}; Qt saw {len(qt_server['writes'])} writes", flush=True)
                 record["runs"].append(dict(role="client", baud=baud, framer=framer, image=image, hello=hello,
-                                           board=results, qtserver=qt_server))
+                                           board=results, board_stats=board_stats, qtserver=qt_server))
                 save()
         receipt["completed"] = True
     finally:
