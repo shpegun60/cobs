@@ -2,6 +2,30 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Subsystem status (2026-09-06)
+
+After the final hardening review, the whole Modbus subsystem is CLOSED and is
+not to be audited, hardened or reworked without a concrete reproducible
+failure or a new requirement:
+
+```
+Modbus core          CLOSED
+CRC                  CLOSED
+RTU framing          CLOSED
+STM32 UART           CLOSED (contract sealed at setWakeHandler + rx_progress)
+STM32 UartAdapter    CLOSED
+FreeRTOS glue        CLOSED
+Qt SerialAdapter     CLOSED
+Qt RtuClient         CLOSED
+QtSerialBus interop  HARDWARE VERIFIED (src/adapters/qt/tests/hardware/h7s/README.md)
+```
+
+Two documented properties are not bugs: a length-table framer (ours framed,
+Qt's server alike) cannot answer an unknown function code with exception 01
+because it cannot frame it, only the burst endpoint can; and Qt's client
+reports a Diagnostics (0x08) response as `InvalidResponseError` at its API
+although the echo on the wire is correct.
+
 ## Project overview
 
 The current design decisions and their acceptance evidence are in
