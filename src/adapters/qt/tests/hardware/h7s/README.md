@@ -1,5 +1,15 @@
 # The Modbus RTU stack against QtSerialBus, on the NUCLEO-H7S3L8
 
+The [client recovery follow-up](../../../../../../doc/QT_CLIENT_RECOVERY.md)
+fixes production desktop RX/TX ordering, write deadlines, retry/cancellation
+accounting and nested port-error cleanup. Fault orderings are tested on the
+host; new live interop records separately exercise the updated client.
+Both full rounds passed: [round 1](results_qmodbus_2026-09-07_recovery1.json)
+and [round 2](results_qmodbus_2026-09-07_recovery2.json), 16 role runs and
+1,320 reference-model verdicts, zero unexpected outcomes, original boot
+restored/read back in both sessions. Offline guard:
+`python -B src/adapters/qt/tests/hardware/h7s/test_client_recovery.py`.
+
 The [Qt/USB timeout follow-up](../../../../../../doc/QT_USB_TIMEOUT_DIAGNOSIS.md)
 reproduces the native Qt server's 2-ms fragment-discard failure and verifies
 the USB-aware 50-ms RX configuration. The runner now uses that setting,

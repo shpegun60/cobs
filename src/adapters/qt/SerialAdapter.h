@@ -42,9 +42,9 @@
  * the OS: bytes reach the process in bursts whose spacing is the serial
  * stack's, not the peer's (a USB-serial bridge hands over up to one latency
  * timer of data at a time, 16 ms by default on FTDI parts; Windows adds its
- * scheduling). stale_silence_ms is therefore one universal constant for this
- * transport, chosen above that delivery granularity and far below any
- * request timeout: a single-shot timer restarted on every delivery while a
+ * scheduling). stale_silence_ms is therefore a transport allowance above
+ * typical delivery granularity, not a hard bound on OS scheduling: a
+ * single-shot timer restarted on every delivery while a
  * frame is in flight, expiring the frame after 50 ms without bytes. A
  * request/response client rarely reaches it — its request timeout discards
  * the incomplete response together with the request — but a server, or a
@@ -65,7 +65,7 @@
  * (QModbusRtuSerialClientPrivate) instead starts every request clean:
  * processQueue() clears both its response buffer and the port's, which is
  * what discard_incoming() below offers. This adapter keeps the timer, which
- * cannot discard a correctly chunked frame, and offers the clean start
+ * tolerates delivery gaps below its deadline, and offers the clean start
  * explicitly rather than tying it to a request queue it does not own.
  *
  * Errors. QSerialPort reports no per-byte framing or parity errors on Qt 6.
@@ -201,8 +201,8 @@ public:
 
 	// Whether the stale-frame rule is compiled in (RTU with a framing policy).
 	static constexpr bool framed = FramedEndpoint<EndpointT>;
-	// Silence after the last delivered byte that ends a frame in flight: above
-	// the OS serial stack's delivery granularity, far below any request timeout.
+	// Silence after the last delivered byte that ends a frame in flight:
+	// a USB/OS delivery allowance, independent of the request timeout.
 	static constexpr int stale_silence_ms = 50;
 
 	SerialAdapter(PortT& port, EndpointT& endpoint)
@@ -332,11 +332,10 @@ public:
 	/*
 	 * Starts clean: the bytes the OS has buffered for us are dropped and the
 	 * frame in flight is discarded (uncounted — it is a discontinuity, not a
-	 * fault). This is what QModbus does before writing each request, so a late
-	 * response to an abandoned request cannot be read as the answer to the
-	 * next one; a client built on this adapter calls it when it gives up on a
-	 * request, a server when it decides the line carries garbage. It is
-	 * deliberately not automatic: this layer owns no request queue.
+	 * fault). This drops buffered input, not bytes that may arrive later, and
+	 * does not drain already published endpoint packets. A transaction layer
+	 * owns those and decides when to discard them. It is deliberately not
+	 * automatic: this layer owns no request queue.
 	 */
 	void discard_incoming()
 	{
@@ -351,6 +350,9 @@ public:
 
 	void on_error(const QSerialPort::SerialPortError error)
 	{
+		if (m_releasing) {
+			return;   // clear() can itself emit an error: finish the outer recovery first
+		}
 		switch (error) {
 		case QSerialPort::ReadError:
 			drop_incoming(TransportError::Read);
@@ -366,6 +368,18 @@ public:
 		default:
 			return;   // the port's own business
 		}
+		notify();
+	}
+
+	// A transaction's write deadline expired without a port error signal.
+	// Qt owns its copy, so releasing the endpoint's block is safe even when
+	// clear() fails. Already transmitted bytes cannot be retracted.
+	void abort_outgoing()
+	{
+		if (!m_bound) {
+			return;
+		}
+		abort_outgoing(TransportError::Write);
 		notify();
 	}
 
@@ -402,8 +416,11 @@ private:
 	// since nothing but the endpoint references that block.
 	void abort_outgoing(const TransportError error)
 	{
+		const bool releasing = m_releasing;
+		m_releasing = true;
 		(void)m_port.clear(QSerialPort::Output);
 		release_borrowed_block();
+		m_releasing = releasing;
 		m_transport_error = error;
 	}
 

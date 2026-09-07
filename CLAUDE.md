@@ -25,7 +25,11 @@ the full COBS/RTU fault matrix and framed high-baud trials passed. Two Qt-server
 timeouts are retained as failures alongside passing repeats. The follow-up
 `doc/QT_USB_TIMEOUT_DIAGNOSIS.md` reproduces the step-0 failure mechanism by
 stalling host fragment processing, and verifies the Qt reference server's
-USB-aware 50-ms RX deadline. Production headers and MCU images are unchanged.
+USB-aware 50-ms RX deadline. That experiment changed no production headers or
+MCU images. The subsequent `doc/QT_CLIENT_RECOVERY.md` fixes reproducible
+desktop-only event ordering, write deadlines, cancellation/retry accounting
+and nested error cleanup in SerialAdapter/RtuClient, with 202 host checks.
+It does not reopen or change the protocol cores, CRC, UART or MCU adapter.
 The runner keeps a trace by default and returns the verifier's failure after
 restoring the board. Do not reinterpret the old untraced failure as proved,
 claim unbounded Qt/VCP reliability, or count host-only tests as board coverage.
@@ -196,7 +200,7 @@ sh src/adapters/qt/tests/run.sh
 ```
 
 It runs `adapters/qt/SerialAdapter.h` and the QModbus-shaped
-`adapters/qt/RtuClient.h` on a `QIODevice` stand-in for the port (164 checks,
+`adapters/qt/RtuClient.h` on a `QIODevice` stand-in for the port (202 checks,
 a real event loop, no COM port), the compile-fail contract, and builds
 `qmodbus_bench`, the PC side of the hardware comparison against QtSerialBus.
 An additional 22-check test exercises its in-memory journal and one-shot

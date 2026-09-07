@@ -33,6 +33,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <span>
 #include <string>
 #include <vector>
@@ -66,6 +67,10 @@ public:
 		}
 	}
 
+	// Write completion and its notification are distinct OS/Qt events.
+	void settle_without_signal() { m_pending = 0; }
+	void notify_written() { emit bytesWritten(0); }
+
 	void raise(const QSerialPort::SerialPortError error) { emit errorOccurred(error); }
 
 	// Accept at most `limit` bytes per write (-1: everything), as a port whose
@@ -74,10 +79,23 @@ public:
 
 	// clear() refuses and changes nothing, as a port whose device is gone does.
 	void set_clear_fails(const bool fails) noexcept { m_clear_fails = fails; }
+	void set_clear_error(const QSerialPort::SerialPortError error) noexcept { m_clear_error = error; }
+	[[nodiscard]] unsigned clear_calls() const noexcept { return m_clear_calls; }
 
 	// QSerialPort::clear(): drops what the OS holds, in the asked directions.
 	bool clear(const QSerialPort::Directions directions = QSerialPort::AllDirections)
 	{
+		++m_clear_calls;
+		if (m_clear_error != QSerialPort::NoError) {
+			// Bound the negative test itself: a recursive error/clear loop
+			// must fail an assertion, not overflow the host process's stack.
+			if (m_clear_depth < 4u) {
+				++m_clear_depth;
+				emit errorOccurred(m_clear_error);
+				--m_clear_depth;
+			}
+			return false;
+		}
 		if (m_clear_fails) {
 			return false;
 		}
@@ -134,6 +152,9 @@ private:
 	qint64 m_pending = 0;
 	qint64 m_write_limit = -1;
 	bool m_clear_fails = false;
+	QSerialPort::SerialPortError m_clear_error = QSerialPort::NoError;
+	unsigned m_clear_calls = 0u;
+	unsigned m_clear_depth = 0u;
 	qint32 m_baud = 115200;
 };
 
@@ -704,6 +725,268 @@ int main(int argc, char** argv)
 		answer(0x11u, 0x03u, std::vector<uint8_t>{0x02u, 0x00u, 0x05u});
 		check(completed == 1u, "which completes normally");
 		check(rtu.unbind(), "the client releases the port");
+	}
+
+	group("QtRtuClientRxBeforeWriteNotification");
+	for (const bool settled : {false, true}) {
+		FakePort reordered_port;
+		Client reordered_link;
+		RtuClient reordered{reordered_port, reordered_link};
+		reordered.set_response_timeout_ms(40);
+		reordered.set_retries(0);
+		unsigned completed = 0;
+		Response seen;
+		check(reordered.bind() && reordered.send(0x11u, 0x03u,
+			std::vector<uint8_t>{0u, 0u, 0u, 1u}, RtuClient::Handler{
+			[&](const Response& response) { ++completed; seen = response; }}), "reordered-event request queued");
+		pump(10);
+		(void)reordered_port.take_written();
+		if (settled) {
+			reordered_port.settle_without_signal();
+		}
+		reordered_port.feed(make_adu(0x11u, 0x03u, std::vector<uint8_t>{2u, 0u, 7u}));
+		reordered_port.settle_without_signal();
+		reordered_port.notify_written();
+		check(completed == 1u && seen.state == RequestState::Completed && seen.attempts == 1u,
+			"RX before bytesWritten is retained, including when TX state becomes visible only later");
+		pump(60);
+		check(completed == 1u && reordered.idle(), "no delayed timeout follows the completed early response");
+	}
+
+	group("QtRtuClientBlockedOutput");
+	{
+		FakePort blocked_port;
+		Client blocked_link;
+		RtuClient blocked{blocked_port, blocked_link};
+		blocked.set_response_timeout_ms(15);
+		blocked.set_retries(0);
+		unsigned completed = 0;
+		Response seen;
+		check(blocked.bind() && blocked.send(0x11u, 0x03u,
+			std::vector<uint8_t>{0u, 0u, 0u, 1u}, RtuClient::Handler{
+			[&](const Response& response) { ++completed; seen = response; }}), "a write that never drains is queued");
+		pump(40);
+		check(completed == 1u && seen.state == RequestState::WriteError && seen.attempts == 1u &&
+			blocked.idle() && !blocked_link.tx_active() && blocked_port.bytesToWrite() == 0,
+			"a stalled accepted write terminates and returns its block within the write deadline");
+		(void)blocked_port.take_written();
+		check(blocked.send(0x11u, 0x03u, std::vector<uint8_t>{0u, 1u, 0u, 1u},
+			RtuClient::Handler{[&](const Response& response) { ++completed; seen = response; }}),
+			"the next transaction can be queued after a stalled write");
+		pump(5);
+		blocked_port.drain();
+		blocked_port.feed(make_adu(0x11u, 0x03u, std::vector<uint8_t>{2u, 0u, 8u}));
+		check(completed == 2u && seen.state == RequestState::Completed && blocked.idle(),
+			"the next transaction completes after the failed write");
+	}
+
+	group("QtRtuClientBusyIsNotAnAttempt");
+	{
+		FakePort busy_port;
+		Client busy_link;
+		RtuClient busy_client{busy_port, busy_link};
+		busy_client.set_response_timeout_ms(50);
+		busy_client.set_retries(0);
+		(void)busy_port.write("old", 3);
+		unsigned completed = 0;
+		Response seen;
+		check(busy_client.bind() && busy_client.send(0x11u, 0x03u,
+			std::vector<uint8_t>{0u, 0u, 0u, 1u}, RtuClient::Handler{
+			[&](const Response& response) { ++completed; seen = response; }}), "request waits for an already busy port");
+		pump(10);
+		busy_port.drain();
+		(void)busy_port.take_written();
+		pump(5);
+		busy_port.drain();
+		busy_port.feed(make_adu(0x11u, 0x03u, std::vector<uint8_t>{2u, 0u, 9u}));
+		check(completed == 1u && seen.state == RequestState::Completed && seen.attempts == 1u,
+			"Busy polls do not consume attempts or retry budget");
+	}
+	{
+		FakePort busy_port;
+		Client busy_link;
+		RtuClient busy_client{busy_port, busy_link};
+		busy_client.set_response_timeout_ms(15);
+		(void)busy_port.write("old", 3);
+		unsigned completed = 0;
+		Response seen;
+		check(busy_client.bind() && busy_client.send(0x11u, 0x03u,
+			std::vector<uint8_t>{0u, 0u, 0u, 1u}, RtuClient::Handler{
+			[&](const Response& response) { ++completed; seen = response; }}), "permanently busy port request queued");
+		pump(40);
+		check(completed == 1u && seen.state == RequestState::WriteError && seen.attempts == 0u && busy_client.idle(),
+			"a request cannot poll Busy forever or pretend it was transmitted");
+	}
+
+	group("QtRtuClientCancellationSnapshot");
+	{
+		FakePort cancel_port;
+		Client cancel_link;
+		RtuClient cancel_client{cancel_port, cancel_link};
+		unsigned cancelled = 0;
+		unsigned completed = 0;
+		bool rebound = false;
+		check(cancel_client.bind() && cancel_client.send(0x11u, 0x03u,
+			std::vector<uint8_t>{0u, 0u, 0u, 1u}, RtuClient::Handler{[&](const Response& response) {
+				cancelled += response.state == RequestState::Cancelled ? 1u : 0u;
+				rebound = cancel_client.bind() && cancel_client.send(0x11u, 0x04u,
+					std::vector<uint8_t>{0u, 0u, 0u, 1u}, RtuClient::Handler{[&](const Response& next) {
+						completed += next.state == RequestState::Completed ? 1u : 0u;
+						cancelled += next.state == RequestState::Cancelled ? 1u : 0u;
+					}});
+			}}), "cancellation handler is allowed to start a new binding");
+		check(cancel_client.unbind() && rebound && cancelled == 1u && cancel_client.pending() == 1u,
+			"unbind cancels its original queue, not a request queued by a rebound handler");
+		pump(5);
+		cancel_port.drain();
+		cancel_port.feed(make_adu(0x11u, 0x04u, std::vector<uint8_t>{2u, 0u, 10u}));
+		check(completed == 1u && cancelled == 1u && cancel_client.idle(), "the rebound request survives and completes exactly once");
+	}
+
+	group("QtRtuClientWriteDeadlineRecovery");
+	{
+		FakePort recovery_port;
+		Client recovery_link;
+		RtuClient recovery{recovery_port, recovery_link};
+		recovery.set_response_timeout_ms(15);
+		recovery.set_retries(0);
+		std::vector<RequestState> states;
+		std::vector<unsigned> attempts;
+		const auto capture = [&]() {
+			return RtuClient::Handler{[&](const Response& response) {
+				states.push_back(response.state);
+				attempts.push_back(response.attempts);
+			}};
+		};
+		check(recovery.bind() && recovery.send(0x11u, 0x03u,
+			std::vector<uint8_t>{0u, 0u, 0u, 1u}, capture()) &&
+			recovery.send(0x11u, 0x04u, std::vector<uint8_t>{0u, 0u, 0u, 1u}, capture()),
+			"two requests queued before a failed output clear");
+		recovery_port.set_clear_fails(true);
+		pump(60);
+		check(states == std::vector<RequestState>{RequestState::WriteError, RequestState::WriteError} &&
+			attempts == std::vector<unsigned>{1u, 0u} && recovery.idle() && !recovery_link.tx_active() &&
+			recovery_port.bytesToWrite() == 8,
+			"failed clear cannot retain an endpoint block or wedge the following queued request");
+		recovery_port.set_clear_fails(false);
+		recovery_port.drain();
+		check(recovery.send(0x11u, 0x03u, std::vector<uint8_t>{0u, 0u, 0u, 1u}, capture()),
+			"the recovered port accepts new work");
+		pump(5);
+		recovery_port.settle_without_signal();
+		pump(20);   // no bytesWritten: the write deadline polls the observable port state
+		check(states.size() == 2u && !recovery_link.tx_active(),
+			"lost bytesWritten alone is not a write error when the port has actually drained");
+		recovery_port.feed(make_adu(0x11u, 0x03u, std::vector<uint8_t>{2u, 0u, 8u}));
+		check(states.size() == 3u && states.back() == RequestState::Completed && attempts.back() == 1u && recovery.idle(),
+			"a fresh response window follows the polled write completion");
+		pump(40);
+		check(states.size() == 3u, "stale write/response timers cannot complete a request twice");
+	}
+
+	group("QtRtuClientAbandonedInput");
+	{
+		FakePort stale_port;
+		Client stale_link;
+		RtuClient stale_client{stale_port, stale_link};
+		stale_client.set_response_timeout_ms(15);
+		stale_client.set_retries(0);
+		unsigned completed = 0u;
+		Response seen;
+		const auto capture = [&]() {
+			return RtuClient::Handler{[&](const Response& response) { ++completed; seen = response; }};
+		};
+		const auto reply = make_adu(0x11u, 0x03u, std::vector<uint8_t>{2u, 0u, 8u});
+		stale_link.consume(reply);   // a packet predating the client binding
+		check(stale_link.has_packet() && stale_client.bind() && stale_client.send(0x11u, 0x03u,
+			std::vector<uint8_t>{0u, 0u, 0u, 1u}, capture()), "new session starts with a pre-existing decoded packet");
+		pump(5);
+		stale_port.drain();
+		check(!stale_link.has_packet() && completed == 0u, "a packet decoded before the request cannot answer it");
+		stale_port.feed(std::span<const uint8_t>{reply}.first(4u));
+		check(stale_link.assembling() && stale_client.adapter().deadline_armed(), "a partial response is now in flight");
+		pump(20);
+		check(completed == 1u && seen.state == RequestState::Timeout && !stale_link.assembling() &&
+			!stale_client.adapter().deadline_armed() && stale_link.framing_stats().stale_frames == 0u,
+			"request timeout immediately discards its partial response, without waiting for the 50 ms stale timer");
+		check(stale_client.send(0x11u, 0x03u, std::vector<uint8_t>{0u, 0u, 0u, 1u}, capture()),
+			"another request follows the partial-response timeout");
+		pump(5);
+		stale_port.drain();
+		stale_port.feed(reply);
+		check(completed == 2u && seen.state == RequestState::Completed && stale_client.idle(),
+			"the next complete response is not appended to an abandoned prefix");
+	}
+
+	group("QtRtuClientMaximumRetryCount");
+	{
+		FakePort retry_port;
+		Client retry_link;
+		RtuClient retry_client{retry_port, retry_link};
+		retry_client.set_response_timeout_ms(15);
+		retry_client.set_retries(std::numeric_limits<int>::max());
+		unsigned completed = 0u;
+		Response seen;
+		check(retry_client.bind() && retry_client.send(0x11u, 0x03u,
+			std::vector<uint8_t>{0u, 0u, 0u, 1u}, RtuClient::Handler{
+			[&](const Response& response) { ++completed; seen = response; }}), "INT_MAX retries can be queued without signed overflow");
+		pump(5);
+		retry_port.drain();
+		pump(20);
+		retry_port.drain();
+		retry_port.feed(make_adu(0x11u, 0x03u, std::vector<uint8_t>{2u, 0u, 8u}));
+		check(completed == 1u && seen.state == RequestState::Completed && seen.attempts == 2u,
+			"the maximum retry setting retains its budget and completes on the second attempt");
+	}
+
+	group("QtSerialAdapterErrorDuringClear");
+	{
+		FakePort error_port;
+		Client error_link;
+		ClientAdapter error_adapter{error_port, error_link};
+		unsigned services = 0u;
+		check(error_adapter.bind(), "adapter for nested port errors binds");
+		error_adapter.set_service_handler(ClientAdapter::ServiceHandler{[&]() { ++services; }});
+		auto message = error_link.make_message(0x11u, 0x03u, 4u);
+		check(message && message.append_be<uint32_t>(1u) && error_link.send(message) == modbus::SendResult::Sent,
+			"a frame is borrowed before a device failure");
+		error_port.set_clear_error(QSerialPort::ResourceError);
+		const unsigned before = error_port.clear_calls();
+		error_port.raise(QSerialPort::ResourceError);
+		check(error_port.clear_calls() == before + 1u && services == 1u && error_link.stats().rx.stream_gaps == 1u &&
+			!error_link.tx_active() && error_adapter.last_transport_error() == adapters::qt::TransportError::Resource,
+			"a clear() error cannot recursively clear the port, multiply gaps or notify partial recovery");
+		error_port.set_clear_error(QSerialPort::NoError);
+		error_port.drain();
+	}
+
+	group("QtRtuClientErrorDuringTimeout");
+	{
+		FakePort error_port;
+		Client error_link;
+		RtuClient error_client{error_port, error_link};
+		error_client.set_response_timeout_ms(15);
+		error_client.set_retries(0);
+		unsigned completed = 0u;
+		Response seen;
+		const auto capture = [&]() {
+			return RtuClient::Handler{[&](const Response& response) { ++completed; seen = response; }};
+		};
+		check(error_client.bind() && error_client.send(0x11u, 0x03u,
+			std::vector<uint8_t>{0u, 0u, 0u, 1u}, capture()), "a request is queued before the port disappears");
+		pump(5);
+		error_port.drain();
+		error_port.set_clear_error(QSerialPort::ResourceError);
+		pump(30);
+		check(completed == 1u && seen.state == RequestState::WriteError && seen.attempts == 1u && error_client.idle(),
+			"a resource error inside timeout cleanup completes once without reading a popped queue head");
+		error_port.set_clear_error(QSerialPort::NoError);
+		check(error_client.send(0x11u, 0x04u, std::vector<uint8_t>{0u, 0u, 0u, 1u}, capture()), "a request follows the cleanup error");
+		pump(5);
+		error_port.drain();
+		error_port.feed(make_adu(0x11u, 0x04u, std::vector<uint8_t>{2u, 0u, 8u}));
+		check(completed == 2u && seen.state == RequestState::Completed && error_client.idle(),
+			"the queue recovers after an error nested in timeout cleanup");
 	}
 
 	group("CobsOverSerial");

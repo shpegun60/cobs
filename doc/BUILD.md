@@ -27,6 +27,8 @@ Current COBS documentation is split by boundary:
   live fault coverage, restored firmware, Qt/VCP failures and control repeats.
 - [QT_USB_TIMEOUT_DIAGNOSIS.md](QT_USB_TIMEOUT_DIAGNOSIS.md) — controlled Qt
   fragment-loss reproduction, USB receive deadline, trace and regression tests.
+- [QT_CLIENT_RECOVERY.md](QT_CLIENT_RECOVERY.md) — desktop RX/TX ordering,
+  bounded write failure, cancellation/retry guards and live interop follow-up.
 
 ## Toolchain
 

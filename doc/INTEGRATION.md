@@ -411,19 +411,34 @@ the next request from inside the callback cannot shorten the turnaround; a
 write or resource error while a request is leaving finishes it as
 `WriteError` at once instead of after the response timeout.
 
+The configured timeout also bounds waiting for a busy port and draining the
+request's write; expiry finishes as `WriteError` without retrying a possibly
+partial frame. Write completion starts a fresh full response timeout. Allow
+enough time for the whole ADU at the configured baud. `Busy` does not consume
+retry attempts. An early response is retained when `readyRead` precedes
+`bytesWritten`; a response timeout discards its partial RX immediately.
+Cancellation affects the detached session's queue, not requests queued by a
+callback that rebinds. See the [recovery contract and tests](QT_CLIENT_RECOVERY.md).
+
+A clean start drops already buffered input, not future late bytes. RTU has no
+transaction ID, so a later response with the same address/function can still
+be indistinguishable from a new response. `Response::data` is callback-scoped;
+validate function-specific response data in the application.
+
 Where it deliberately differs from QModbus is written down in
 `SerialAdapter.h`: Qt's RTU server drops a buffered fragment when the next
 delivery arrives more than 3.5 character times after the previous one, which
 on a desktop measures the operating system's scheduling rather than the
 wire and can discard an intact frame that arrived in two deliveries; this
-adapter uses a silence timer instead, which cannot. Qt reports a read error
+adapter uses a larger, independent 50-ms silence allowance instead. That
+allowance is finite too, not a guarantee against arbitrary OS stalls. Qt reports a read error
 to the application and keeps its buffer; this adapter treats it as a stream
 discontinuity, because a lost byte inside a length-prefixed frame would
 otherwise consume the frame behind it.
 
 Build it with `include(src/adapters/qt/qt.pri)` next to `rtu.pri` or
 `cobs.pri`; it adds `QT += serialport` and nothing else. Verified by
-`sh src/adapters/qt/tests/run.sh` (82 checks on a `QIODevice` stand-in for
+`sh src/adapters/qt/tests/run.sh` (202 checks on a `QIODevice` stand-in for
 the port, both protocols, a real event loop, no COM port), and against
 QtSerialBus itself on the H7S: `RtuClient` and `QModbusRtuSerialClient` run
 the same 55-step script against the board's server and agree scenario for

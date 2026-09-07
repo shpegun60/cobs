@@ -30,8 +30,9 @@
  * attempt (1000 ms, Qt's default) with retries (3, Qt's default), because a
  * silent server is the normal failure. A clean start before every attempt —
  * QModbusRtuSerialClientPrivate::processQueue() clears its response buffer and
- * the port's — so a late response to an abandoned request cannot be read as
- * the answer to this one; here that is SerialAdapter::discard_incoming(). An
+ * the port's — so already buffered bytes do not answer a new request. RTU
+ * has no transaction ID: a late response arriving AFTER that reset with the
+ * same address and function is still indistinguishable from a new one. An
  * inter-frame delay between transactions, computed exactly as
  * QModbusDevicePrivate::calculateInterFrameDelay does: 3.5 character times of
  * eleven bits below 19200 baud, a flat 2 ms at or above it, never below a
@@ -53,6 +54,11 @@
  * request is finished as RequestState::WriteError at once, not after the
  * response timeout, and the queue moves on. A read error drops the response
  * in flight; the request keeps waiting for its timeout, as it does in Qt.
+ * The configured timeout also bounds the write phase (including waiting for
+ * a busy port), starting when an attempt first reaches the port. A stalled
+ * write finishes as WriteError without retrying a possibly partial frame.
+ * Once the write completes, the peer gets a fresh, full response timeout.
+ * These are event-loop deadlines: a blocked event loop services them late.
  *
  * What it does not copy. Qt's request/reply objects, data units and register
  * models: a request here is an address, a function and its bytes, and a
@@ -90,7 +96,7 @@ enum class RequestState : uint8_t {
 	Completed,   // a response matching address and function arrived
 	Broadcast,   // address 0: the request left the port, nobody answers it
 	Timeout,     // no matching response within the timeout, retries exhausted
-	WriteError,  // the endpoint or the port refused the frame, or the port failed while it was leaving
+	WriteError,  // refused/failed transmission, or the write phase exceeded its deadline
 	Cancelled,   // unbind() while the request was queued
 };
 
@@ -101,7 +107,7 @@ struct Response final {
 	bool exception = false;           // the peer answered with function | 0x80
 	uint8_t exception_code = 0u;      // meaningful when exception is true
 	std::span<const uint8_t> data{};  // the packet's own memory: valid during the callback only
-	unsigned attempts = 0u;           // transmissions it took, including the one that succeeded
+	unsigned attempts = 0u;           // accepted sends, including stalled writes; Busy/refusal do not count
 };
 
 template<class EndpointT, class PortT = QSerialPort>
@@ -129,7 +135,7 @@ public:
 		m_response.setTimerType(Qt::PreciseTimer);
 		m_schedule.setSingleShot(true);
 		m_schedule.setTimerType(Qt::PreciseTimer);
-		QObject::connect(&m_response, &QTimer::timeout, &m_response, [this]() { on_response_timeout(); });
+		QObject::connect(&m_response, &QTimer::timeout, &m_response, [this]() { on_deadline(); });
 		QObject::connect(&m_schedule, &QTimer::timeout, &m_schedule, [this]() { process_queue(); });
 	}
 
@@ -170,8 +176,12 @@ public:
 		m_response.stop();
 		m_schedule.stop();
 		m_state = State::Idle;
-		while (!m_queue.empty()) {
-			finish_head(RequestState::Cancelled, {}, false, 0u);
+		// A cancellation handler may bind and queue work for a new session.
+		// Cancel only the requests that belonged to the detached binding.
+		std::deque<Pending> cancelled;
+		cancelled.swap(m_queue);
+		for (Pending& head : cancelled) {
+			notify_finished(head, RequestState::Cancelled, {}, false, 0u);
 		}
 		return true;
 	}
@@ -179,7 +189,8 @@ public:
 	[[nodiscard]] bool bound() const noexcept { return m_adapter.bound(); }
 	[[nodiscard]] Adapter& adapter() noexcept { return m_adapter; }
 
-	// QModbus's knobs, with its names and its defaults.
+	// QModbus's names/defaults. This interval also bounds the write phase:
+	// allow enough time for the whole ADU at the selected baud rate.
 	void set_response_timeout_ms(const int milliseconds) noexcept
 	{
 		m_response_timeout_ms = std::max(1, milliseconds);
@@ -244,7 +255,7 @@ public:
 		pending.function = function;
 		pending.data.assign(data.begin(), data.end());
 		pending.handler = static_cast<Handler&&>(on_finished);
-		pending.attempts_left = m_retries + 1;
+		pending.attempts_left = static_cast<unsigned>(m_retries) + 1u;
 		m_queue.push_back(static_cast<Pending&&>(pending));
 		schedule_next(inter_frame_delay_ms());
 		return true;
@@ -256,8 +267,8 @@ public:
 	/*
 	 * Called by the adapter whenever the endpoint's state may have changed: a
 	 * chunk was consumed, a transmission finished or failed, a gap or a stale
-	 * frame was announced. Settles a transport error first, drains ready
-	 * packets, then advances the transaction.
+	 * frame was announced. Settles a transport error first, advances write
+	 * completion, then drains ready packets. RX may precede bytesWritten.
 	 */
 	void service()
 	{
@@ -269,9 +280,6 @@ public:
 			m_response.stop();
 			finish_head(RequestState::WriteError, {}, false, 0u);
 			schedule_next(inter_frame_delay_ms());
-		}
-		while (auto packet = m_endpoint.pop_packet()) {
-			on_packet(packet);
 		}
 		if (m_state == State::Sending && !m_endpoint.tx_active()) {
 			// The frame has left the port. A broadcast is finished by that
@@ -286,6 +294,13 @@ public:
 				m_response.start(m_response_timeout_ms);
 			}
 		}
+		// OS delivery order is not wire order. Keep an early response queued
+		// until the port reports that our write has completed.
+		if (m_state != State::Sending) {
+			while (auto packet = m_endpoint.pop_packet()) {
+				on_packet(packet);
+			}
+		}
 	}
 
 private:
@@ -296,7 +311,7 @@ private:
 		uint8_t function = 0u;
 		std::vector<uint8_t> data;
 		Handler handler;
-		int attempts_left = 1;
+		unsigned attempts_left = 1u;
 		unsigned attempts = 0u;
 	};
 
@@ -319,8 +334,14 @@ private:
 			m_state = State::Idle;
 			return;
 		}
+		// Busy polls share this deadline; restarting it on every poll would
+		// turn a busy port into an unbounded wait again.
+		if (!m_response.isActive()) {
+			m_response.start(m_response_timeout_ms);
+		}
 		// Qt starts every attempt from a clean slate; so does this.
 		m_adapter.discard_incoming();
+		while (m_endpoint.pop_packet()) {}   // includes packets decoded before this session
 
 		Pending& head = m_queue.front();
 		auto message = m_endpoint.make_message(head.address, head.function, head.data.size());
@@ -329,10 +350,10 @@ private:
 			schedule_next(inter_frame_delay_ms());
 			return;
 		}
-		--head.attempts_left;
-		++head.attempts;
 		const modbus::SendResult result = m_endpoint.send(message);
 		if (result == modbus::SendResult::Sent) {
+			--head.attempts_left;
+			++head.attempts;
 			m_state = State::Sending;
 			service();   // a transport that took the frame at once is already done
 		} else if (result == modbus::SendResult::Busy) {
@@ -363,12 +384,37 @@ private:
 		schedule_next(inter_frame_delay_ms());
 	}
 
-	void on_response_timeout()
+	void on_deadline()
 	{
-		if (m_state != State::Waiting || m_queue.empty()) {
+		if (m_queue.empty()) {
 			return;
 		}
-		if (m_queue.front().attempts_left > 0) {
+		if (m_state == State::Sending) {
+			// Completion may be visible even if its notification was lost.
+			m_endpoint.poll(m_adapter.now_ms());
+			if (!m_endpoint.tx_active()) {
+				service();
+			} else {
+				m_adapter.abort_outgoing();   // service() finishes this request as WriteError
+			}
+			return;
+		}
+		if (m_state == State::Scheduled) {
+			// A Busy result did not transmit our frame. Do not clear an older
+			// transfer merely because this queued request ran out of time.
+			m_schedule.stop();
+			finish_head(RequestState::WriteError, {}, false, 0u);
+			schedule_next(inter_frame_delay_ms());
+			return;
+		}
+		if (m_state != State::Waiting) {
+			return;
+		}
+		m_adapter.discard_incoming();   // an abandoned response must not keep its partial frame alive
+		if (m_state != State::Waiting || m_queue.empty()) {
+			return;   // clearing a failed port may have synchronously finished this request
+		}
+		if (m_queue.front().attempts_left > 0u) {
 			m_state = State::Idle;          // retry the same request
 			schedule_next(inter_frame_delay_ms());
 			return;
@@ -386,11 +432,22 @@ private:
 			const bool exception,
 			const uint8_t exception_code)
 	{
+		m_response.stop();
 		Pending head = static_cast<Pending&&>(m_queue.front());
 		m_queue.pop_front();
 		m_state = State::Idle;
 		const int gap = state == RequestState::Broadcast ? m_turnaround_delay_ms : inter_frame_delay_ms();
 		m_earliest_next_ms = m_adapter.now_ms() + static_cast<uint32_t>(gap);
+		notify_finished(head, state, data, exception, exception_code);
+	}
+
+	static void notify_finished(
+			Pending& head,
+			const RequestState state,
+			const std::span<const uint8_t> data,
+			const bool exception,
+			const uint8_t exception_code)
+	{
 		if (head.handler) {
 			Response response;
 			response.state = state;

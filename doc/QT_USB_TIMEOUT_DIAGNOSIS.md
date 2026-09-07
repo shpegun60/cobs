@@ -5,6 +5,11 @@ SPDX-License-Identifier: MIT -->
 
 7 September 2026, follow-up to the [live regression](HARDWARE_REGRESSION_2026-09-07.md).
 
+This is the historical reference-server diagnosis. The later
+[client recovery follow-up](QT_CLIENT_RECOVERY.md) fixes separate production
+desktop error paths; the unchanged-header statement below applies to this
+experiment, not to that later change.
+
 The timeout mechanism is reproduced on the H7S: **Qt's server discards a
 valid request fragment when Windows delivers the rest after its default
 2-ms receive-fragment deadline**. Configuring that reference server for USB/OS
