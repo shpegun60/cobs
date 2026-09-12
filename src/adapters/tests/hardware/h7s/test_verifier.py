@@ -46,11 +46,30 @@ def main():
             next(row for row in rows if row["command"] == "Z")["writes"][-1]["bytes"] = 255
         elif name == "readback-mismatch":
             receipt["readback_sha256"] = "0" * 64
+        elif name == "unknown-schema":
+            receipt["schema"] = 99
+        elif name == "missing-dma-trial":
+            rows.remove(next(row for row in rows if row["command"] == "J"))
+        elif name in ("dma-double-verdict", "idle-delivered-unsafe-prefix"):
+            command = "J" if name == "dma-double-verdict" else "I"
+            index, value = (3, 2) if command == "J" else (2, 8)
+            row = next(row for row in rows if row["command"] == command)
+            row["observations"][index] = value
+            words = row["lines"][-1].split()
+            words[7 + index] = str(value)
+            row["lines"][-1] = " ".join(words)
+        elif name == "fault-preamble-overrun":
+            next(row for row in rows if row["command"] == "K")["fault_newlines"] = 65
+        elif name == "idle-fault-short-input":
+            next(row for row in rows if row["command"] == "I")["writes"][-1]["bytes"] = 7
         else:
             raise AssertionError(name)
 
     cases = ("not-restored", "missing-trial", "failed-assertion", "missing-assertion", "wrong-image",
-             "wrong-dma-count", "missing-ready", "short-physical-input", "readback-mismatch")
+             "wrong-dma-count", "missing-ready", "short-physical-input", "readback-mismatch", "unknown-schema")
+    if base_receipt["schema"] == 2:
+        cases += ("missing-dma-trial", "dma-double-verdict", "idle-delivered-unsafe-prefix",
+                  "fault-preamble-overrun", "idle-fault-short-input")
     with tempfile.TemporaryDirectory(prefix="h7s-audit-verifier-") as temporary:
         folder = Path(temporary)
         for name in cases:

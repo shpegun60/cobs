@@ -583,7 +583,10 @@ Changing memory changes neither the API nor the wire format.
 
 **Format.** COBS: `cobs::Format<Crc = crc::Crc16Bitwise, RxMax = 255 - Crc::wire_size, TxMax = RxMax>`;
 `Format<crc::NoCrc, 255>` is the byte-identical v1 wire format. RTU:
-`modbus::rtu::Format<Crc = crc::Crc16Bitwise, MaxAdu = 256>`. The CRC policy
+`modbus::rtu::Format<Crc = crc::Crc16Bitwise, MaxData = 252>`. TCP:
+`modbus::tcp::Format<Crc = crc::NoCrc, MaxData = 252>`. Every size argument
+counts useful `data()` bytes; protocol envelopes are added automatically.
+See [payload limits](PAYLOAD_LIMITS.md). The CRC policy
 comes from `crc/` (`src/crc/README.md`): the Bitwise engines are the small ones,
 the Table engines the fast ones, equal-width policies share every type
 (`Layout`, `Storage`, `Message`, `Packet`); measured costs on the H7S are in

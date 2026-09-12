@@ -794,6 +794,15 @@ private:
 			uart::detail::IrqGuard guard;
 			m_rxWorkPending = false;
 		}
+		// A UART DMA error can end the UART software state of BOTH directions
+		// without stopping the other hardware channel. The ISR retains that
+		// TX borrow; only a confirmed stop here may return it. Keep the work
+		// doorbell raised while repair fails, independently of CTS or the
+		// periodic watchdog. No blocking abort is added to an ISR.
+		if (m_txAbortPending) {
+			finishTx(false);
+			if (m_txAbortPending) { m_rxWorkPending = true; }
+		}
 
 		// Discontinuities are ordered STRUCTURALLY, never by counting:
 		//  - a zero-length chunk IS an in-band marker, published by every
@@ -997,7 +1006,7 @@ private:
 	using TxTeardown  = TeardownScope<false, true>;
 	using AllTeardown = TeardownScope<true, true>;
 
-	static bool dmaReady(const DMA_HandleTypeDef* const hdma) noexcept
+	static UART_ENGINE_ALWAYS_INLINE bool dmaReady(const DMA_HandleTypeDef* const hdma) noexcept
 	{
 		return hdma != nullptr && hdma->State == HAL_DMA_STATE_READY;
 	}
@@ -1123,7 +1132,7 @@ private:
 		}
 		UART_HandleTypeDef* const huart = m_huart;
 
-		// On BOTH event kinds the HAL has already ENDED the reception before
+		// On BOTH event kinds the HAL normally ENDS the reception before
 		// invoking this callback — verified in the F1, G4 and H7RS HAL
 		// sources:
 		//   TC   -> UART_DMAReceiveCplt() clears CR3.DMAR and sets RxState
@@ -1131,7 +1140,8 @@ private:
 		//   IDLE -> HAL_UART_IRQHandler() clears CR3.DMAR, sets RxState READY
 		//           and calls HAL_DMA_Abort(hdmarx) itself, and only then
 		//           invokes HAL_UARTEx_RxEventCallback.
-		// If reception is somehow STILL running (a continuous mode that
+		// The state checks below enforce both UART and DMA completion. If
+		// reception is somehow STILL running (a continuous mode that
 		// slipped past init(), or a future HAL change), freeze software
 		// ownership and defer the hardware stop to thread context. The
 		// chunk is deliberately NOT published: DMA may still be writing
@@ -1155,6 +1165,14 @@ private:
 			// callback that leaves normal-mode ReceiveToIdle running is HT.
 			return;
 #endif
+			rejectLiveRxEvent();
+			return;
+		}
+		// UART READY alone is not a hardware-stop guarantee: the H7RS IDLE
+		// handler sets it BEFORE HAL_DMA_Abort and ignores that call's result.
+		// On a failed suspend the channel still owns this buffer. Retain the
+		// claim and defer repair, with no publish/cache access/re-arm here.
+		if (!dmaReady(huart->hdmarx)) {
 			rejectLiveRxEvent();
 			return;
 		}
@@ -1350,13 +1368,18 @@ private:
 
 	/* ---------------------------- ISR: TX ------------------------------- */
 
-	void isrTxCplt() noexcept
+	UART_ENGINE_ALWAYS_INLINE void isrTxCplt() noexcept
 	{
 		// Ignore a completion we are not expecting: either nothing is in
 		// flight, or this callback was raised by a HAL abort we are running
 		// (see m_txTeardown) — reporting success there would tell the layer
 		// above that a frame it never sent has been delivered.
-		if (!m_txBusy || m_txTeardown) {
+		if (!m_txBusy || m_txTeardown || m_txAbortPending) {
+			return;
+		}
+		if (!dmaReady(m_huart->hdmatx)) {
+			deferTxAbort();
+			wake();
 			return;
 		}
 
@@ -1390,18 +1413,12 @@ private:
 
 	// Error callback — runs in ISR context, therefore it must NOT call any
 	// blocking HAL abort (HAL_DMA_Abort polls HAL_GetTick, which is frozen
-	// while an interrupt is being serviced). By the time HAL invokes this
-	// callback it has already done the transfer-level cleanup itself:
-	//  - RX errors: with DMA reception active EVERY error is blocking — the
-	//    HAL treats "any error occurs in DMA mode reception" that way, so it
-	//    runs UART_EndRxTransfer() and aborts the RX DMA before calling us,
-	//    leaving RxState READY. That suits us: the partly filled chunk is
-	//    voided, which publishes the zero-length marker the drain loop turns
-	//    into a GapHandler call, and the decoder resynchronizes instead of
-	//    splicing bytes across the corruption;
-	//  - TX-side error: HAL ended the transmission -> gState READY.
-	// This ISR therefore only classifies, releases ownership and defers the
-	// actual re-arm to proceed() (m_started = false), where HAL timeouts work.
+	// while an interrupt is being serviced). A line-error path normally aborts
+	// RX before notifying us. UART_DMAError is different: it changes BOTH UART
+	// software states to READY without aborting the sibling DMA channel. A
+	// UART state is therefore not enough to release either buffer. This ISR
+	// classifies the fault, releases only a confirmed stopped DMA, and retains
+	// any other ownership for proceed(), where blocking HAL timeouts work.
 	void isrError() noexcept
 	{
 		// Suppressed only while BOTH directions are being torn down, i.e. when
@@ -1451,13 +1468,14 @@ private:
 		// global/TX side of the peripheral, so admitting it here would let a
 		// TX-side fault release a chunk that the RX DMA is still writing —
 		// the same ownership hazard, wearing a different hat. RxState READY
-		// means HAL really did end the reception (it does so even for a
-		// TX-triggered DMA fault: UART_DMAError() ends each direction
-		// independently), so the chunk holds an unreliable prefix: void it
-		// and let proceed() re-arm from thread context.
+		// ends the UART software reception, not necessarily its DMA channel.
+		// UART_DMAError() calls UART_EndRxTransfer() even for a TX DMA fault;
+		// that helper changes RxState but does not abort the still-live RX
+		// channel. Void only a confirmed stopped DMA; otherwise retain the
+		// claim until receiveRestart() can stop it from thread context.
 		if (!rx_teardown && m_huart->RxState == HAL_UART_STATE_READY) {
 			++m_stats.rx_errors;
-			voidActiveChunk();
+			if (dmaReady(m_huart->hdmarx)) { voidActiveChunk(); }
 			m_started = false; // proceed() -> receiveRestart() with live tick
 		} else if (!rx_teardown && (errorCode & uart::detail::rx_error_mask)) {
 			// Unreachable while RX runs on DMA (see above); kept for a HAL
@@ -1465,14 +1483,17 @@ private:
 			++m_stats.rx_errors;
 		}
 
-		// TX: HAL ended the transmission on a TX-side error -> release the
-		// borrowed frame so the layer above can free or retry it.
-		if (!tx_teardown && m_txBusy &&
+		// The same cross-direction hazard applies to TX. Keep ownership until
+		// its DMA is stopped, and latch the failure so a late TC cannot turn
+		// it into success. A repeated error must not issue a second verdict.
+		if (!tx_teardown && m_txBusy && !m_txAbortPending &&
 				(deadState || gState == HAL_UART_STATE_READY)) {
-			m_txBusy = false;
-			++m_stats.tx_errors;
-			if (m_txHandler) {
-				m_txHandler(false);
+			if (!dmaReady(m_huart->hdmatx)) {
+				deferTxAbort();
+			} else {
+				m_txBusy = false;
+				++m_stats.tx_errors;
+				if (m_txHandler) { m_txHandler(false); }
 			}
 		}
 
@@ -1509,6 +1530,15 @@ private:
 
 	/* ----------------------- watchdog (main loop) ----------------------- */
 
+	// Called once per failing transfer by its owning ISR. The new bit fits
+	// existing control-state padding on Cortex-M; buffers and geometry stay put.
+	void deferTxAbort() noexcept
+	{
+		m_txAbortPending = true;
+		m_rxWorkPending = true; // the service doorbell covers deferred TX too
+		++m_stats.tx_errors;
+	}
+
 	// TX liveness, judged by what the hardware is doing rather than by a
 	// per-frame deadline — and resolved TX-ONLY, so a transmitter problem
 	// never tears the receiver down and punches a hole in the RX stream.
@@ -1518,6 +1548,7 @@ private:
 		if (!m_txBusy || !m_huart->hdmatx) {
 			return;
 		}
+		if (m_txAbortPending) { return; } // fault recovery owns the verdict, not TC
 		const uint32_t remaining = __HAL_DMA_GET_COUNTER(m_huart->hdmatx);
 
 		// A COMPLETION THAT GOT LOST — and note this is a SUCCESS, not a
@@ -1596,12 +1627,17 @@ private:
 	void finishTx(const bool ok) noexcept
 	{
 		bool notify = false;
+		bool outcome = ok;
 		{
 			TxTeardown ts(*this);
+			// A fault ISR may have won after the watchdog sampled TC but
+			// before this gate. Its latched failure outranks that stale sample.
+			outcome = ok && !m_txAbortPending;
 			if (stopTx()) {
 				uart::detail::IrqGuard guard;
 				if (m_txBusy) {
 					m_txBusy = false;
+					m_txAbortPending = false;
 					m_txProgressValid = false;
 					notify = true;
 				}
@@ -1611,7 +1647,7 @@ private:
 		// while teardown ownership is held. It signals the sole send/proceed
 		// loop rather than re-entering driver control from this mixed context.
 		if (notify && m_txHandler) {
-			m_txHandler(ok);
+			m_txHandler(outcome);
 		}
 	}
 
@@ -1697,6 +1733,7 @@ private:
 				voidActiveChunk(); // transfers confirmed stopped
 				m_started = false; // RX hardware is down; keep software in step
 				m_txBusy = false;
+				m_txAbortPending = false;
 			}
 			// The in-flight frame died with the peripheral: tell the owner,
 			// outside the gate, so it can release or retry it.
@@ -1741,6 +1778,7 @@ private:
 	// while CTS flow control may legitimately hold the transmitter still.
 	bool m_txProgressWatchEnabled = false;
 	bool m_txProgressValid = false;
+	volatile bool m_txAbortPending = false; // terminal error awaiting a confirmed DMA stop
 	uint32_t m_txStallChecks = 0;
 
 	// Non-zero while thread code is inside a HAL teardown. Blocking UART/DMA

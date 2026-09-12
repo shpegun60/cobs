@@ -132,25 +132,24 @@ fi
 echo "OK (disassembly identical)"
 
 echo "=== G4 RX hot-path size/stack budget (pinned GCC 14.3, -Os) ==="
-# The WakeHandler (2026-09-06) added an inlined null test plus delegate call
-# to the RX and TX ISR thunks: 84 -> 100 and 80 -> 94 bytes (the test is
-# inlined on purpose, so an unset handler costs one load and one compare-and-
-# branch per event and no call). Stack, receiveArm, publishActive and the idle
-# proceed() are unchanged. Measured cost: doc/UART_PARANOID_AUDIT.md §9.
+# The 2026-09-12 DMA ownership fix adds inlined DMA-state guards to RX/TX
+# and a pending-fault check to TX. RX grows 100 -> 116 bytes, TX 94 -> 118;
+# RX stack, receiveArm, publishActive and idle proceed remain unchanged.
+# Neither the state predicate nor isrTxCplt may become an out-of-line call.
 RX_SIZE=$("$NM" -S -C "$OUT/test_g4.o" \
   | grep -F 'Uart<256u, 4u>::init' \
   | grep -F 'lambda(void*, unsigned short)#1}::_FUN' \
   | awk '{print $2}' | head -n 1)
-if [ "$RX_SIZE" != "00000064" ]; then
-  echo "FAIL: RX callback thunk is $RX_SIZE bytes, expected 00000064"
+if [ "$RX_SIZE" != "00000074" ]; then
+  echo "FAIL: RX callback thunk is $RX_SIZE bytes, expected 00000074"
   exit 1
 fi
 TX_SIZE=$("$NM" -S -C "$OUT/test_g4.o" \
   | grep -F 'Uart<256u, 4u>::init' \
   | grep -F 'lambda(void*)#1}::_FUN' \
   | awk '{print $2}' | head -n 1)
-if [ "$TX_SIZE" != "0000005e" ]; then
-  echo "FAIL: TX callback thunk is $TX_SIZE bytes, expected 0000005e"
+if [ "$TX_SIZE" != "00000076" ]; then
+  echo "FAIL: TX callback thunk is $TX_SIZE bytes, expected 00000076"
   exit 1
 fi
 RX_STACK=$(grep -F 'Uart<256, 4>::init' "$OUT/test_g4.su" \
@@ -172,7 +171,11 @@ if [ "$ARM_SIZE" != "0000006c" ] || \
   echo "FAIL: hot symbols changed: receiveArm=$ARM_SIZE publish=$PUBLISH_SIZE proceed=$PROCEED_SIZE"
   exit 1
 fi
-echo "OK (RX 100 B/8 B stack, TX 94 B, arm 108 B, publish 40 B, idle proceed 36 B)"
+if "$NM" -C "$OUT/test_g4.o" | grep -Eq 'Uart<.*>::(dmaReady|isrTxCplt)\('; then
+  echo "FAIL: DMA-state guard or TX ISR gained an out-of-line wrapper"
+  exit 1
+fi
+echo "OK (RX 116 B/8 B stack, TX 118 B, arm 108 B, publish 40 B, idle proceed 36 B)"
 
 echo "=== G4 probe-on: DWT backend compiles, all three scopes instantiated ==="
 "$GCC" $COMMON_FLAGS $G4_FLAGS -DUART_ENGINE_PROBE=1 \

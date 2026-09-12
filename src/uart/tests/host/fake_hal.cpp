@@ -171,6 +171,21 @@ void rx_idle() noexcept
 	endRxAndNotify(HAL_UART_RXEVENT_IDLE);
 }
 
+void rx_idle_abort_failure() noexcept
+{
+	if (!g_model.rx_armed) { return; }
+	auto* const h = g_model.huart;
+	h->Instance->CR3 &= ~USART_CR3_DMAR;
+	h->RxState = HAL_UART_STATE_READY;
+	h->RxEventType = HAL_UART_RXEVENT_IDLE;
+	h->hdmarx->State = HAL_DMA_STATE_TIMEOUT;
+	h->hdmarx->ErrorCode |= HAL_DMA_ERROR_TIMEOUT;
+	// The real H7RS IDLE handler ignores HAL_DMA_Abort's return status. The
+	// channel may still own a bus transaction; do NOT release its buffer here.
+	const auto got = static_cast<uint16_t>(g_model.rx_len - h->hdmarx->CountRemaining);
+	raise([got]() { notifyRx(g_model.huart, got); });
+}
+
 void rx_tc() noexcept
 {
 	if (!g_model.rx_armed) { return; }
@@ -258,6 +273,28 @@ void tx_error() noexcept
 	g_model.tx_armed = false;
 	g_model.huart->gState = HAL_UART_STATE_READY;
 	g_model.huart->Instance->CR3 &= ~USART_CR3_DMAT;
+	g_model.huart->hdmatx->State = HAL_DMA_STATE_READY;
+	raise([]() { notifyError(g_model.huart); });
+}
+
+void dma_error(const bool rx_fault) noexcept
+{
+	auto* const h = g_model.huart;
+	// UART_DMAError (F1/G4/H7RS) ends BOTH UART software states. The DMA
+	// controller stopped only its own failing channel, not its sibling.
+	if (rx_fault) {
+		h->hdmarx->State = HAL_DMA_STATE_READY;
+		h->hdmarx->ErrorCode |= HAL_DMA_ERROR_TE;
+		mark(g_model.rx_dst, Slot::Free);
+		g_model.rx_armed = false;
+	} else {
+		h->hdmatx->State = HAL_DMA_STATE_READY;
+		h->hdmatx->ErrorCode |= HAL_DMA_ERROR_TE;
+		g_model.tx_armed = false;
+	}
+	if ((h->Instance->CR3 & USART_CR3_DMAT) != 0u) { h->gState = HAL_UART_STATE_READY; }
+	if ((h->Instance->CR3 & USART_CR3_DMAR) != 0u) { h->RxState = HAL_UART_STATE_READY; }
+	h->ErrorCode |= HAL_UART_ERROR_DMA;
 	raise([]() { notifyError(g_model.huart); });
 }
 

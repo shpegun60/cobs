@@ -37,10 +37,10 @@ public:
 template<
 	class PolicyT,
 	class StorageT = wire::Pool<2, 1>,
-	std::size_t MaxAdu = modbus::rtu::standard_adu_size>
+	std::size_t MaxData = modbus::max_data_size>
 void round_trip(const char* const name)
 {
-	using Endpoint = modbus::rtu::Endpoint<StorageT, modbus::rtu::Format<PolicyT, MaxAdu>>;
+	using Endpoint = modbus::rtu::Endpoint<StorageT, modbus::rtu::Format<PolicyT, MaxData>>;
 	using Layout = typename Endpoint::Layout;
 
 	group(name);
@@ -75,10 +75,9 @@ void round_trip(const char* const name)
 	packet.reset();
 
 	check(Endpoint::crc_size == PolicyT::wire_size &&
-	      Endpoint::max_send_size ==
-	          MaxAdu - 2u - PolicyT::wire_size &&
+	      Endpoint::max_send_size == MaxData &&
 	      Layout::adu_size_for_data(Endpoint::max_send_size) ==
-	          MaxAdu,
+	          MaxData + 2u + PolicyT::wire_size,
 	      "Endpoint geometry is a compile-time function of policy wire_size");
 
 	capture.borrowed = false;
@@ -168,12 +167,14 @@ static_assert(wire::Storage<SpyStorage, modbus::rtu::Endpoint<>::Geometry>);
 
 static_assert(modbus::rtu::Layout<::crc::NoCrc::wire_size>::crc_size == 0u);
 static_assert(modbus::rtu::Layout<::crc::NoCrc::wire_size>::min_adu_size == 2u);
-static_assert(modbus::rtu::Layout<::crc::NoCrc::wire_size>::max_data_size == 254u);
-static_assert(modbus::rtu::Layout<::crc::Crc8Bitwise::wire_size>::max_data_size == 253u);
+static_assert(modbus::rtu::Layout<::crc::NoCrc::wire_size>::max_data_size == 252u);
+static_assert(modbus::rtu::Layout<::crc::Crc8Bitwise::wire_size>::max_data_size == 252u);
 static_assert(modbus::rtu::Layout<::crc::Crc16Bitwise::wire_size>::max_data_size == 252u);
-static_assert(modbus::rtu::Layout<Sum24::wire_size>::max_data_size == 251u);
-static_assert(modbus::rtu::Layout<::crc::Crc32Bitwise::wire_size>::max_data_size == 250u);
-static_assert(modbus::rtu::Layout<::crc::Crc64Bitwise::wire_size>::max_data_size == 246u);
+static_assert(modbus::rtu::Layout<Sum24::wire_size>::max_data_size == 252u);
+static_assert(modbus::rtu::Layout<::crc::Crc32Bitwise::wire_size>::max_data_size == 252u);
+static_assert(modbus::rtu::Layout<::crc::Crc64Bitwise::wire_size>::max_data_size == 252u);
+static_assert(modbus::rtu::Layout<0u>::max_adu_size == 254u);
+static_assert(modbus::rtu::Layout<8u>::max_adu_size == 262u);
 
 } // namespace
 
@@ -190,14 +191,14 @@ int main()
 	round_trip<::crc::Crc64Table>("CRC64TableGeometry");
 	round_trip<::crc::NoCrc>("NoCrcGeometry");
 	round_trip<::crc::NoCrc, wire::Heap>("NoCrcHeapGeometry");
-	round_trip<::crc::Crc16Bitwise, wire::Heap, 64u>("Local64ByteCeiling");
-	round_trip<::crc::Crc16Table, wire::Pool<2, 1>, 1024u>("Private1024ByteAdu");
-	round_trip<::crc::Crc64Table, wire::Heap, 65535u>("LargestRepresentableAdu");
-	round_trip<::crc::NoCrc, wire::Heap, 2u>("NoCrcMinimumAdu");
-	round_trip<::crc::Crc8Bitwise, wire::Heap, 3u>("Crc8MinimumAdu");
-	round_trip<::crc::Crc16Bitwise, wire::Heap, 4u>("Crc16MinimumAdu");
-	round_trip<::crc::Crc32Bitwise, wire::Heap, 6u>("Crc32MinimumAdu");
-	round_trip<::crc::Crc64Bitwise, wire::Heap, 10u>("Crc64MinimumAdu");
+	round_trip<::crc::Crc16Bitwise, wire::Heap, 64u>("Local64DataBytes");
+	round_trip<::crc::Crc16Table, wire::Pool<2, 1>, 1024u>("Private1024DataBytes");
+	round_trip<::crc::Crc64Table, wire::Heap, 65525u>("LargestRepresentableAdu");
+	round_trip<::crc::NoCrc, wire::Heap, 0u>("NoCrcMinimumAdu");
+	round_trip<::crc::Crc8Bitwise, wire::Heap, 0u>("Crc8MinimumAdu");
+	round_trip<::crc::Crc16Bitwise, wire::Heap, 0u>("Crc16MinimumAdu");
+	round_trip<::crc::Crc32Bitwise, wire::Heap, 0u>("Crc32MinimumAdu");
+	round_trip<::crc::Crc64Bitwise, wire::Heap, 0u>("Crc64MinimumAdu");
 
 	group("StatefulHardwarePolicy");
 	using HardwareEndpoint = modbus::rtu::Endpoint<wire::Pool<1, 1>, modbus::rtu::Format<FakeHardware32>>;
@@ -251,13 +252,11 @@ int main()
 	using DefaultEndpoint = modbus::rtu::Endpoint<Pool>;
 	using NoCrcLink = modbus::rtu::Endpoint<Pool, modbus::rtu::Format<::crc::NoCrc>>;
 	using Crc64Link = modbus::rtu::Endpoint<Pool, modbus::rtu::Format<::crc::Crc64Table>>;
-	check(sizeof(NoCrcLink) == sizeof(DefaultEndpoint) &&
-	      sizeof(Crc64Link) == sizeof(DefaultEndpoint) &&
-	      std::is_same_v<typename NoCrcLink::Storage,
-	                     typename Crc64Link::Storage> &&
-	      std::is_same_v<typename NoCrcLink::Geometry,
-	                     typename Crc64Link::Geometry>,
-	      "empty CRC policies reuse the exact same bound Pool type and add no object RAM");
+	check(NoCrcLink::max_send_size == DefaultEndpoint::max_send_size &&
+	      Crc64Link::max_send_size == DefaultEndpoint::max_send_size &&
+	      NoCrcLink::Geometry::tx_block_bytes == 254u && Crc64Link::Geometry::tx_block_bytes == 262u &&
+	      !std::is_same_v<typename NoCrcLink::Geometry, typename Crc64Link::Geometry>,
+	      "equal data limits keep payload fixed and size Pool storage for each trailer width");
 	using TableLink = modbus::rtu::Endpoint<Pool, modbus::rtu::Format<::crc::Crc16Table>>;
 	check(std::is_same_v<typename DefaultEndpoint::Layout, typename TableLink::Layout> &&
 	      std::is_same_v<typename DefaultEndpoint::Message, typename TableLink::Message> &&

@@ -313,10 +313,14 @@ public:
 	{
 		m_endpoint.consume(bytes);
 		if constexpr (framed) {
-			if (m_endpoint.assembling()) {
-				m_stale.start(stale_silence_ms);   // restarted on every delivery
-			} else {
-				m_stale.stop();
+			// An empty read is not evidence of line progress. Still poll and
+			// notify below, but do not let spurious readyRead extend a frame.
+			if (!bytes.empty()) {
+				if (m_endpoint.assembling()) {
+					m_stale.start(stale_silence_ms);
+				} else {
+					m_stale.stop();
+				}
 			}
 		}
 		m_endpoint.poll(now_ms());
@@ -331,8 +335,9 @@ public:
 
 	/*
 	 * Starts clean: the bytes the OS has buffered for us are dropped and the
-	 * frame in flight is discarded (uncounted — it is a discontinuity, not a
-	 * fault). This drops buffered input, not bytes that may arrive later, and
+	 * frame in flight is discarded (uncounted for RTU; COBS counts a gap and
+	 * resynchronizes at the next delimiter). This drops buffered input, not
+	 * bytes that may arrive later, and
 	 * does not drain already published endpoint packets. A transaction layer
 	 * owns those and decides when to discard them. It is deliberately not
 	 * automatic: this layer owns no request queue.
@@ -345,6 +350,8 @@ public:
 		m_stale.stop();
 		if constexpr (framed) {
 			m_endpoint.discard_incomplete();
+		} else {
+			m_endpoint.notify_gap(); // never splice COBS bytes across discarded input
 		}
 	}
 
@@ -461,6 +468,8 @@ private:
 		m_stale.stop();
 		if constexpr (framed) {
 			m_endpoint.discard_incomplete();   // a discontinuity, not a fault
+		} else {
+			m_endpoint.notify_gap(); // same ownership/reset contract as the STM32 adapter
 		}
 		m_service = ServiceHandler{};   // the handler belongs to the binding, not to the adapter
 		m_bound = false;

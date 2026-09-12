@@ -43,19 +43,19 @@ expect_failure() {
 
 expect_failure "$CASES/storage_missing_tx.cpp" \
 	"Endpoint storage must satisfy the wire::Storage contract"
-expect_failure "$CASES/adu_too_small.cpp" \
-	"an RTU ADU holds at least an address and a function code"
-expect_failure "$CASES/adu_zero.cpp" \
-	"an RTU ADU holds at least an address and a function code"
-expect_failure "$CASES/adu_crc_too_small.cpp" \
-	"CRC wire_size leaves no room for RTU address and function"
+expect_failure "$CASES/data_too_large.cpp" \
+	"RTU data plus address, function and CRC must fit"
+expect_failure "$CASES/data_size_overflow.cpp" \
+	"RTU data plus address, function and CRC must fit"
+expect_failure "$CASES/crc_data_too_large.cpp" \
+	"RTU data plus address, function and CRC must fit"
 expect_failure "$CASES/message_private_finalize.cpp" "finalize" "private"
 expect_failure "$CASES/packet_private_adopt.cpp" "adopt" "private"
 expect_failure "$CASES/append_struct.cpp" "append_be" "constraints not satisfied"
 expect_failure "$CASES/crc_missing_calculate.cpp" \
 	"RTU Format CRC must satisfy crc::Policy"
 expect_failure "$CASES/crc_oversize.cpp" \
-	"CRC wire_size leaves no room for RTU address and function"
+	"CRC wire_size must leave room for RTU address and function"
 expect_failure "$CASES/framing_none_consume.cpp" "consume" "constraints not satisfied"
 expect_failure "$CASES/framing_bad_policy.cpp" \
 	"Endpoint framer must be framing::None or satisfy framing::Policy"

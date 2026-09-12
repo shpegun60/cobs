@@ -3,7 +3,7 @@ Author: shpegun60
 SPDX-License-Identifier: MIT
 -->
 
-# CRC, COBS, Modbus RTU + STM32 DMA UART for C++20
+# CRC, COBS, Modbus RTU/TCP + STM32 DMA UART for C++20
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C.svg)](https://en.cppreference.com/w/cpp/20)
 [![STM32](https://img.shields.io/badge/STM32-DMA%20UART-03234B.svg)](https://www.st.com/stm32)
@@ -16,6 +16,9 @@ Production-oriented C++20 libraries for framed serial communication:
   and `NoCrc`;
 - a Modbus RTU endpoint with policy-derived integrity framing, explicit
   protocol metadata, and the same ownership model;
+- a transport-independent [Modbus TCP endpoint](src/modbus/tcp/README.md),
+  framed only by MBAP, with the same storage and ownership API; standard
+  NoCrc by default, optional explicit private CRC/size extensions;
 - an always-DMA STM32 UART byte transport with zero-copy RX chunks;
 - fixed-pool or heap-backed COBS and Modbus storage;
 - explicit transport-gap propagation, backpressure, recovery, and statistics;
@@ -25,7 +28,10 @@ Author: [shpegun60](https://github.com/shpegun60)
 
 Current migration and its acceptance criteria: [shared policies plan](doc/SHARED_POLICIES_PLAN.md).
 Fresh verification: [shared policies validation](doc/SHARED_POLICIES_VALIDATION.md).
-Latest [live fault regression, 7 September](doc/HARDWARE_REGRESSION_2026-09-07.md):
+Latest [cross-stack audit, 12 September](doc/PARANOID_AUDIT_2026-09-12.md):
+TCP and useful-data limits, DMA ownership fixes, Qt discontinuity/deadline
+regressions, fresh host/ARM and restored-board verification. COBS has no timer.
+Historical [live fault regression, 7 September](doc/HARDWARE_REGRESSION_2026-09-07.md):
 237 passed COBS/RTU suite records, framed RTU through 10M, and Qt repeats
 with both observed timeouts retained alongside the passing final control.
 The [Qt/USB follow-up](doc/QT_USB_TIMEOUT_DIAGNOSIS.md) reproduces the fragment
@@ -56,6 +62,7 @@ whole repository. Include paths are `src`-relative.
 | Shared scalar I/O | [`src/wire/Scalar.h`](src/wire/Scalar.h), [`src/wire/Read.h`](src/wire/Read.h) | constrained native/BE/LE scalar representation and stateless bounds-checked readers |
 | CRC policy API | [`src/crc/Crc.h`](src/crc/Crc.h) | bitwise/table CRC8/16/32/64, wire codecs, custom policy contract, `NoCrc` |
 | Modbus RTU API | [`src/modbus/rtu/Rtu.h`](src/modbus/rtu/Rtu.h) | burst-delimited RTU ADUs, policy-derived trailer, metadata, packet/message ownership |
+| Modbus TCP API | [`src/modbus/tcp/Tcp.h`](src/modbus/tcp/Tcp.h) | MBAP stream assembly, transaction/unit/function metadata; no socket or TCP/IP dependency |
 | Modbus PDU helpers | [`src/modbus/Pdu.h`](src/modbus/Pdu.h) | stateless bounds-checked native/BE/LE function-data readers |
 | STM32 UART transport | [`src/uart/Uart.h`](src/uart/Uart.h) | DMA RX chunks, borrowed DMA TX, gap/error recovery |
 | Integration proof | [`src/cobs/tests/hardware/h7s`](src/cobs/tests/hardware/h7s) | real UART + COBS stack on NUCLEO-H7S3L8 |
@@ -101,7 +108,8 @@ application payload
   heap.
 - `modbus::rtu::Packet` exposes zero-copy `data()`, `pdu()`, and `adu()` views;
   `Message` adds address, function, and a compile-time CRC/checksum policy.
-- RTU defaults to a 256-byte ADU ceiling; `Format<Crc, MaxAdu>` configures it.
+- RTU defaults to 252 useful data bytes (256-byte ADU with CRC16);
+  `Format<Crc, MaxData>` configures data capacity, like COBS and TCP.
   At 256 bytes, CRC width determines useful data:
   254 bytes with `NoCrc`, 253/252/250/246 with CRC8/16/32/64.
 - `wire::Pool<Rx, Tx>` provides geometry-sized slabs with independent
@@ -452,8 +460,9 @@ messages/transport borrows. The heap-backed convenience form is simply:
 modbus::rtu::Endpoint<> link;
 ```
 
-The second Endpoint argument is `modbus::rtu::Format<Crc, MaxAdu>`.
-It selects the complete integrity policy and the physical ADU ceiling.
+The second Endpoint argument is `modbus::rtu::Format<Crc, MaxData>`.
+It selects the integrity policy and useful function-data capacity. The library
+adds address, function and CRC automatically, just as TCP adds MBAP/function/CRC.
 The portable table-free CRC-16/MODBUS implementation remains the default; its
 Table option uses one private 512-byte flash table:
 
@@ -510,9 +519,10 @@ serial.setRxGapHandler(Serial::GapHandler{
 
 With the default CRC16, the maximum PDU is 253 bytes: one function byte plus up
 to 252 function-data bytes. Address and two CRC bytes make the RTU ADU exactly
-256 bytes. The configured physical ceiling stays unchanged when selecting a
-different CRC; use `modbus::rtu::Format<Crc, MaxAdu>` to change it. `NoCrc` recovers
-the two trailer bytes and exposes 254 function-data bytes at MaxAdu=256.
+256 bytes. Selecting a different CRC leaves the configured DATA capacity
+unchanged and resizes storage for its trailer. `Format<crc::NoCrc>` therefore
+still exposes 252 data bytes, in a smaller 254-byte ADU. Specify a different
+data limit explicitly when needed. See [shared payload limits](doc/PAYLOAD_LIMITS.md).
 Non-Modbus checksum semantics or actual ADUs above 256 are private exchanges;
 CRC16 Table or an equivalent hardware calculator remain compatible. This adapter uses a
 continuous UART burst as its physical boundary;
@@ -1030,7 +1040,8 @@ Read active documents in this order:
 10. [Modbus RTU usage](src/modbus/README.md) — public API, UART binding, storage,
    diagnostics, tests, and the burst-framing limitation.
 11. [Modbus architecture](src/modbus/ARCHITECTURE.md) — RTU ownership invariants
-    and the separate future `modbus::tcp` boundary.
+    and the separate `modbus::tcp` boundary ([TCP usage](src/modbus/tcp/README.md),
+    [MCU/UART evidence, not socket tests](src/modbus/tcp/tests/hardware/h7s/README.md)).
 12. [Heap and STM32 CRC measurements](doc/HEAP_AND_HARDWARE_CRC.md) — live
     Pool/Heap comparison, incremental growth, peripheral CRC policy, CPU
     results, DMA placement and the measured nano-runtime OOM caveat.

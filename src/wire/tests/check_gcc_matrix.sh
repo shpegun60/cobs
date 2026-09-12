@@ -48,6 +48,13 @@ COMMON="-std=gnu++20 -O3 -DNDEBUG -flto \
 	-o "$OUT/modbus_consumer.exe"
 "$OUT/modbus_consumer.exe"
 
+# TCP shares the same storage/scalar layer but has its own MBAP builder.
+# Keep its consumer under the same strict aliasing/bounds/LTO flags.
+# shellcheck disable=SC2086
+"$CXX" $COMMON "$SRC/modbus/tcp/tests/qmake_consumer/main.cpp" \
+	-o "$OUT/tcp_consumer.exe"
+"$OUT/tcp_consumer.exe"
+
 # Compile-time contract for the common public ownership/reader vocabulary and
 # the explicitly protocol-specific receive/metadata surface.
 # shellcheck disable=SC2086

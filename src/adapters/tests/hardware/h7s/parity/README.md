@@ -1,6 +1,14 @@
 <!-- Author: shpegun60; SPDX-License-Identifier: MIT -->
 # COBS / RTU API parity on the H7S with real FreeRTOS
 
+Latest repeat after the cross-stack UART fixes: [audit receipt](results_audit_2026-09-12/session.json)
+and [raw exchanges](results_audit_2026-09-12/results.jsonl). **14 images, 704
+exchanges, 560 exact echoes and 280 MCU-local lifecycle checks** passed with
+zero MCU/ISR/task assertion failures. Local artifact/kernel/restore verification
+and all 67 verifier mutations/oracle checks passed. The original firmware was
+restored and read back. See the [cross-stack audit](../../../../../../doc/PARANOID_AUDIT_2026-09-12.md);
+the older recorded result below remains tied to its pre-fix source bytes.
+
 This correctness harness runs the ordinary application loop:
 
 ```cpp

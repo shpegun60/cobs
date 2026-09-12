@@ -27,7 +27,8 @@ HERE = Path(__file__).resolve().parent
 REPO = next(p for p in HERE.parents if (p / "COBS.pro").is_file())
 PROJECT = REPO / "stm32_cube_test/h7s_cobs_test"
 PROGRAMMER = "C:/ST/STM32Cube/STM32CubeProgrammer/bin/STM32_Programmer_CLI.exe"
-CHECKS = {"H": 6, "L": 265, "Q": 3, "D": 6, "Z": 5, "P": 7, "A": 9, "E": 10, "F": 8}
+CHECKS = {"H": 6, "L": 265, "Q": 3, "D": 6, "Z": 5, "P": 7, "A": 9, "E": 10, "F": 8,
+          "I": 6, "J": 11, "K": 11}
 
 
 def digest(path):
@@ -77,6 +78,10 @@ def trial(port, command, output, optimization, image_hash, repetition):
             line = port.readline()
             if not line:
                 continue
+            if line == b"\n" and command in "JK":
+                row["fault_newlines"] = row.get("fault_newlines", 0) + 1
+                assert row["fault_newlines"] <= 64, "unexpected fault preamble size"
+                continue
             text = line.decode("ascii").strip()
             row["lines"].append(text)
             words = text.split()
@@ -85,7 +90,9 @@ def trial(port, command, output, optimization, image_hash, repetition):
             if words[1] == "R":
                 assert stage > previous_stage, "duplicate or unordered READY"
                 previous_stage = stage
-                if stage == 1 and command == "Z":
+                if stage == 1 and command == "I":
+                    write(b"DMA-live")
+                elif stage == 1 and command == "Z":
                     write(bytes([0x5A]) * 256)
                 elif stage == 1 and command in "PAE":
                     write(frame()[:256])
@@ -105,6 +112,8 @@ def trial(port, command, output, optimization, image_hash, repetition):
                 assert count == CHECKS[command], f"missing checks: {text}"
                 if command == "H":
                     assert a == 600000000 and b == 9600 and c == 256 and d & (3 << 16) == 3 << 16
+                if command in "IJK":
+                    assert (a, b, c, d) == (1, 1, 0, 0 if command == "I" else 1)
                 if command in "DZ":
                     assert 350 <= a <= 1800 and b == c == 1
                     assert d == (1 if command == "Z" else 0)
@@ -152,7 +161,7 @@ def main():
     session = PROJECT / "out" / ("paranoid-" + stamp)
     session.mkdir()
     connection = ["-c", "port=SWD", f"sn={args.serial}", "mode=UR", "reset=HWrst", "freq=4000"]
-    receipt = dict(schema=1, started=stamp, port=args.port, serial=args.serial, optimizations=opts,
+    receipt = dict(schema=2, started=stamp, port=args.port, serial=args.serial, optimizations=opts,
                    repetitions=args.repetitions, session=str(session), images=[], completed=False,
                    restored_and_verified=False, source_base_commit=subprocess.check_output(
                        ["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip())
@@ -210,7 +219,7 @@ def main():
                     row = trial(port, cmd, output / "results.jsonl", opt, image["elf_sha256"], 0)
                     print(f"PASS {opt} {cmd}: {row['checks']} checks", flush=True)
                 for repetition in range(1, args.repetitions + 1):
-                    for cmd in "QHDHZHPHAHEHFH":
+                    for cmd in "QHIHJHKHDHZHPHAHEHFH":
                         trial(port, cmd, output / "results.jsonl", opt, image["elf_sha256"], repetition)
                     print(f"PASS {opt} fault/control round {repetition}", flush=True)
         receipt["completed"] = True

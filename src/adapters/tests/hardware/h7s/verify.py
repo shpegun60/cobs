@@ -28,6 +28,7 @@ def main():
     if not __debug__:
         parser.error("run without python -O; verification assertions must be enabled")
     receipt = json.loads((args.directory / "session.json").read_text())
+    assert receipt["schema"] in (1, 2)
     results = args.directory / "results.jsonl"
     rows = [json.loads(line) for line in results.read_text().splitlines()]
     assert receipt["completed"] and receipt["restored_and_verified"]
@@ -39,11 +40,12 @@ def main():
         for cmd in "HL":
             expected[(opt, 0, cmd)] += 1
         for repeat in range(1, receipt["repetitions"] + 1):
-            for cmd in "QHDHZHPHAHEHFH":
+            for cmd in ("QHIHJHKHDHZHPHAHEHFH" if receipt["schema"] == 2 else "QHDHZHPHAHEHFH"):
                 expected[(opt, repeat, cmd)] += 1
     assert Counter((r["optimization"], r["repetition"], r["command"]) for r in rows) == expected
     images = {i["optimization"]: i for i in receipt["images"]}
-    checks = {"H": 6, "L": 265, "Q": 3, "D": 6, "Z": 5, "P": 7, "A": 9, "E": 10, "F": 8}
+    checks = {"H": 6, "L": 265, "Q": 3, "D": 6, "Z": 5, "P": 7, "A": 9, "E": 10, "F": 8,
+              "I": 6, "J": 11, "K": 11}
     for row in rows:
         cmd = row["command"]
         assert row["status"] == "passed" and row["failed"] == row["first_failed"] == 0
@@ -52,14 +54,17 @@ def main():
         assert terminal[:3] == ["AUDIT", "T", cmd]
         assert list(map(int, terminal[3:])) == [0, row["checks"], 0, 0, *row["observations"]]
         ready = [int(line.split()[3]) for line in row["lines"][:-1]]
-        assert ready == {"Z": [1], "P": [1, 2], "A": [1, 2, 3, 4], "E": [1, 4], "F": [1]}.get(cmd, [])
+        assert ready == {"I": [1], "Z": [1], "P": [1, 2], "A": [1, 2, 3, 4], "E": [1, 4], "F": [1]}.get(cmd, [])
         write_sizes = [w["bytes"] for w in row["writes"]]
-        assert write_sizes == {"Z": [1, 256], "P": [1, 256, 1], "A": [1, 256, 1, 1, 48],
+        assert write_sizes == {"I": [1, 8], "Z": [1, 256], "P": [1, 256, 1], "A": [1, 256, 1, 1, 48],
                                "E": [1, 256, 50], "F": [1, 306]}.get(cmd, [1])
         a, b, c, d = row["observations"]
         if cmd == "H":
             assert (a, b, c) == (600000000, 9600, 256) and d & (3 << 16) == 3 << 16
-        elif cmd in "DZ":
+        elif cmd in "IJK":
+            assert (a, b, c, d) == (1, 1, 0, 0 if cmd == "I" else 1)
+        assert 0 <= row.get("fault_newlines", 0) <= (64 if cmd in "JK" else 0)
+        if cmd in "DZ":
             assert 350 <= a <= 1800 and b == c == 1 and d == (cmd == "Z")
         elif cmd == "P":
             assert a == b == 1 and 640 <= c <= 670 and d == 256

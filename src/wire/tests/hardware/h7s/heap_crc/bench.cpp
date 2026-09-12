@@ -60,7 +60,7 @@ using Link = std::conditional_t<is_cobs,
     cobs::Endpoint<std::conditional_t<Heap, wire::Heap, wire::Pool<8, 2>>,
                    cobs::Format<Integrity, Wide ? 1024u : 253u>>,
     modbus::rtu::Endpoint<std::conditional_t<Heap, wire::Heap, wire::Pool<8, 2>>,
-                          modbus::rtu::Format<Integrity, Wide ? 1030u : 256u>, PrivateFramer>>;
+                          modbus::rtu::Format<Integrity, (Wide ? 1028u : 254u) - Integrity::wire_size>, PrivateFramer>>;
 template<bool Heap, bool Wide> Link<Heap, Wide> links{integrity()}; // AXI SRAM, not the DTCM stack
 alignas(32) std::array<uint8_t, 4104u> payload;
 alignas(32) std::array<uint8_t, 1050u> candidate;

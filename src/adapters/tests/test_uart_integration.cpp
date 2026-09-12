@@ -148,7 +148,7 @@ struct Fixture final {
 
 using BurstLink = modbus::rtu::Endpoint<wire::Pool<4, 2>>;
 using FramedLink = modbus::rtu::Endpoint<wire::Pool<4, 2>,
-	modbus::rtu::Format<::crc::Crc16Bitwise, 1024>, WideFramer>;
+	modbus::rtu::Format<::crc::Crc16Bitwise, 1020>, WideFramer>;
 using FramedAdapter = Fixture<FramedLink>::Adapter;
 
 std::vector<uint8_t> wide_frame(const std::size_t body_size, const uint8_t seed)

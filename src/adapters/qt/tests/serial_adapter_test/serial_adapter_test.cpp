@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <limits>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -1014,6 +1015,66 @@ int main(int argc, char** argv)
 		      "the frame fed back in two cuts is one packet with the payload");
 	}
 	check(!cobs_adapter.deadline_armed(), "COBS never arms a silence timer");
+
+	group("CobsDiscontinuities");
+	const auto check_cobs_discontinuity = []<class Integrity>() {
+		using Link = cobs::Endpoint<wire::Pool<3, 1>, cobs::Format<Integrity>>;
+		using Adapter = adapters::qt::SerialAdapter<Link, FakePort>;
+		for (unsigned action = 0; action < 4u; ++action) {
+			FakePort gap_port;
+			Link link;
+			auto gap_adapter = std::make_unique<Adapter>(gap_port, link);
+			check(gap_adapter->bind(), "COBS discontinuity fixture binds");
+			const std::vector<uint8_t> payload{'A', 'B', 'C', 'D'};
+			auto message = link.make_message(payload.size());
+			check(message.append_bytes(payload) && link.send(message) == wire::SendResult::Sent,
+			      "COBS discontinuity fixture builds a real frame");
+			const auto wire = gap_port.take_written();
+			gap_port.drain();
+			const std::span<const uint8_t> bytes{wire};
+			gap_port.feed(bytes); // a completed packet must survive every discontinuity
+			gap_port.feed(bytes.first(bytes.size() - 2u)); // an allocated, incomplete packet
+			check(link.storage().rx_available() == 1u, "one COBS packet is queued and one is building");
+			if (action < 2u) {
+				gap_port.set_clear_fails(action == 1u);
+				gap_adapter->discard_incoming();
+			} else if (action == 2u) {
+				check(gap_adapter->unbind() && gap_adapter->bind(), "COBS adapter detaches and rebinds");
+			} else {
+				gap_adapter.reset();
+				gap_adapter = std::make_unique<Adapter>(gap_port, link);
+				check(gap_adapter->bind(), "a replacement COBS adapter binds");
+			}
+			check(link.storage().rx_available() == 2u && link.stats().rx.resyncs == 1u,
+			      "dropping or detaching COBS input immediately releases the partial frame and announces a gap");
+			{
+				auto queued = link.pop_packet();
+				check(queued && std::vector<uint8_t>(queued.data().begin(), queued.data().end()) == payload,
+				      "a completed COBS packet survives the discontinuity");
+			}
+			gap_port.feed(bytes.last(2u));
+			check(!link.has_packet() && link.storage().rx_available() == 3u,
+			      "the old tail cannot finish a packet across a discarded stream interval");
+			gap_port.feed(bytes);
+			check(link.has_packet(), "COBS resumes after the discarded tail's delimiter");
+		}
+	};
+	check_cobs_discontinuity.template operator()<crc::NoCrc>();
+	check_cobs_discontinuity.template operator()<crc::Crc16Bitwise>();
+	{
+		FakePort empty_port;
+		Client empty_link;
+		ClientAdapter empty_adapter{empty_port, empty_link};
+		check(empty_adapter.bind(), "empty-delivery timing fixture binds");
+		empty_port.feed(response_bytes.first(4u));
+		for (unsigned i = 0; i < 10u; ++i) {
+			pump(10);
+			empty_adapter.deliver({});
+		}
+		check(!empty_link.assembling() && !empty_adapter.deadline_armed() &&
+		      empty_link.framing_stats().stale_frames == 1u,
+		      "empty serial deliveries cannot keep an abandoned RTU frame alive");
+	}
 
 	return modbus_test::finish();
 }

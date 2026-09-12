@@ -46,7 +46,7 @@ static_assert(std::is_empty_v<::crc::Crc16Table>);
 static_assert(sizeof(TableHeapEndpoint) == sizeof(HeapEndpoint));
 static_assert(sizeof(TablePoolEndpoint) == sizeof(PoolEndpoint));
 static_assert(sizeof(NoCrcHeapEndpoint) == sizeof(HeapEndpoint));
-static_assert(sizeof(Crc64TablePoolEndpoint) == sizeof(PoolEndpoint));
+static_assert(sizeof(Crc64TablePoolEndpoint) > sizeof(PoolEndpoint)); // larger physical blocks, same 252-byte data limit
 static_assert(sizeof(StatefulHeapEndpoint) >= sizeof(HeapEndpoint));
 static_assert(sizeof(StatefulHeapEndpoint) <=
 	(sizeof(HeapEndpoint) + sizeof(StatefulCrc) +

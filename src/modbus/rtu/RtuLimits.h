@@ -5,9 +5,10 @@
 
 /*
  * The physical ceiling the Modbus serial line specification puts on one RTU
- * ADU: 256 bytes, address and CRC included. It is the DEFAULT of
- * modbus::rtu::Format's MaxAdu parameter, not a hard-wired limit: a device
- * that only ever handles small PDUs may bind a smaller ceiling to save RAM
+ * ADU: 256 bytes, address and CRC included. This is a protocol constant, not
+ * an application-supplied size. Format<Crc, MaxData> defaults to 252 useful
+ * data bytes; the default CRC16 adds four envelope bytes for a 256-byte ADU.
+ * A device that only ever handles small PDUs may bind a smaller data limit to save RAM
  * (a local capacity choice, still standard Modbus on the wire), and a private
  * RTU-like protocol on a fast link may bind a larger one (no longer standard
  * Modbus RTU; both peers must agree). A burst endpoint still needs one whole

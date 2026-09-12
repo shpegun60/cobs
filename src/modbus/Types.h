@@ -14,9 +14,9 @@
 namespace modbus {
 
 // Standard Modbus application-protocol limits shared by RTU and TCP. The
-// default RTU CRC16 format preserves them. An explicitly nonstandard RTU CRC
-// policy may expose a different effective limit inside the default 256-byte
-// ADU; an explicit Format can also select a different physical ADU ceiling.
+// default RTU CRC16 and TCP NoCrc formats preserve them. Explicit Format size
+// arguments count function-data bytes; each protocol adds its envelope and
+// selected CRC width automatically without reducing the requested data limit.
 // A standard PDU is one function byte plus zero to 252 data bytes.
 inline constexpr std::size_t max_pdu_size = 253u;
 inline constexpr std::size_t max_data_size = max_pdu_size - 1u;

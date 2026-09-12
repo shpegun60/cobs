@@ -5,6 +5,11 @@ SPDX-License-Identifier: MIT
 
 # Shared policies validation, 2026-09-05
 
+Historical receipt: the RTU `MaxAdu` unit and capacities below describe this
+September 5 validation. The September 12 [payload-limit update](PAYLOAD_LIMITS.md)
+supersedes that API spelling with useful-data limits for both RTU and TCP and
+has its own tests/evidence. Older measured values are intentionally retained.
+
 The shared-storage migration, configurable RTU ADU ceiling and CRC-bearing
 COBS default passed the checks below. This report describes the working tree
 continued from `a1ac09c98863678cc15060712d79d78638e6c5c0`, not a claim that

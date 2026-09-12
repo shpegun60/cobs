@@ -5,6 +5,12 @@ SPDX-License-Identifier: MIT
 
 # UART paranoid correctness and hot-path audit
 
+Latest follow-up: [cross-stack audit, 2026-09-12](PARANOID_AUDIT_2026-09-12.md).
+It corrects the older assumption that UART READY proves DMA stopped, with
+host reproductions and live IDLE/sibling-DMA ownership tests. Its updated
+ISR code-size guards supersede the old RX/TX thunk sizes; the historical
+benchmark measurements below remain tied to their original source bytes.
+
 Status: automated audit, implementation, and fresh H7S3 silicon validation
 complete; ready for a source-control checkpoint
 

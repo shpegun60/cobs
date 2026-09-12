@@ -20,3 +20,4 @@ src/wire/tests/hardware/h7s/heap_crc/recovery/results_*/allocator_path.dis -text
 # Preserve the failed programming attempt, including its native whitespace,
 # byte-for-byte against the receipt. Do not apply source-format checks to it.
 src/wire/tests/hardware/h7s/results_faults_2026-09-12/rtu-crc32-table-115200.log -text -whitespace
+src/wire/tests/hardware/h7s/results_audit_2026-09-12/cobs-none-1024-115200.log -text -whitespace

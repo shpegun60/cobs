@@ -11,8 +11,8 @@
  * Memory is a wire::Storage specification (wire::Heap, wire::Pool<Rx, Tx>, or
  * a user-written one) — the same type a cobs::Endpoint accepts, because
  * storage knows nothing about either protocol. Format names the integrity
- * policy and the physical ADU ceiling; the endpoint derives its block
- * geometry from the Format's Layout and binds the memory to it.
+ * policy and useful data limit; Layout adds address/function/CRC and the
+ * endpoint binds memory to the resulting physical block geometry.
  *
  * Ownership and transport semantics deliberately mirror cobs::Endpoint.
  * The RX boundary is different: receive_adu() accepts exactly one physical

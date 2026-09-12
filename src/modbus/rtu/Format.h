@@ -6,10 +6,10 @@
 /*
  * RTU wire geometry, in two layers:
  *
- *     Layout<CrcSize, MaxAdu>   geometry only: sizes and offsets, keyed on the
- *                               trailer WIDTH and the physical ADU ceiling
- *     Format<Crc, MaxAdu>       the wire contract: the integrity policy TYPE
- *                               plus that ceiling; exposes its Layout
+ *     Layout<CrcSize, MaxData>  geometry only: sizes and offsets, keyed on the
+ *                               trailer WIDTH and the function-data limit
+ *     Format<Crc, MaxData>      the wire contract: the integrity policy TYPE
+ *                               plus that data limit; exposes its Layout
  *
  * Packet, Message and Receiver depend on the Layout, never on the Format, so
  * CRC policies of equal width — Crc16Bitwise and Crc16Table — share one
@@ -19,7 +19,8 @@
  *
  * The Format is what a user names on the endpoint and what two peers must
  * agree on: `modbus::rtu::Format<>` is standard Modbus RTU (CRC-16/MODBUS,
- * 256-byte ADU). Actual ADUs above 256 or different checksum semantics are
+ * 252 data bytes, 256-byte ADU). Address, function and CRC are added to the
+ * data limit automatically. Actual ADUs above 256 or different checksum semantics are
  * private RTU-like exchanges. A smaller ceiling only limits local capacity.
  * A custom calculator type cannot prove or disprove Modbus compatibility;
  * choosing and configuring it is the application's responsibility.
@@ -29,6 +30,7 @@
 #define MODBUS_RTU_FORMAT_H_
 
 #include "../../crc/Crc.h"
+#include "../Types.h"
 #include "RtuLimits.h"
 
 #include <concepts>
@@ -37,33 +39,30 @@
 
 namespace modbus::rtu {
 
-template<std::size_t CrcSize, std::size_t MaxAdu = standard_adu_size>
+template<std::size_t CrcSize, std::size_t MaxData = modbus::max_data_size>
 struct Layout final {
-	static constexpr std::size_t max_adu_size = MaxAdu;
 	static constexpr std::size_t address_size = 1u;
 	static constexpr std::size_t function_size = 1u;
 	static constexpr std::size_t crc_size = CrcSize;
 	static constexpr std::size_t adu_prefix_size =
 		address_size + function_size;
 
-	// Checked BEFORE anything is subtracted from it: with an unsigned ceiling
-	// of 1, `max_adu_size - adu_prefix_size` wraps, the CRC check below passes
-	// by accident, max_data_size becomes enormous, and make_message() writes a
-	// two-byte header into a one-byte allocation.
-	static_assert(max_adu_size >= adu_prefix_size,
-		"an RTU ADU holds at least an address and a function code");
-	static_assert(max_adu_size <= UINT16_MAX,
-		"RxBlock::adu_size is a uint16_t: the ADU ceiling is at most 65535");
-	static_assert(crc_size <= max_adu_size - adu_prefix_size,
-		"CRC wire_size leaves no room for RTU address and function");
+	// Validate user-supplied counts before additions, even for SIZE_MAX. Zero
+	// data is legal: the library still allocates address + function + trailer.
+	// RxBlock::adu_size remains uint16_t, bounding private ADUs to 65535 bytes.
+	static_assert(CrcSize <= UINT16_MAX - adu_prefix_size,
+		"CRC wire_size must leave room for RTU address and function");
+	static_assert(MaxData <= (CrcSize <= UINT16_MAX - adu_prefix_size
+		? UINT16_MAX - adu_prefix_size - CrcSize : 0u),
+		"RTU data plus address, function and CRC must fit the 65535-byte ADU");
 
 	static constexpr std::size_t adu_overhead =
 		adu_prefix_size + crc_size;
 	static constexpr std::size_t pdu_envelope_size =
 		address_size + crc_size;
 	static constexpr std::size_t min_adu_size = adu_overhead;
-	static constexpr std::size_t max_data_size =
-		max_adu_size - adu_overhead;
+	static constexpr std::size_t max_data_size = MaxData;
+	static constexpr std::size_t max_adu_size = max_data_size + adu_overhead;
 	static constexpr std::size_t max_pdu_size =
 		function_size + max_data_size;
 
@@ -82,13 +81,13 @@ struct Layout final {
 	}
 };
 
-template<class CrcT = ::crc::Crc16Bitwise, std::size_t MaxAdu = standard_adu_size>
+template<class CrcT = ::crc::Crc16Bitwise, std::size_t MaxData = modbus::max_data_size>
 struct Format final {
 	static_assert(::crc::Policy<CrcT>,
 		"RTU Format CRC must satisfy crc::Policy");
 
 	using Crc = CrcT;
-	using Layout = modbus::rtu::Layout<CrcT::wire_size, MaxAdu>;
+	using Layout = modbus::rtu::Layout<CrcT::wire_size, MaxData>;
 
 	static constexpr std::size_t max_adu_size = Layout::max_adu_size;
 	static constexpr std::size_t crc_size = Layout::crc_size;

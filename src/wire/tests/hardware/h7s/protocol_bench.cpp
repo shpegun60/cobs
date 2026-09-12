@@ -152,7 +152,9 @@ template<bool IsCobs, bool Wide>
 void runCase(const std::size_t size, const uint32_t pattern, const std::size_t chunk) noexcept
 {
     using CobsFormat = std::conditional_t<Wide, cobs::Format<Integrity, 1024>, cobs::Format<Integrity>>;
-    using RtuFormat = modbus::rtu::Format<Integrity, Wide ? 1026u + Integrity::wire_size : 256u>;
+    // Preserve the benchmark's original wire budgets: wide = 1024 data,
+    // narrow = a physical 256-byte ADU for every CRC width.
+    using RtuFormat = modbus::rtu::Format<Integrity, Wide ? 1024u : 254u - Integrity::wire_size>;
     using Link = std::conditional_t<IsCobs,
         cobs::Endpoint<Memory, CobsFormat>, modbus::rtu::Endpoint<Memory, RtuFormat>>;
     Link link;

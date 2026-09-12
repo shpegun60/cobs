@@ -48,7 +48,7 @@ struct RuntimeOffset : framing::Standard<Direction::Request> {
     static Layout layout(Direction, uint8_t) noexcept { return Layout::byte_count_at(invalid_offset); }
 };
 
-using Link = modbus::rtu::Endpoint<wire::Pool<4, 1>, modbus::rtu::Format<crc::Crc16Bitwise, 1024>, Prefix<2>>;
+using Link = modbus::rtu::Endpoint<wire::Pool<4, 1>, modbus::rtu::Format<crc::Crc16Bitwise, 1020>, Prefix<2>>;
 static Serial serial;
 static Link link;
 static modbus::rtu::UartAdapter adapter{serial, link};
@@ -111,6 +111,11 @@ static uint32_t extensions = 0, last_progress = 0, first_deadline = 0;
 static bool zero_busy_seen = false, frame_mode = false, finishing = false;
 static Checks checks;
 static Report final_report;
+static std::array<uint8_t, 64> fault_tx{};
+static volatile uint32_t tx_verdicts = 0u;
+static volatile bool tx_verdict_ok = false;
+static uint32_t base_tx_verdicts = 0u, rx_dma_address = 0u;
+static bool fault_borrow_retained = false, gap_before_rx_stop = false;
 
 void idle_enable(bool enabled) noexcept
 {
@@ -182,7 +187,7 @@ template<class Crc, std::size_t Width, std::endian Order = std::endian::big>
 void prefix_checks() noexcept
 {
     using Device = modbus::rtu::Endpoint<wire::Pool<2, 1>,
-        modbus::rtu::Format<CountingCrc<Crc>, 512>, Prefix<Width, Order>>;
+        modbus::rtu::Format<CountingCrc<Crc>, 510u - Crc::wire_size>, Prefix<Width, Order>>;
     unsigned crc_calls = 0;
     Device device{CountingCrc<Crc>{&crc_calls}};
     Capture wire;
@@ -258,6 +263,8 @@ void start(char next, uint32_t now) noexcept
     base_restarts = serial.stats().restarts;
     base_errors = serial.stats().rx_errors;
     base_stale = link.framing_stats().stale_frames;
+    base_tx_verdicts = tx_verdicts;
+    fault_borrow_retained = gap_before_rx_stop = false;
     frame_mode = next == 'P' || next == 'A' || next == 'E' || next == 'F';
     if (next == 'L') { local_checks(); }
     else if (next == 'H') {
@@ -267,6 +274,32 @@ void start(char next, uint32_t now) noexcept
         checks.test((SCB->CCR & (SCB_CCR_IC_Msk | SCB_CCR_DC_Msk)) == (SCB_CCR_IC_Msk | SCB_CCR_DC_Msk));
         checks.test((huart3.Instance->CR1 & USART_CR1_FIFOEN) != 0u);
         end(SystemCoreClock, baud, __HAL_DMA_GET_COUNTER(huart3.hdmarx), SCB->CCR);
+    } else if (next == 'I') {
+        // Receive a real prefix without allowing the normal IDLE callback to
+        // end DMA first. The loop then injects the UART-READY/DMA-live state
+        // left by HAL's ignored IDLE abort failure, not a forged DMA buffer.
+        idle_enable(false);
+        ready(1u);
+    } else if (next == 'J' || next == 'K') {
+        fault_tx.fill('\n'); // any already-shifted bytes are harmless blank lines
+        checks.test(serial.send(fault_tx));
+        checks.test(serial.tx_busy() && __HAL_DMA_GET_COUNTER(huart3.hdmatx) != 0u);
+        DMA_HandleTypeDef* const failing = next == 'J' ? huart3.hdmarx : huart3.hdmatx;
+        // Stop ONLY the failing channel. Invoke ST's installed UART_DMAError
+        // callback while the sibling channel is really live on this board.
+        checks.test(HAL_DMA_Abort(failing) == HAL_OK);
+        rx_dma_address = huart3.hdmarx->Instance->CDAR;
+        {
+            uart::detail::IrqGuard guard;
+            failing->ErrorCode = HAL_DMA_ERROR_DTE;
+            failing->XferErrorCallback(failing);
+            fault_borrow_retained = next == 'J' ? serial.tx_busy()
+                : huart3.hdmarx->State == HAL_DMA_STATE_BUSY;
+            checks.test(fault_borrow_retained);
+            checks.test(next == 'J' ? tx_verdicts == base_tx_verdicts
+                : tx_verdicts == base_tx_verdicts + 1u && !tx_verdict_ok);
+        }
+        stage = 1u;
     } else if (next == 'D') {
         checks.test(huart3.RxState == HAL_UART_STATE_BUSY_RX);
         CLEAR_BIT(huart3.Instance->CR3, USART_CR3_DMAR);
@@ -352,7 +385,17 @@ extern "C" void bench_init(void)
         HAL_UARTEx_SetRxFifoThreshold(&huart3, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK ||
         HAL_UARTEx_EnableFifoMode(&huart3) != HAL_OK || !serial.init(&huart3) || !adapter.bind()) { Error_Handler(); }
     serial.setRxHandler([](std::span<const uint8_t> bytes) noexcept { on_rx(bytes); });
-    serial.setRxGapHandler([]() noexcept { ++gaps; adapter.on_gap(); });
+    serial.setRxGapHandler([]() noexcept {
+        if (command == 'K' && stage == 1u &&
+            huart3.hdmarx->State == HAL_DMA_STATE_BUSY &&
+            huart3.hdmarx->Instance->CDAR == rx_dma_address) { gap_before_rx_stop = true; }
+        ++gaps;
+        adapter.on_gap();
+    });
+    serial.setTxHandler([](bool ok) noexcept {
+        tx_verdict_ok = ok;
+        tx_verdicts = tx_verdicts + 1u;
+    });
 }
 
 extern "C" void bench_loop(void)
@@ -360,6 +403,18 @@ extern "C" void bench_loop(void)
     const uint32_t now = HAL_GetTick();
     const bool due = frame_mode && adapter.deadline_armed() && adapter.deadline_in_ms(now) == 0u;
     const uint32_t progress = serial.rx_progress();
+    if (command == 'I' && stage == 0u && progress == 8u) {
+        checks.test(huart3.hdmarx->State == HAL_DMA_STATE_BUSY);
+        {
+            uart::detail::IrqGuard guard;
+            CLEAR_BIT(huart3.Instance->CR3, USART_CR3_DMAR);
+            huart3.RxState = HAL_UART_STATE_READY;
+            huart3.RxEventType = HAL_UART_RXEVENT_IDLE;
+            uart::detail::Registry::onRxEvent(&huart3, 8u);
+            checks.test(huart3.hdmarx->State == HAL_DMA_STATE_BUSY && received == 0u);
+        }
+        stage = 1u;
+    }
     if (command == 'Z' && __HAL_DMA_GET_COUNTER(huart3.hdmarx) == 0u && huart3.RxState == HAL_UART_STATE_BUSY_RX) {
         zero_busy_seen = true;
     }
@@ -370,7 +425,19 @@ extern "C" void bench_loop(void)
         start(next, now);
     }
     if (command != 0 && !finishing) {
-        if (command == 'Q' && now - started >= 800u) {
+        if ((command == 'I' || command == 'J' || command == 'K') && stage == 1u &&
+            gaps > base_gaps && huart3.RxState == HAL_UART_STATE_BUSY_RX && !serial.tx_busy()) {
+            checks.test(gaps == base_gaps + 1u && received == 0u);
+            checks.test(serial.stats().restarts == base_restarts + 1u);
+            checks.test(__HAL_DMA_GET_COUNTER(huart3.hdmarx) == 256u &&
+                (huart3.Instance->CR3 & USART_CR3_DMAR) != 0u);
+            if (command != 'I') {
+                checks.test(tx_verdicts == base_tx_verdicts + 1u && !tx_verdict_ok);
+                checks.test(!gap_before_rx_stop && huart3.hdmatx->State == HAL_DMA_STATE_READY);
+            }
+            end(serial.stats().restarts - base_restarts, gaps - base_gaps, received,
+                command == 'I' ? 0u : tx_verdicts - base_tx_verdicts);
+        } else if (command == 'Q' && now - started >= 800u) {
             checks.test(serial.stats().restarts == base_restarts && serial.stats().rx_errors == base_errors);
             checks.test(gaps == base_gaps && serial.rx_progress() == 0u && huart3.RxState == HAL_UART_STATE_BUSY_RX);
             end(now - started);

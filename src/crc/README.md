@@ -234,10 +234,15 @@ emits zero lookup symbols; the complete `NoCrc` verify path folds to a constant
 
 Both COBS and Modbus RTU use these policies without depending on each other:
 `cobs::Endpoint<Memory, cobs::Format<Crc>>` and
-`modbus::rtu::Endpoint<Memory, modbus::rtu::Format<Crc, MaxAdu>>`.
+`modbus::rtu::Endpoint<Memory, modbus::rtu::Format<Crc, MaxData>>`.
 Both default to CRC16 Bitwise; a custom stateful policy is injected as
 `Link{MyCrc{handle}}` and the same object serves RX and TX. See the shared
 [storage contract](../../doc/STORAGE.md) and [COBS wire format](../../doc/PROTOCOL.md).
+
+`modbus::tcp::Endpoint<Memory, modbus::tcp::Format<Crc, MaxData>>` uses the same
+policies, but defaults to NoCrc as standard Modbus TCP requires. Any TCP CRC
+trailer is an explicit private extension. For all protocols, explicit data
+limits remain useful bytes; storage grows around the selected trailer.
 
 For a wider CPU check, `check_arm_matrix.py` queries the installed GNU Arm
 compiler's full CPU list and builds every named target: all nine policies,

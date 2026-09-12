@@ -199,7 +199,7 @@ int main()
 		framing::Standard<framing::Direction::Response>>>("RTU/responses/Table");
 	owned_prefix_contract();
 	static_assert(cobs::Format<crc::Crc16Bitwise, 512u>::max_send_size == 512u);
-	static_assert(modbus::rtu::Format<crc::Crc16Bitwise, 512u>::max_data_size == 508u);
+	static_assert(modbus::rtu::Format<crc::Crc16Bitwise, 512u>::max_data_size == 512u);
 	std::printf("Endpoint parity: %u checks, %u failures\n", checks, failures);
 	return failures == 0u ? 0 : 1;
 }

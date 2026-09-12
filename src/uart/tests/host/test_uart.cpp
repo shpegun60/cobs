@@ -296,6 +296,88 @@ void testCorruptDmaCountCannotEscapeTheChunk()
 	checkNoViolations("counter corruption never violates buffer ownership");
 }
 
+void testIdleAbortFailureKeepsRxClaimed()
+{
+	fake::reset();
+	Fixture f;
+	f.start();
+	fake::rx_bytes("unsafe", 6);
+	fake::model().fail_abort_receive = 100;
+	fake::model().fail_dma_init = 100;
+	fake::rx_idle_abort_failure();
+	f.loop();
+	check(rxText().empty() && events().empty(),
+	      "READY UART with a failed IDLE DMA abort publishes neither data nor a gap yet");
+	check(fake::model().rx_armed, "failed IDLE abort keeps the physical RX owner alive");
+	checkNoViolations("failed IDLE abort never publishes or re-arms a DMA-owned slot");
+	fake::model().fail_abort_receive = 0;
+	fake::model().fail_dma_init = 0;
+	f.loop();
+	f.loop();
+	check(events() == "gap" && rxText().empty(), "safe IDLE-abort recovery emits exactly one gap");
+	fake::rx_bytes("ok", 2); fake::rx_idle(); f.loop();
+	check(rxText() == "ok", "fresh RX works after the failed IDLE abort");
+}
+
+void testDmaErrorDoesNotReleaseTheOtherDirection()
+{
+	for (const bool rx_fault : {false, true}) {
+		fake::reset();
+		Fixture f;
+		f.start();
+		const std::array<uint8_t, 8> tx{};
+		check(f.uart.send(tx), "cross-DMA fault starts with an owned TX span");
+		fake::rx_bytes("partial", 7);
+		if (rx_fault) { fake::model().fail_abort_transmit = 100; }
+		else { fake::model().fail_abort_receive = 100; }
+		fake::model().fail_dma_init = 100;
+		fake::dma_error(rx_fault);
+		if (rx_fault) {
+			check(f.uart.tx_busy() && fake::model().tx_results.empty(),
+			      "RX DMA error cannot return a span still borrowed by the TX DMA");
+		} else {
+			check(!f.uart.tx_busy() && fake::model().tx_results == std::vector<bool>{false},
+			      "the actually stopped TX DMA reports one failure immediately");
+		}
+		f.loop();
+		if (rx_fault) {
+			check(f.uart.tx_busy() && fake::model().tx_armed && fake::model().tx_results.empty(),
+			      "persistent TX repair failure preserves the borrow after an RX DMA error");
+		} else {
+			check(events().empty() && rxText().empty() && fake::model().rx_armed,
+			      "TX DMA error cannot recycle the still-live RX buffer during failed repair");
+		}
+		fake::model().fail_abort_receive = 0;
+		fake::model().fail_abort_transmit = 0;
+		fake::model().fail_dma_init = 0;
+		f.loop(); f.loop();
+		check(!f.uart.tx_busy() && fake::model().tx_results == std::vector<bool>{false},
+		      "repair returns TX exactly once and never reports synthetic success for a fault");
+		check(events() == "gap" && rxText().empty() && fake::model().rx_armed,
+		      "cross-DMA repair discards one RX prefix and rearms safely");
+		checkNoViolations("cross-DMA fault preserves both physical owners");
+	}
+}
+
+void testDmaFaultOutranksLateTcEvenWithCts()
+{
+	fake::reset();
+	Fixture f;
+	f.start();
+	f.huart.Init.HwFlowCtl = UART_HWCONTROL_CTS;
+	check(f.uart.setBaudRate(115200u), "CTS fault test applies the disabled-stall policy");
+	f.loop();
+	const std::array<uint8_t, 8> tx{};
+	check(f.uart.send(tx), "CTS fault test starts TX");
+	fake::dma_error(true);
+	fake::tx_done(); // the independent TX hardware could finish before the loop runs
+	check(f.uart.tx_busy() && fake::model().tx_results.empty(),
+	      "a late TC cannot steal a DMA error's deferred terminal verdict");
+	f.loop();
+	check(!f.uart.tx_busy() && fake::model().tx_results == std::vector<bool>{false},
+	      "CTS cannot suppress explicit fault recovery or turn the failure into success");
+}
+
 void testProceedIsSafeAgainstHandlerReentry()
 {
 	fake::reset();
@@ -989,6 +1071,9 @@ int main(int argc, char** argv)
 	testRxIdleAndTc();
 	testNormalRxSkipsEventTypeLookup();
 	testCorruptDmaCountCannotEscapeTheChunk();
+	testIdleAbortFailureKeepsRxClaimed();
+	testDmaErrorDoesNotReleaseTheOtherDirection();
+	testDmaFaultOutranksLateTcEvenWithCts();
 	testProceedIsSafeAgainstHandlerReentry();
 	testDmaBufferNeverVisibleToConsumer();
 	testSlotConservation();

@@ -75,10 +75,10 @@ using Serial = Uart<256u, 4u>;
 using Link = cobs::Endpoint<Memory, cobs::Format<Integrity>>;
 using Adapter = cobs::UartAdapter<Serial, Link>;
 #elif PARITY_PROTOCOL == 1
-using Link = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<Integrity>>;
+using Link = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<Integrity, 254u - Integrity::wire_size>>;
 using Adapter = modbus::rtu::UartAdapter<Serial, Link>;
 #elif PARITY_PROTOCOL == 2
-using Link = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<Integrity>, PrivateFramer>;
+using Link = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<Integrity, 254u - Integrity::wire_size>, PrivateFramer>;
 using Adapter = modbus::rtu::UartAdapter<Serial, Link>;
 #else
 #error invalid PARITY_PROTOCOL

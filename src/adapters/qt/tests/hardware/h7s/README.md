@@ -1,5 +1,16 @@
 # The Modbus RTU stack against QtSerialBus, on the NUCLEO-H7S3L8
 
+Latest repeat after the UART/Qt cross-stack fixes: [12 September audit record](results_qmodbus_audit_2026-09-12.json)
+and [image/restore receipt](results_qmodbus_audit_2026-09-12.json.session.json).
+All **8 role/baud/framer runs**, **660 reference-model verdicts** matched
+the expected outcomes, with zero retries and no unexpected timeouts. The
+unknown-function timeouts remain expected for table-framed servers, as
+explained below. Original boot flash was restored and the actual full
+read-back rehashed; all eight retained ELF/flash identities were checked.
+The [cross-stack audit](../../../../../../doc/PARANOID_AUDIT_2026-09-12.md)
+keeps the Qt COBS gap fix separate from the RTU empty-delivery deadline fix:
+COBS has no silence timer. Historical tables below keep their original date.
+
 The [client recovery follow-up](../../../../../../doc/QT_CLIENT_RECOVERY.md)
 fixes production desktop RX/TX ordering, write deadlines, retry/cancellation
 accounting and nested port-error cleanup. Fault orderings are tested on the
@@ -31,7 +42,7 @@ UART and the ST-Link virtual COM port.
 ## What is compared
 
 One request script, `modbus_reference::script` in
-[`src/modbus/rtu/tests/reference_model.h`](../../../../modbus/rtu/tests/reference_model.h):
+[`src/modbus/rtu/tests/reference_model.h`](../../../../../modbus/rtu/tests/reference_model.h):
 55 steps — reads of every table, writes of every kind each verified by a
 read-back, the largest legal request and response (123 registers written,
 125 read), the exceptions the specification defines (address out of range,

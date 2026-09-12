@@ -5,6 +5,13 @@ SPDX-License-Identifier: MIT
 
 # CRC AArch32 code-generation audit, 2026-09-05
 
+Latest repeat: **2026-09-12**, **6360/6360 objects**, **106 AArch32 targets**:
+[new case-level results](results_arm_audit_2026-09-12.json), collected during
+the [cross-stack audit](../../../doc/PARANOID_AUDIT_2026-09-12.md). Compiler,
+matrix dimensions and the bounded scope below are unchanged. This is fresh
+compilation/disassembly evidence, not execution on 106 boards; the original
+tables below retain their own source record and date.
+
 Fresh revalidation after the shared-policy migration and comparison-contract
 hardening also passed 6360/6360 objects:
 [current case-level results](results_shared_policies_arm_2026-09-05.json).

@@ -5,14 +5,17 @@ SPDX-License-Identifier: MIT
 
 # Modbus C++20 library
 
-The current production layer is `modbus::rtu`: a deterministic Modbus RTU
+`modbus::rtu` is a deterministic Modbus RTU
 framing endpoint with COBS-style ownership, heap or fixed-pool storage, CRC,
 explicit metadata, and direct integration with the repository's STM32 DMA
 UART.
 
-`modbus::tcp` is architecturally reserved but is not shipped as a placeholder.
-Its different streaming/MBAP framing contract is recorded in
-[ARCHITECTURE.md](ARCHITECTURE.md).
+[`modbus::tcp`](tcp/README.md) is the header-only MBAP stream endpoint, with the
+same storage/ownership/writer vocabulary and explicit transaction/unit metadata.
+Its default is standard Modbus TCP without CRC; an explicit CRC policy or
+oversized ADU is a private extension. It knows no transport and includes no
+socket/TCP-IP stack. [H7S UART evidence](tcp/tests/hardware/h7s/README.md) checks
+the core on silicon, not network interoperability. This page below covers RTU.
 
 ## Quick start
 
@@ -52,7 +55,7 @@ Without the adapter the same wiring is three explicit bindings — RX to
 below; the adapter exists so that none of it lives in application code.
 
 `receive_adu()` deliberately means one complete physical UART receive burst,
-not arbitrary stream chunking. For the default MaxAdu use `Uart<256, N>` so filling a DMA chunk does not
+not arbitrary stream chunking. For the default format use `Uart<256, N>` so filling a DMA chunk does not
 split a legal maximum ADU. Other ceilings require a suitably sized transport
 or a complete-candidate adapter; CRC cannot substitute for framing.
 
@@ -162,10 +165,13 @@ using Larger = modbus::rtu::Endpoint<
     Memory, modbus::rtu::Format<crc::Crc32Table, 1024>>;
 ```
 
-A smaller MaxAdu is a local receive/send capacity, not a different protocol.
+The number is **useful function-data bytes**, not an ADU budget:
+`Format<crc::Crc16Bitwise, 64>` stores 64 data bytes and adds address, function
+and CRC automatically (68-byte ADU). It means the same size unit as COBS/TCP.
+A smaller MaxData is a local receive/send capacity, not a different protocol.
 An actual frame above 256 bytes, or non-Modbus checksum semantics, is a private
-RTU-like exchange. MaxAdu must be at least 2 + CRC width and at most 65535.
-The library guards subtraction before deriving useful capacity.
+RTU-like exchange. MaxData ranges from zero to `65533 - Crc::wire_size`;
+the library checks overflow before deriving the physical ADU/storage sizes.
 
 The two built-in CRC16 policies implement CRC-16/MODBUS (`init=0xFFFF`, reflected polynomial
 `0xA001`) and produce identical two-byte little-endian trailers. Every lookup
@@ -177,15 +183,16 @@ are stored with `[[no_unique_address]]`.
 
 The general library also supplies bitwise and table implementations of CRC8,
 CRC32, and CRC64, plus `NoCrc`. RTU derives all logical geometry from the
-selected policy and MaxAdu at compile time. For the default 256-byte ceiling:
+selected policy and MaxData at compile time. The default data limit stays
+252 when an explicit CRC policy is selected; storage grows around it:
 
-| Policy width | `Endpoint::crc_size` | function-data capacity | minimum ADU |
-|---:|---:|---:|---:|
-| `NoCrc` | 0 | 254 | 2 |
-| CRC8 | 1 | 253 | 3 |
-| CRC16 | 2 | 252 | 4 |
-| CRC32 | 4 | 250 | 6 |
-| CRC64 | 8 | 246 | 10 |
+| Policy width | `Endpoint::crc_size` | function-data capacity | maximum ADU | minimum ADU |
+|---:|---:|---:|---:|---:|
+| `NoCrc` | 0 | 252 | 254 | 2 |
+| CRC8 | 1 | 252 | 255 | 3 |
+| CRC16 (default) | 2 | 252 | 256 | 4 |
+| CRC32 | 4 | 252 | 258 | 6 |
+| CRC64 | 8 | 252 | 262 | 10 |
 
 ```cpp
 using Crc8Link = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<::crc::Crc8Bitwise>>;
@@ -196,14 +203,14 @@ using Crc64Link = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<::crc::Crc64
 The relationship is represented once:
 
 ```cpp
-using Format = modbus::rtu::Format<CrcT, MaxAdu>;
+using Format = modbus::rtu::Format<CrcT, MaxData>;
 using Layout = typename Format::Layout;
 
-static_assert(Endpoint::max_send_size ==
-              MaxAdu - 1 /* address */ - 1 /* function */ - CrcT::wire_size);
+static_assert(Format::max_data_size == MaxData);
+static_assert(Format::max_adu_size == MaxData + 2 + CrcT::wire_size);
 ```
 
-Policies with the same `wire_size` and MaxAdu share `Layout`, Geometry,
+Policies with the same `wire_size` and MaxData share `Layout`, Geometry,
 concrete Storage, Message and Packet types; the Format types intentionally differ. Changing Bitwise to Table therefore does not duplicate those
 ownership paths. A different width intentionally produces a different wire
 format and different owner types.
@@ -364,7 +371,7 @@ RTU asks RX for exactly its private header plus the complete validated ADU.
 Its largest TX request is Format::max_adu_size. A Pool grants its entire slab,
 while Heap grants exact requested bytes. `wire::TxBlock{memory, granted}`
 preserves the original physical descriptor even when a size class overgrants.
-Message caps useful capacity at MaxAdu - 2 - CRC width.
+Message caps useful capacity at MaxData; the physical envelope is automatic.
 
 Retaining Packet copies extends RX block lifetime. Unsent Messages and the
 active transport borrow consume TX blocks. Exhaustion returns an empty owner;
@@ -604,4 +611,4 @@ workload from the historical CRC16-only A/B figures above.
   `Uart::proceed()` in thread context.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete invariant set and the
-future `modbus::tcp` boundary.
+separate [`modbus::tcp` boundary](tcp/README.md).

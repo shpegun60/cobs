@@ -228,7 +228,10 @@ production heap-backed UART TX also needs DMA-visible backing memory.
   This is actual VCP-paced exchange, not sustained one-way line saturation.
 - Framed RTU uses benchmark private function `0x41` and its BE16 data-length
   prefix. Standard-size cases fit ADU 256; the 1024-byte body deliberately
-  uses private MaxAdu 1030. COBS uses max payload 253 or a wider 1024 format.
+  uses a private physical ADU ceiling of 1030. COBS uses max payload 253 or a
+  wider 1024 format. After the [data-limit API update](PAYLOAD_LIMITS.md), this
+  historical harness explicitly converts its fixed ADU budget to useful data;
+  ordinary application Format arguments are data bytes, not ADU sizes.
 
 Core total is the median of each sample's `(RX + TX + release) / iterations`,
 not the sum of three independent medians. Ratios match protocol, CRC,

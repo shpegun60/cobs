@@ -1,0 +1,149 @@
+
+=== BUILD + FLASH 115200 baud ===
+CC  stm32h7rsxx_hal.c
+CC  stm32h7rsxx_hal_cortex.c
+CC  stm32h7rsxx_hal_crc.c
+CC  stm32h7rsxx_hal_crc_ex.c
+CC  stm32h7rsxx_hal_dma.c
+CC  stm32h7rsxx_hal_dma_ex.c
+CC  stm32h7rsxx_hal_exti.c
+CC  stm32h7rsxx_hal_flash.c
+CC  stm32h7rsxx_hal_flash_ex.c
+CC  stm32h7rsxx_hal_gpio.c
+CC  stm32h7rsxx_hal_pwr.c
+CC  stm32h7rsxx_hal_pwr_ex.c
+CC  stm32h7rsxx_hal_rcc.c
+CC  stm32h7rsxx_hal_rcc_ex.c
+CC  stm32h7rsxx_hal_uart.c
+CC  stm32h7rsxx_hal_uart_ex.c
+CC  crc.c
+CC  gpdma.c
+CC  gpio.c
+CC  main.c
+CC  stm32h7rsxx_hal_msp.c
+CC  stm32h7rsxx_it.c
+CC  syscalls.c
+CC  sysmem.c
+CC  system_stm32h7rsxx.c
+CC  usart.c
+CXX cobs_bench.cpp
+CXX Decoder.cpp
+CXX Encoder.cpp
+AS  startup
+LD  cobs_hardware_bench.elf
+   text	   data	    bss	    dec	    hex	filename
+  24772	     12	  14928	  39712	   9b20	C:/Users/admin/Documents/my_workspace/Qt/COBS/stm32_cube_test/h7s_cobs_test/out/cobs-hardware/cobs_hardware_bench.elf
+ELF=/c/Users/admin/Documents/my_workspace/Qt/COBS/stm32_cube_test/h7s_cobs_test/out/cobs-hardware/cobs_hardware_bench.elf
+=== COBS hardware build OK ===
+      -------------------------------------------------------------------
+                       STM32CubeProgrammer v2.21.0                  
+      -------------------------------------------------------------------
+
+ST-LINK SN  : 002A001F3033510135393935
+ST-LINK FW  : V3J17M11
+Board       : NUCLEO-H7S3L8
+Voltage     : 3.26V
+SWD freq    : 3300 KHz
+Connect mode: Under Reset
+Reset mode  : Hardware reset
+Device ID   : 0x485
+Revision ID : Rev Y
+Device name : STM32H7RSxx
+Flash size  : 64 KBytes (default)
+Device type : MCU
+Device CPU  : Cortex-M7
+BL Version  : 0xE3
+
+
+
+Opening and parsing file: cobs_hardware_bench.elf
+
+
+Memory Programming ...
+  File          : cobs_hardware_bench.elf
+  Size          : 24.20 KB 
+  Address       : 0x08000000
+
+
+Erasing memory corresponding to segment 0:
+Erasing internal memory sectors [0 3]
+Download in Progress:
+��������������������������������������������������
+
+Error: failed to download  Sector[0]
+Error: failed to download the File
+ 0%
+
+WARNING: ST-Link download failed before tests; retrying the same ELF (attempt 1 of 3)
+      -------------------------------------------------------------------
+                       STM32CubeProgrammer v2.21.0                  
+      -------------------------------------------------------------------
+
+ST-LINK SN  : 002A001F3033510135393935
+ST-LINK FW  : V3J17M11
+Board       : NUCLEO-H7S3L8
+Voltage     : 3.27V
+SWD freq    : 3300 KHz
+Connect mode: Under Reset
+Reset mode  : Hardware reset
+Device ID   : 0x485
+Revision ID : Rev Y
+Device name : STM32H7RSxx
+Flash size  : 64 KBytes (default)
+Device type : MCU
+Device CPU  : Cortex-M7
+BL Version  : 0xE3
+
+
+
+Opening and parsing file: cobs_hardware_bench.elf
+
+
+Memory Programming ...
+  File          : cobs_hardware_bench.elf
+  Size          : 24.20 KB 
+  Address       : 0x08000000
+
+
+Erasing memory corresponding to segment 0:
+Erasing internal memory sectors [0 3]
+Download in Progress:
+�������������������������������������������������� 0%
+�������������������������������������������������� 100%
+
+File download complete
+Time elapsed during download operation: 00:00:00.183
+
+
+
+Verifying...
+
+
+Read progress:
+�������������������������������������������������� 50%
+�������������������������������������������������� 100%
+
+Time elapsed during verifying operation: 00:00:00.101
+
+
+Download verified successfully
+
+
+
+MCU Reset
+
+Software reset is performed
+
+PASS PC reference codec
+HELLO {"baud": 115200, "core_clock": 600000000, "crc_policy": 0, "crc_size": 0, "length_size": 2, "max_receive": 1024, "max_send": 1024, "rx_blocks": 8, "tx_blocks": 2, "uart_chunk_count": 8, "uart_chunk_size": 128, "version": 3}
+PASS vectors: 81 frames / 22680 B
+PASS faults
+PASS selftest
+PASS pool: sent=32 retained/echoed=8
+PASS stress: 294 frames, 90185 B, 0.009 MiB/s payload, 0.058% CPU
+PASS PC reference codec
+HELLO {"baud": 115200, "core_clock": 600000000, "crc_policy": 0, "crc_size": 0, "length_size": 2, "max_receive": 1024, "max_send": 1024, "rx_blocks": 8, "tx_blocks": 2, "uart_chunk_count": 8, "uart_chunk_size": 128, "version": 3}
+PASS gap
+
+=== MATRIX PASS ===
+Results: C:\Users\admin\Documents\my_workspace\Qt\COBS\src\wire\tests\hardware\h7s\results_audit_2026-09-12\cobs-none-1024-115200.jsonl

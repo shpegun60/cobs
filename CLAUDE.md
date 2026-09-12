@@ -55,7 +55,34 @@ uncommitted audit inputs; older records must not be attributed to this revision.
 the stream suite releases its retained Packet with reset(), not placement-new
 over a const local. Keep both sanitized and optimized framing fuzz tests.
 
+The subsequent explicit cross-stack audit is in
+`doc/PARANOID_AUDIT_2026-09-12.md`. New real-HAL reproductions disprove UART
+READY alone as proof that its DMA channel stopped: ignored H7RS IDLE-abort
+failure and the independent sibling channel in `UART_DMAError`. The driver
+retains unconfirmed borrows for thread-context repair; a latched TX failure
+cannot become success on late TC. This changes RX/TX ISR code size, not ARM
+object/buffer geometry or the idle proceed path. Updated assembly guards
+and the schema 2 live I/J/K fault trials cover these paths. Qt COBS detach/
+discard now signals a gap (no timer), and empty Qt input no longer extends
+the existing RTU deadline. Old CPU measurements remain historical.
+
 ## Project overview
+
+`modbus::tcp` was added as a separate transport-independent MBAP core on
+2026-09-12. See `doc/MODBUS_TCP_PLAN.md`, `src/modbus/tcp/README.md` and
+`src/modbus/tcp/tests/hardware/h7s/README.md`. Its spelling is
+`Endpoint<Memory, Format<Crc = crc::NoCrc, MaxData = 252>>`; CRC/oversized
+formats are explicit private extensions. MBAP is the only framer; no Framer
+template or function table. It mirrors RTU storage, writers, readers and
+ownership, with transaction/unit/function metadata. RX fails closed on
+invalid headers, CRC mismatch or gaps until explicit new-stream reset; OOM
+skips the known remainder. Do not add socket/connection/transaction behavior
+to the protocol core or relabel its H7S UART tests as TCP/IP interoperability.
+TCP's host suite is `sh src/modbus/tcp/tests/run.sh`, ARM guard
+`sh src/modbus/tcp/tests/check_arm.sh`; `check_msvc.ps1` includes its core,
+advanced and data-limit suites plus the shared three-protocol payload checks.
+The live six-image receipt identifies measured worktree source bytes, not
+the older base commit alone. Original boot flash was restored and read back.
 
 The current design decisions and their acceptance evidence are in
 `doc/SHARED_POLICIES_PLAN.md` and `doc/SHARED_POLICIES_VALIDATION.md`.
@@ -71,8 +98,9 @@ The stable documentation is split by boundary:
   `read_*` exports in both protocol namespaces, `rx.frames_received`, matching
   COBS/RTU UART adapter lifecycles and one protocol-independent FreeRTOS wake.
   COBS's old `frames_delivered` field was renamed, not duplicated; saved
-  hardware JSON labels remain historical. Wire formats, Format limit units
-  and RTU owned-prefix `data()` semantics are unchanged;
+  hardware JSON labels remain historical. That API-parity slice did not
+  change the wire or owned-prefix `data()` semantics. The later data-limit
+  migration is documented separately in `doc/PAYLOAD_LIMITS.md`;
 
 - `doc/INTEGRATION.md` — the usage guide: every supported composition (RTU
   through `UartAdapter`, COBS through its adapter or on the driver directly, FreeRTOS on top, RTU
@@ -112,7 +140,10 @@ the `wire::Heap` / `wire::Pool<Rx, Tx>` storage specifications and the
 and Table engines, `NoCrc`), `cobs/` and `modbus/`. Both protocol endpoints are
 spelled `Endpoint<Memory, Format>`: the same `wire::Pool<8, 2>` goes into
 either, and the protocol's `Format` names the CRC policy (`cobs::Format<Crc,
-RxMax, TxMax>`, `modbus::rtu::Format<Crc, MaxAdu>`). The RTU endpoint has an
+RxMax, TxMax>`, `modbus::rtu::Format<Crc, MaxData>`). All explicit Format size
+arguments count useful data bytes; see `doc/PAYLOAD_LIMITS.md`. RTU and TCP
+both default to 252 data bytes, with standard CRC16/NoCrc respectively.
+The RTU endpoint has an
 optional third parameter, `Framer = framing::None`: a
 `framing::Standard<Direction>` policy (or a user type derived from it) adds
 `consume()` for arbitrary stream chunks and a builder-owned length prefix
@@ -271,7 +302,7 @@ are not current. The implemented boundaries are:
 - **Three layers**: byte transport (UART/TCP/…) → protocol endpoint (framing, integrity, packet lifetime) → application (`Message` / `Packet`). "UART handles bytes. COBS handles packets." Modbus RTU is a sibling endpoint over the same transport contract; its RX boundary is one complete burst candidate (`receive_adu`), COBS's is an arbitrary stream chunk (`consume`).
 - The transport is bound as one owning `tiny::delegate` pair for busy state and `send(span)`; it has **no TX queue**, no knowledge of framing, CRC, or packet sizes. TX-busy policy (retry/drop/queue) belongs to layers above.
 - Both endpoints are `Endpoint<Memory, Format>`. `Memory` is a `wire::Storage` specification (`wire::Heap` by default, `wire::Pool<Rx, Tx>` for deterministic storage, or a user type with a nested `template<class Geometry> class For`); the endpoint derives a three-number `Geometry` from its Format and binds `Memory::For<Geometry>`. Storage speaks physical bytes only and never sees a header, a length field or a CRC. Changing memory must not change the application-facing API or wire format.
-- `Format` names the wire contract including the CRC policy from `crc/`: `cobs::Format<Crc = crc::Crc16Bitwise, RxMax = 255 - Crc::wire_size, TxMax = RxMax>` and `modbus::rtu::Format<Crc = crc::Crc16Bitwise, MaxAdu = 256>`. Equal-width Bitwise/Table policies share `Layout`, `Storage`, `Message` and `Packet` types. `Format<crc::NoCrc, 255>` is the byte-identical COBS v1 format.
+- `Format` names the wire contract including the CRC policy from `crc/`: `cobs::Format<Crc = crc::Crc16Bitwise, RxMax = 255 - Crc::wire_size, TxMax = RxMax>`, `modbus::rtu::Format<Crc = crc::Crc16Bitwise, MaxData = 252>` and `modbus::tcp::Format<Crc = crc::NoCrc, MaxData = 252>`. All explicit sizes count useful data. Equal-width Bitwise/Table policies share `Layout`, `Storage`, `Message` and `Packet` types. `Format<crc::NoCrc, 255>` is the byte-identical COBS v1 format.
 - **RX and TX ownership are deliberately asymmetric**: RX packets use the intrusive shared `Packet` handle (refcount inside the protocol's private `RxBlock`, payload immutable once decoded); TX frames use exclusive ownership through one `wire::TxBlock` descriptor (`Message` owns until `send()` succeeds, then the endpoint holds it until DMA completes, then returns the descriptor exactly as granted).
 - RX callbacks deliver arbitrary byte chunks (a frame may span chunks, or one chunk may hold several frames); the span is valid only during the callback. On errors COBS drops bytes until the next `0x00` delimiter to resynchronize.
 - CRC is a protocol policy, never a UART feature. COBS covers the payload only (the length is checked structurally); RTU covers address, function and data.

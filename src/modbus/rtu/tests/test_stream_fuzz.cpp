@@ -83,7 +83,7 @@ std::vector<uint8_t> reference_frame(std::mt19937& random, std::size_t crc_size)
 
 bool reference_valid(std::span<const uint8_t> frame, std::size_t crc_size)
 {
-	if (frame.size() < 2u + crc_size || frame.size() > 512u) { return false; }
+	if (frame.size() < 2u + crc_size || frame.size() > 512u + 2u + crc_size) { return false; }
 	if (crc_size != 0u) {
 		const std::size_t body = frame.size() - 2u;
 		const auto value = static_cast<uint16_t>(frame[body] |

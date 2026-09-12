@@ -11,7 +11,7 @@
 
 struct OversizeCrc final {
 	using value_type = uint8_t;
-	static constexpr std::size_t wire_size = 255u;
+	static constexpr std::size_t wire_size = SIZE_MAX;
 
 	uint8_t calculate(std::span<const uint8_t>) noexcept { return 0u; }
 	void store(uint8_t*, uint8_t) noexcept {}

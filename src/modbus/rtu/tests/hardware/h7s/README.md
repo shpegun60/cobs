@@ -27,7 +27,12 @@ their identities and derived metrics against this working tree.
 
 The records and measurements described below predate shared storage and
 configurable MaxAdu. They are retained as historical evidence; current
-configuration is `Endpoint<wire::Pool<Rx,Tx>, modbus::rtu::Format<Crc,MaxAdu>>`.
+configuration is `Endpoint<wire::Pool<Rx,Tx>, modbus::rtu::Format<Crc,MaxData>>`.
+MaxData now counts function-data bytes. This historical hardware matrix
+explicitly fixes its physical ADU budget at 256 across policies, so its
+harness translates that budget to `254 - Crc::wire_size` data bytes. Ordinary
+application code supplies only its useful data limit. See
+[payload-limit migration](../../../../../../doc/PAYLOAD_LIMITS.md).
 
 Status: audited on real silicon after the protocol-independent CRC extraction,
 including CRC-policy A/B, 2026-09-05.

@@ -365,7 +365,9 @@ patterns: pseudo-random, all zero, nonzero 1..255, alternating zero/A5 and
 or fragments of at most 128 bytes; RTU always receives one whole ADU.
 
 An additional explicitly private wide case uses 1024 useful bytes:
-`cobs::Format<Crc,1024>` and `rtu::Format<Crc,1026 + Crc::wire_size>`.
+`cobs::Format<Crc,1024>` and `rtu::Format<Crc,1024>` in the current data-limit
+API. The original record used the older RTU ADU-limit spelling
+`rtu::Format<Crc,1026 + Crc::wire_size>` for this same 1024-byte data geometry.
 It is a library geometry/performance experiment only, not a 1024-byte
 standard Modbus UART interoperability claim.
 

@@ -170,7 +170,7 @@ static_assert(std::same_as<RtuEndpoint::Crc, ::crc::Crc16Bitwise>);
 static_assert(std::same_as<RtuTableEndpoint::Crc, ::crc::Crc16Table>);
 static_assert(std::same_as<RtuNoCrcEndpoint::Crc, ::crc::NoCrc>);
 static_assert(RtuEndpoint::max_send_size == 252u);
-static_assert(RtuNoCrcEndpoint::max_send_size == 254u);
+static_assert(RtuNoCrcEndpoint::max_send_size == 252u);
 
 static_assert(!HasRtuMetadata<typename CobsEndpoint::Packet>);
 static_assert(HasRtuMetadata<typename RtuEndpoint::Packet>);

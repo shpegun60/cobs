@@ -294,6 +294,37 @@ smoke-checked 115200 image:
   -Output 'src/cobs/tests/hardware/h7s/results_new.jsonl'
 ```
 
+## Modbus TCP core and MCU validation
+
+The [2026-09-12 cross-stack audit](PARANOID_AUDIT_2026-09-12.md) records the
+fresh complete host/ARM/live verification and scoped UART/Qt corrections.
+Its live receipts include full source identities and restored-flash checks;
+older green records are not substitutes for testing changed source bytes.
+
+TCP is header-only: include `modbus/tcp/Tcp.h` with `-I src -I libs/delegate`,
+or include `src/modbus/tcp/tcp.pri` from qmake. No network stack is linked.
+
+```sh
+sh src/modbus/tcp/tests/run.sh
+sh src/modbus/tcp/tests/check_arm.sh
+sh src/modbus/tcp/tests/qmake_consumer/run.sh
+```
+
+The host runner checks seven independent headers, nine intentionally rejected
+contracts, all nine built-in integrity policies over Heap/Pool, custom memory
+faults, stateful policy injection, arbitrary stream cuts and size extremes.
+Run under WSL for ASan/UBSan; MinGW has no sanitizer runtime. Both run O3/LTO.
+`src/wire/tests/check_msvc.ps1` also includes TCP on x64 and x86 with `/WX`.
+`src/wire/tests/run.sh` additionally exercises 324 COBS/RTU/TCP combinations
+against the same useful-data limit contract, under sanitizers and O3/LTO.
+See [payload-limit migration](PAYLOAD_LIMITS.md).
+The ARM guard compiles 72 NoCrc probes (eight cores, three optimizations,
+little/big/strict modes) plus Bitwise/Table controls.
+
+The [H7S runner](../src/modbus/tcp/tests/hardware/h7s/README.md) builds six images,
+backs up boot flash, tests exact MBAP ADUs through UART, and restores/read-backs
+the original image. It does not start or verify Ethernet/TCP/IP.
+
 ## Running the executable
 
 Outside Qt Creator the exe needs the Qt runtime DLLs. Either keep `C:\Qt\6.10.1\mingw_64\bin` on `PATH` when launching it, or make the build self-contained once:

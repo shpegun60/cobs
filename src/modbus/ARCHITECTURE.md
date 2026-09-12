@@ -15,7 +15,7 @@ There is intentionally no transport-ambiguous `modbus::Endpoint`.
 
 ```cpp
 modbus::rtu::Endpoint<Memory, Format, Framer = framing::None>
-modbus::tcp::Endpoint<Memory, Format> // future, not an empty placeholder
+modbus::tcp::Endpoint<Memory, Format> // MBAP-only framing; no Framer parameter
 ```
 
 Only transport-independent application protocol facts live directly in
@@ -82,13 +82,14 @@ RTU ADU = address | function | function data | policy-owned trailer
 bytes       1          1          0..N          CrcT::wire_size
 ```
 
-The physical ADU ceiling defaults to 256 bytes. `Format<Crc, MaxAdu>`
-exposes `Layout<Crc::wire_size, MaxAdu>`, which owns protocol sizes, offsets,
-minimum ADU length and useful data/PDU limits. MaxAdu 0/1 is rejected before
-subtraction; the maximum is 65535 because RX metadata uses uint16_t.
+`Format<Crc, MaxData = 252>` takes useful function-data capacity, like COBS/TCP.
+It exposes `Layout<Crc::wire_size, MaxData>`, which automatically adds address,
+function and CRC and owns the resulting sizes/offsets. Default CRC16 gives a
+256-byte ADU. Zero data is legal. Invalid data/CRC sizes are rejected before
+addition; the largest physical ADU is 65535 because RX metadata uses uint16_t.
 
 ```text
-src/crc/Crc.h -> Format<Crc, MaxAdu> -> Layout<width, MaxAdu>
+src/crc/Crc.h -> Format<Crc, MaxData> -> Layout<width, MaxData>
                                          |
 src/wire/Storage.h <-- Endpoint derives Geometry and binds Memory::For<Geometry>
                                          |
@@ -99,16 +100,17 @@ Storage has no dependency on CRC or Format. The endpoint maps the protocol's
 layout and private RX header into three physical geometry constants.
 
 ```text
-max_data_size = MaxAdu - 1 address - 1 function - Crc::wire_size
+max_data_size = MaxData
+max_adu_size  = MaxData + 1 address + 1 function + Crc::wire_size
 ```
 
 A smaller ceiling is a local capacity restriction. Actual frames above 256 or
 different checksum semantics are private exchanges; custom type identity does
 not prove CRC-16/MODBUS compatibility.
 
-The default two-byte CRC16 therefore retains the standard 252-byte function-
-data limit. `NoCrc` exposes 254, CRC8 exposes 253, CRC32 exposes 250, and CRC64
-exposes 246. Alternate widths define private RTU-like wire formats rather than
+The default two-byte CRC16 retains the standard 252-byte function-data limit.
+An explicit NoCrc/CRC8/CRC32/CRC64 keeps the same 252 data bytes and derives
+254/255/258/262 ADU bytes respectively. Alternate widths define private RTU-like wire formats rather than
 standard Modbus RTU, and both peers must select the same policy.
 
 The public `Message::size()` and `Packet::size()` count function-data bytes
@@ -125,7 +127,7 @@ packet.adu();      // address + PDU + CRC
 
 This definition gives `data()` and `size()` the same application-facing
 meaning as COBS: the bytes supplied by the message builder, not framing bytes.
-Policies with equal `wire_size` share one Layout (for equal MaxAdu), concrete Storage, Packet, Message, and
+Policies with equal `wire_size` share one Layout (for equal MaxData), concrete Storage, Packet, Message, and
 Receiver instantiation; choosing CRC16 Table instead of Bitwise does not
 duplicate those ownership paths.
 
@@ -314,7 +316,7 @@ short ADU      -> UART IDLE -> one candidate
 
 The receiver performs only:
 
-1. policy-derived size `(2 + CrcT::wire_size)..MaxAdu` validation;
+1. policy-derived size `(2 + CrcT::wire_size)..Layout::max_adu_size` validation;
 2. validation with the Endpoint's selected policy (`NoCrc` is a no-op);
 3. RX storage acquisition;
 4. one complete-ADU copy;
@@ -387,7 +389,7 @@ else from it:
   `Base::layout`. `length_prefixed(2)` is the recommended shape for a
   variable-length private function: `[N: BE16][body]`, with `N` filled by the
   library; `packet.data()` on the peer is `[N][body]`, nothing is hidden.
-  A one-byte prefix can represent at most 255 body bytes, even when `MaxAdu`
+  A one-byte prefix can represent at most 255 body bytes, even when `MaxData`
   is larger. A body beyond that field's range is rejected before CRC or TX;
   storage capacity never widens a count field. Construct layouts with the
   factory functions: an invalid width or offset (including `SIZE_MAX`) gives
@@ -523,9 +525,9 @@ increments `stats.rx.stream_gaps`. There is no COBS-style byte resynchronizer:
 the next complete physical burst is a new independently policy-validated
 candidate.
 
-## 10. Future TCP contract
+## 10. TCP contract
 
-TCP will preserve the same ownership verbs while exposing TCP metadata:
+TCP preserves the same ownership verbs while exposing TCP metadata:
 
 ```cpp
 packet.transaction_id();
@@ -536,18 +538,31 @@ packet.pdu();
 packet.adu();
 ```
 
-The write side will correspondingly require transaction ID, unit ID and
+The write side correspondingly requires transaction ID, unit ID and
 function when creating a message. Its `Message` remains move-only and its
 `Packet` remains a pointer-sized intrusive shared handle.
 
 TCP framing cannot reuse RTU `receive_adu()`. `modbus::tcp::Endpoint::consume`
-must accept arbitrary stream chunking, parse the seven-byte MBAP header,
-validate protocol ID and length, and support partial or multiple ADUs per
-call. A malformed length poisons that connection until an explicit reset or
-disconnect; byte-scanning is not a sound TCP recovery policy.
+accepts arbitrary stream chunking, parses the seven-byte MBAP header,
+validates protocol ID and length, and supports partial or multiple ADUs per
+call. Six prefix bytes suffice to validate and size the allocation; Unit ID
+is in the counted tail. Invalid protocol/length/oversize, a CRC error or an
+announced gap sets `rx_failed()` until `reset_rx()` at a caller-guaranteed new
+stream. Byte-scanning is not a sound recovery policy. An allocation failure
+skips exactly the declared tail and continues. Queued and retained packets
+survive reset/gap; outstanding TX borrows are unaffected.
 
-TCP is added only as a complete tested layer. No empty `modbus::tcp` namespace
-or placeholder types are shipped by the RTU phase.
+`Format<Crc = crc::NoCrc, MaxData = 252>` defaults to standard Modbus TCP.
+CRC-bearing or oversized frames are explicit private extensions; MBAP Length
+includes the trailer, and the policy calculates over MBAP + PDU, excluding
+only its trailer. `Layout<width, MaxData>` adds 7 MBAP bytes, function and CRC
+to the data limit automatically and owns the geometry; maximum physical
+ADU is 65541 (6 + 65535), so RX size metadata is uint32_t. There is no custom
+framer: MBAP alone handles every function and both directions.
+
+See [TCP usage](tcp/README.md), [locked contract](../../doc/MODBUS_TCP_PLAN.md)
+and [MCU/UART proof](tcp/tests/hardware/h7s/README.md). There is no socket
+adapter or transaction scheduler, and UART tests are not Ethernet/TCP-IP tests.
 
 ## 11. Execution and lifetime rules
 
@@ -586,7 +601,7 @@ Client, Server and function helpers can be layered later over validated
 ## 13. Hot-path and size evidence
 
 The receive path performs bounds checks and the selected policy before
-allocation, then one copy of at most MaxAdu bytes into final Packet storage and
+allocation, then one copy of at most Layout::max_adu_size bytes into final Packet storage and
 one O(1) intrusive
 queue insertion. Packet copies and views touch only the block pointer and
 reference count. The transmit path builds directly in its final contiguous
@@ -631,4 +646,4 @@ implementation is called.
 
 - [Modbus Application Protocol Specification V1.1b3](https://www.modbus.org/docs/Modbus_Application_Protocol_V1_1b3.pdf)
 - [Modbus Serial Line Protocol and Implementation Guide V1.02](https://www.modbus.org/docs/Modbus_over_serial_line_V1_02.pdf)
-- [Modbus Messaging on TCP/IP Implementation Guide V1.0b](https://www.modbus.org/docs/Modbus_Messaging_Implementation_Guide_V1_0b.pdf)
+- [Modbus Messaging on TCP/IP Implementation Guide V1.0b](https://www.modbus.org/file/secure/messagingimplementationguide.pdf)

@@ -143,11 +143,11 @@ struct CountingCrc {
 };
 
 template<class Crc, std::size_t Width, std::endian Order = std::endian::big,
-         std::size_t MaxAdu = 512u>
+         std::size_t MaxData = 512u>
 void check_owned_prefix_bounds()
 {
 	using Device = modbus::rtu::Endpoint<wire::Heap,
-		modbus::rtu::Format<CountingCrc<Crc>, MaxAdu>, OwnedPrefix<Width, Order>>;
+		modbus::rtu::Format<CountingCrc<Crc>, MaxData>, OwnedPrefix<Width, Order>>;
 	unsigned crc_calls = 0u;
 	Device device{CountingCrc<Crc>{crc_calls}};
 	Transport transport;
@@ -573,8 +573,8 @@ int main()
 	check_owned_prefix_bounds<::crc::Crc16Table, 1u>();
 	check_owned_prefix_bounds<::crc::Crc16Bitwise, 2u>();
 	check_owned_prefix_bounds<::crc::Crc16Bitwise, 2u, std::endian::little>();
-	check_owned_prefix_bounds<::crc::NoCrc, 2u, std::endian::big, 65535u>();
-	check_owned_prefix_bounds<::crc::Crc16Bitwise, 2u, std::endian::big, 65535u>();
+	check_owned_prefix_bounds<::crc::NoCrc, 2u, std::endian::big, 65533u>();
+	check_owned_prefix_bounds<::crc::Crc16Bitwise, 2u, std::endian::big, 65531u>();
 
 	group("ExpireIncomplete");
 	{

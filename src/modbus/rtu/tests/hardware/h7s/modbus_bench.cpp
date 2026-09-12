@@ -179,7 +179,10 @@ using Framer = RoleFramer;
 #else
 using Framer = modbus::rtu::framing::None;
 #endif
-using Link = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<Crc>, Framer>;
+// This historical matrix intentionally keeps its physical 256-byte budget
+// across CRC widths; Format now receives the corresponding DATA limit.
+using Link = modbus::rtu::Endpoint<Memory,
+	modbus::rtu::Format<Crc, 254u - Crc::wire_size>, Framer>;
 using Serial = Uart<kUartChunkSize, kUartChunkCount>;
 
 static_assert(Link::max_receive_size ==

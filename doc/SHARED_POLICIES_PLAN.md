@@ -75,10 +75,12 @@ mixed versions are not guaranteed to reject each other.
 
 ### RTU target
 
-`Format<Crc = crc::Crc16Bitwise, MaxAdu = 256>`. MaxAdu is physical ADU size,
-not payload. Useful capacity is `MaxAdu - 2 - Crc::wire_size`; all subtraction
-is guarded, including MaxAdu 0/1. Maximum ADU is 65535 because metadata uses
-uint16_t. Standard reference constants are separate from instance limits.
+Updated by the 2026-09-12 [payload-limit contract](PAYLOAD_LIMITS.md):
+`Format<Crc = crc::Crc16Bitwise, MaxData = 252>`. MaxData counts useful
+`data()` bytes, like COBS/TCP. Physical size is `MaxData + 2 + Crc::wire_size`;
+zero data is legal and overflow is checked before addition. Maximum ADU is
+65535 because metadata uses uint16_t. Standard reference constants are
+separate from instance limits. The older MaxAdu spelling is superseded.
 
 Smaller capacities do not change the wire format. Actual ADUs above 256 or
 different checksum semantics are private RTU-like exchanges. The type of a

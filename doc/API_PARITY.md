@@ -1,4 +1,4 @@
-# COBS / Modbus RTU: end-user API parity
+# COBS / Modbus RTU / Modbus TCP: end-user API parity
 
 This contract describes the shared application vocabulary, not a common
 protocol implementation. Codecs, framing, packet envelopes and diagnostics
@@ -6,25 +6,56 @@ remain protocol-specific. See [integration](INTEGRATION.md),
 [storage](STORAGE.md), [COBS wire format](PROTOCOL.md) and
 [RTU usage](../src/modbus/README.md).
 
+## TCP extension (2026-09-12)
+
+[`modbus::tcp::Endpoint<Memory, Format>`](../src/modbus/tcp/README.md) preserves
+the same Message writers (scalar and span), Packet ownership, exact shared
+`read_*` functions, `wire::SendResult`, delegates, bind/send/poll lifecycle,
+storage and stateful CRC injection. It adds no parallel memory API.
+The COBS/RTU adapter-specific sections below remain specific to those adapters;
+this slice adds no TCP socket adapter or TCP-specific FreeRTOS glue.
+
+| Protocol fact | RTU | TCP |
+|---|---|---|
+| Factory metadata | `address, function[, hint]` | `transaction_id, unit_id, function[, hint]` |
+| Format | `Format<Crc = Crc16Bitwise, MaxData = 252>` | `Format<Crc = NoCrc, MaxData = 252>` |
+| Default function data | 252 bytes | 252 bytes |
+| Stream framing | optional function-layout policy | always MBAP Length, no custom framer |
+| CRC | standard CRC16 by default | absent in standard TCP; opt-in CRC is private |
+| Service length | private RTU owned prefixes stay in data | MBAP Length never enters data |
+| Gap recovery | protocol/framer candidate rules | failed until explicit reset at a known new stream |
+| Packet metadata | `address/function` | `transaction_id/unit_id/function` |
+
+Both Packet variants expose `data/size/pdu/adu`. TCP hides the optional trailer
+from data/PDU and includes it in ADU. It does not inherit RTU's candidate-only
+`receive_adu()` or its timing-expiry methods: a byte stream has different
+boundary guarantees. `assembling`, `rx_failed`, `reset_rx` expose those facts.
+Packet, Message and layout internals stay protocol-specific. Bitwise/Table
+of equal width share TCP Storage/Message/Packet types, just as in RTU/COBS.
+
+`src/modbus/tcp/tests/test_advanced.cpp` checks exact reader/result identity,
+type parity, all six scalar/span writer forms, metadata and ownership behavior;
+the common MCU/host suite checks send failures, immutable retries and borrows.
+
 ## Common application surface
 
-| Concern | Both protocols |
+| Concern | All three protocol cores (adapter rows apply to COBS/RTU) |
 |---|---|
 | Memory | `wire::Heap`, `wire::Pool<Rx, Tx>`, or one custom `Memory::For<Geometry>` |
 | Integrity | the same `crc::` policies, including user-provided stateful calculators |
-| Endpoint configuration | `Endpoint<Memory, Format>`; RTU optionally adds `Framer` |
+| Endpoint configuration | `Endpoint<Memory, Format>`; only RTU optionally adds `Framer` |
 | Injection | CRC object and/or `std::in_place` storage constructor arguments |
 | TX builder | move-only `Message`, `size/capacity/reserve`, `append_native/be/le/bytes` |
 | RX handle | shared-ownership `Packet`, `data/size/reset`, cheap copy and move |
-| Readers | `read_native/be/le/bytes` in `cobs`, `modbus::rtu`, or neutral `wire` |
+| Readers | `read_native/be/le/bytes` in `cobs`, `modbus::rtu`, `modbus::tcp`, or neutral `wire` |
 | Transport | identical `Sender`/`BusyQuery` delegate types and `bind/unbind` |
-| Send result | one `wire::SendResult`, also exported by both namespaces and `Endpoint::SendResult` |
+| Send result | one `wire::SendResult`, also exported by all three namespaces and `Endpoint::SendResult` |
 | Service | `poll(now_ms)`, `tx_active`, `notify_gap`, `has_packet/pop_packet` |
 | Common statistics | RX `frames_received/crc_errors/oversize/allocation_failure`; TX `frames_sent/send_refused_busy/send_failed` |
 | STM32 composition | `cobs::UartAdapter` / `modbus::rtu::UartAdapter`: construct, `bind/unbind/bound`, `proceed()` |
 | Sleeping FreeRTOS task | the same `uart::FreeRtosWake::wait(adapter)`, wake attached to the driver, not the protocol |
 
-Both endpoints must outlive every Packet and Message they issued. All these
+Every endpoint must outlive every Packet and Message it issued. All these
 objects belong to one execution context; shared packet references are not
 atomic. Transport delegates must not throw or re-enter the endpoint.
 
@@ -47,10 +78,10 @@ atomic. Transport delegates must not throw or re-enter the endpoint.
 - A Packet copy retains the same immutable data after the original is reset.
   `notify_gap()` does not erase already completed queued packets.
 - `stats()` returns a snapshot. `frames_received` counts successful queue
-  publication in both protocols, not raw transport candidates or application
+  publication in all three protocols, not raw transport candidates or application
   calls to `pop_packet()`. Protocol-specific error counts are not interchangeable.
 
-Neither endpoint currently uses `now_ms` internally. RTU's incomplete-frame
+None of the three endpoints currently uses `now_ms` internally. RTU's incomplete-frame
 deadline belongs to its transport adapter; `Endpoint::poll()` alone does not
 expire RTU fragments. The COBS adapter has no timer state and always returns
 `no_deadline` from `deadline_in_ms()`, so both use the same FreeRTOS wait loop.
@@ -84,10 +115,12 @@ These conveniences add no object state, virtual dispatch, or allocation.
 2. COBS accepts arbitrary cuts via `consume()`. RTU gains `consume()` only
    with a framing policy; the default `receive_adu()` needs a complete candidate.
    Merely renaming that call would not make it a stream receiver.
-3. `cobs::Format<CRC, N>` limits useful payload, while
-   `modbus::rtu::Format<CRC, N>` limits the entire ADU. With CRC16 and `N=512`,
-   data limits are 512 and 508 respectively. Defaults remain 253 COBS payload
-   bytes and a 256-byte RTU ADU (252 function-data bytes).
+3. All three `Format<CRC, N>` spellings now limit useful `data()` bytes.
+   Headers, CRC and encoding overhead are added automatically. With CRC16
+   and `N=512`, all three expose 512 data bytes; RTU/TCP derive ADUs of
+   516/522 bytes. Defaults remain 253 COBS payload bytes, standard RTU
+   CRC16 with 252 data / 256 ADU and standard TCP NoCrc with 252 data / 260 ADU.
+   See [migration and exact units](PAYLOAD_LIMITS.md).
 4. COBS hides its service length and CRC from `data()/size()`. An RTU private
    `length_prefixed(2)` layout owns the length on TX but keeps it in function
    data: initial Message size is 2, and RX `data()` is `[BE16 length][body]`.

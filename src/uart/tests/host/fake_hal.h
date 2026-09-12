@@ -77,6 +77,7 @@ void   fail(const std::string& what) noexcept;
 /* Bus events, all raised through the pending-IRQ path so PRIMASK is honoured */
 void rx_bytes(const void* data, std::size_t n) noexcept; // DMA writes into the armed buffer
 void rx_idle() noexcept;                                 // partial transfer + IDLE
+void rx_idle_abort_failure() noexcept;                   // UART READY, but HAL's ignored DMA abort failed
 void rx_tc() noexcept;                                   // buffer filled
 void rx_half() noexcept;                                 // stray HT while reception stays live
 void rx_corrupt_counter(uint32_t remaining) noexcept;    // stopped RX with impossible count
@@ -85,6 +86,7 @@ void tx_dma_done() noexcept; // DMA drained into the peripheral; UART still shif
 void tx_uart_tc() noexcept;  // shift register empty: TC set, HAL raises TxCplt
 void tx_done() noexcept;     // both stages at once (the common case)
 void tx_error() noexcept;
+void dma_error(bool rx_fault) noexcept; // UART_DMAError ends both UART states, NOT the other DMA
 void tx_progress(uint16_t moved) noexcept; // DMA advanced by `moved` bytes
 void advance_tick(uint32_t ms) noexcept;
 
