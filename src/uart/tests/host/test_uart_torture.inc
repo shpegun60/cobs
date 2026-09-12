@@ -174,6 +174,10 @@ void step(State& st, Rng& rng)
 		case MaskIrq:
 			// Run a whole burst with interrupts masked, then release: the
 			// pending events must all be delivered on restore.
+			// This operation writes two bytes before any interrupt may run.
+			// With only one byte left, choose another valid operation instead
+			// of asking the fake DMA to write beyond its current buffer.
+			if (m.rx_armed && st.f.dma_rx.CountRemaining < 2u) { continue; }
 			{
 				uart::detail::IrqGuard guard;
 				if (m.rx_armed) { fake::rx_bytes("XY", 2); fake::rx_idle(); }

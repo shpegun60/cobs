@@ -83,6 +83,17 @@
 #include <span>
 #include <type_traits>
 
+// Keep a statically selected count width/order visible at its call site.
+// GCC -Os otherwise outlines store_count(), materializing a Layout on the
+// stack and calling a generic codec even for length_prefixed(1).
+#if defined(__GNUC__) || defined(__clang__)
+#define MODBUS_RTU_FRAMING_INLINE [[gnu::always_inline]] inline
+#elif defined(_MSC_VER)
+#define MODBUS_RTU_FRAMING_INLINE __forceinline
+#else
+#define MODBUS_RTU_FRAMING_INLINE inline
+#endif
+
 namespace modbus::rtu::framing {
 
 // Which side of the exchange an endpoint RECEIVES. It transmits the opposite.
@@ -142,7 +153,7 @@ struct Layout final {
 			const std::endian count_order = std::endian::big) noexcept
 	{
 		if ((count_width != 1u && count_width != 2u) ||
-		    count_offset + count_width > max_header_size) {
+		    count_offset > max_header_size - count_width) {
 			return {};
 		}
 		Layout layout{};
@@ -212,21 +223,29 @@ struct Layout final {
 		return false;
 	}
 
-	// Counted only, data_size >= header_size(): writes the count of the bytes
-	// following the field.
-	constexpr void store_count(
+	// Writes the count of the bytes following the field. Refuses a short
+	// header or a count that cannot fit the field, leaving all bytes intact.
+	// The caller supplies writable storage for at least header_size() bytes.
+	[[nodiscard]] MODBUS_RTU_FRAMING_INLINE constexpr bool store_count(
 			uint8_t* const data,
 			const std::size_t data_size) const noexcept
 	{
+		if (kind != Kind::Counted || data_size < header_size()) {
+			return false;
+		}
 		const std::size_t count = data_size - header_size();
+		if (count > (width == 1u ? UINT8_MAX : UINT16_MAX)) {
+			return false;
+		}
 		if (width == 1u) {
 			data[offset] = static_cast<uint8_t>(count);
-			return;
+			return true;
 		}
 		const uint8_t high = static_cast<uint8_t>(count >> 8u);
 		const uint8_t low = static_cast<uint8_t>(count);
 		data[offset] = order == std::endian::big ? high : low;
 		data[offset + 1u] = order == std::endian::big ? low : high;
+		return true;
 	}
 
 	[[nodiscard]] constexpr bool operator==(const Layout&) const noexcept = default;
@@ -329,5 +348,7 @@ static_assert(Policy<Standard<Direction::Response>>);
 static_assert(Framer<None> && !Policy<None>);
 
 } // namespace modbus::rtu::framing
+
+#undef MODBUS_RTU_FRAMING_INLINE
 
 #endif /* MODBUS_RTU_FRAMING_H_ */

@@ -40,6 +40,21 @@ because it cannot frame it, only the burst endpoint can; and Qt's client
 reports a Diagnostics (0x08) response as `InvalidResponseError` at its API
 although the echo on the wire is correct.
 
+The explicit 2026-09-11 cross-stack audit reproduced RTU count overflow,
+Layout offset overflow, stale-progress/empty-input adapter deadline defects
+and an RX watchdog blind spot. The scoped fixes and their current host/ARM
+evidence are in `doc/PARANOID_AUDIT_2026-09-11.md`. They do not change valid
+wire formats or UART ISR/cache paths. Fresh board validation is recorded in
+`doc/HARDWARE_REGRESSION_2026-09-12.md`: the complete 33-image COBS/RTU matrix,
+132 targeted live trials in -Os/-O2/-O3, framed RTU through 10M and eight Qt
+interop runs passed their acceptance checks. The failed programming attempt
+and burst-candidate boundary losses are retained, not relabelled as passes.
+Original firmware was restored and read back. Evidence identifies the
+uncommitted audit inputs; older records must not be attributed to this revision.
+`Layout::store_count()` now returns a checked bool, and
+the stream suite releases its retained Packet with reset(), not placement-new
+over a const local. Keep both sanitized and optimized framing fuzz tests.
+
 ## Project overview
 
 The current design decisions and their acceptance evidence are in

@@ -19,6 +19,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <memory>
 #include <span>
 #include <type_traits>
 #include <vector>
@@ -104,6 +106,94 @@ struct PrivatePeer : framing::Standard<Direction::Response> {
 		                         : Base::layout(direction, function);
 	}
 };
+
+template<std::size_t Width, std::endian Order = std::endian::big>
+struct OwnedPrefix : framing::Standard<Direction::Request> {
+	using Base = framing::Standard<Direction::Request>;
+	static constexpr Layout layout(Direction direction, uint8_t function) noexcept
+	{
+		return function == 0x41u ? Layout::length_prefixed(Width, Order)
+		                         : Base::layout(direction, function);
+	}
+};
+
+struct OverflowingOffset : framing::Standard<Direction::Request> {
+	using Base = framing::Standard<Direction::Request>;
+	static constexpr Layout layout(Direction direction, uint8_t function) noexcept
+	{
+		return function == 0x41u
+			? Layout::byte_count_at(std::numeric_limits<std::size_t>::max())
+			: Base::layout(direction, function);
+	}
+};
+
+template<class Base>
+struct CountingCrc {
+	using value_type = typename Base::value_type;
+	static constexpr std::size_t wire_size = Base::wire_size;
+	explicit CountingCrc(unsigned& counter) noexcept : calls(&counter) {}
+	value_type calculate(std::span<const uint8_t> bytes) noexcept
+	{
+		++*calls;
+		return Base{}.calculate(bytes);
+	}
+	static void store(uint8_t* data, value_type value) noexcept { Base::store(data, value); }
+	static value_type load(const uint8_t* data) noexcept { return Base::load(data); }
+	unsigned* calls;
+};
+
+template<class Crc, std::size_t Width, std::endian Order = std::endian::big,
+         std::size_t MaxAdu = 512u>
+void check_owned_prefix_bounds()
+{
+	using Device = modbus::rtu::Endpoint<wire::Heap,
+		modbus::rtu::Format<CountingCrc<Crc>, MaxAdu>, OwnedPrefix<Width, Order>>;
+	unsigned crc_calls = 0u;
+	Device device{CountingCrc<Crc>{crc_calls}};
+	Transport transport;
+	bind(device, transport);
+	const std::size_t limit = Width == 1u ? UINT8_MAX : UINT16_MAX;
+	for (const std::size_t size : {std::size_t{0u}, std::size_t{1u}, std::size_t{254u},
+	                              std::size_t{255u}, std::size_t{256u}, std::size_t{300u},
+	                              Device::max_send_size - Width}) {
+		auto message = device.make_message(0x11u, 0x41u, Width);
+		const std::vector<uint8_t> body(size, 0x5Au);
+		check(message && message.append_bytes(body) && message.size() == size + Width,
+		      "body fits the ADU storage, including an owned prefix");
+		const auto capacity = message.capacity();
+		const auto previous_frame = transport.frame;
+		const unsigned previous_calls = crc_calls;
+		if (size > limit) {
+			const auto rejected = device.framing_stats().tx_layout_rejected;
+			check(device.send(message) == modbus::SendResult::Invalid &&
+			      device.framing_stats().tx_layout_rejected == rejected + 1u,
+			      "body too large for the prefix is Invalid, never silently truncated");
+			check(message && message.size() == size + Width && message.capacity() == capacity &&
+			      message.append_bytes(std::span<const uint8_t>{}),
+			      "rejected message retains its block and remains Building");
+			check(!device.tx_active() && transport.frame == previous_frame && crc_calls == previous_calls,
+			      "rejection happens before CRC calculation or a transport call, even with NoCrc");
+			continue;
+		}
+		check(device.send(message) == modbus::SendResult::Sent && !message &&
+		      transport.frame.size() == 2u + Width + size + Crc::wire_size,
+		      "a representable prefix is sent with its complete body");
+		check(OwnedPrefix<Width, Order>::layout(Direction::Request, 0x41u).matches(
+		          std::span<const uint8_t>{transport.frame}.subspan(2u, Width + size)),
+		      "stored length exactly represents the body in the selected byte order");
+		const std::span<const uint8_t> bytes{transport.frame};
+		device.consume(bytes.first(2u + Width - 1u));
+		check(device.assembling() && !device.has_packet(), "a split count waits for its last byte");
+		device.consume(bytes.subspan(2u + Width - 1u));
+		const auto packet = device.pop_packet();
+		check(packet && packet.size() == Width + size && equal(packet.data().subspan(Width), body),
+		      "wide-format stream receiver delivers the complete original body");
+		check(!device.assembling() && !device.has_packet() && device.stats().rx.crc_errors == 0u,
+		      "no truncated extra frame or checksum failure");
+		transport.busy_state = false;
+		device.poll(0u);
+	}
+}
 
 using Memory = wire::Pool<4, 1>;
 using Plain = modbus::rtu::Endpoint<Memory>;
@@ -227,6 +317,25 @@ int main()
 		check(frames.size() == 1u && equal(frames[0], maximum), "256-byte frame assembled");
 	}
 
+	group("OverflowingLayoutOffset");
+	{
+		using Device = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<>, OverflowingOffset>;
+		// Heap placement makes any wrapped-header read visible to ASan, rather
+		// than allowing it to land in another local object on the stack.
+		auto device = std::make_unique<Device>();
+		const std::array<uint8_t, 2> prefix{0x11u, 0x41u};
+		device->consume(prefix);
+		check(!device->assembling() && !device->has_packet() &&
+		      device->framing_stats().unsupported_function == 1u &&
+		      device->storage().rx_available() == 4u,
+		      "overflowing layout offset is rejected before header access or allocation");
+		device->consume(kReadReq);
+		check(drain(*device).size() == 1u, "a valid next chunk still frames correctly");
+		device->receive_adu(make_adu(0x11u, 0x41u));
+		check(!device->has_packet() && device->framing_stats().unsupported_function == 2u,
+		      "complete-candidate path also rejects the invalid factory result");
+	}
+
 	group("CrcFailureDropsTheRestOfTheChunk");
 	{
 		Server server;
@@ -250,14 +359,13 @@ int main()
 		check(server.has_packet() && server.stats().rx.allocation_failure == 1u &&
 		      server.framing_stats().skipped_frames == 1u,
 		      "the second frame is skipped once its length is known");
-		const Tiny::Packet held = server.pop_packet();
+		Tiny::Packet held = server.pop_packet();
 		server.consume(concat({write.subspan(8u), kCoilReq}));
 		check(server.framing_stats().resyncs == 0u, "skipping is not a resync");
 		check(!server.has_packet(), "the skipped frame's tail is swallowed and the pool is still held");
 		check(server.framing_stats().skipped_frames == 2u && server.stats().rx.allocation_failure == 2u,
 		      "the third frame is skipped too while the packet is held");
-		held.~Packet();
-		new (const_cast<Tiny::Packet*>(&held)) Tiny::Packet{};
+		held.reset();
 		server.consume(kCoilReq);
 		const auto frames = drain(server);
 		check(frames.size() == 1u && equal(frames[0], kCoilReq), "in step again after the block is back");
@@ -458,6 +566,15 @@ int main()
 
 		check(device.storage().tx_available() == 1u && host.storage().rx_available() == 4u, "no leaks");
 	}
+
+	group("OwnedPrefixWidthVersusAduCapacity");
+	check_owned_prefix_bounds<::crc::NoCrc, 1u>();
+	check_owned_prefix_bounds<::crc::Crc16Bitwise, 1u>();
+	check_owned_prefix_bounds<::crc::Crc16Table, 1u>();
+	check_owned_prefix_bounds<::crc::Crc16Bitwise, 2u>();
+	check_owned_prefix_bounds<::crc::Crc16Bitwise, 2u, std::endian::little>();
+	check_owned_prefix_bounds<::crc::NoCrc, 2u, std::endian::big, 65535u>();
+	check_owned_prefix_bounds<::crc::Crc16Bitwise, 2u, std::endian::big, 65535u>();
 
 	group("ExpireIncomplete");
 	{

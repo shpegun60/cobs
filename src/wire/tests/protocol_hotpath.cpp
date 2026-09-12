@@ -7,10 +7,12 @@
 
 #include "cobs/Format.h"
 #include "modbus/Pdu.h"
+#include "modbus/rtu/Framing.h"
 #include "crc/Crc.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 
 #if defined(__GNUC__)
@@ -79,6 +81,31 @@ extern "C" WIRE_NOINLINE uint16_t modbus_crc_calculate_table(
 {
 	return ::crc::calculate<::crc::Crc16Table>(
 		std::span<const uint8_t>{source, size});
+}
+
+extern "C" WIRE_NOINLINE bool modbus_store_count8(
+		uint8_t* const destination, const std::size_t size) noexcept
+{
+	return modbus::rtu::framing::Layout::length_prefixed(1u).store_count(destination, size);
+}
+
+extern "C" WIRE_NOINLINE bool modbus_store_count16_be(
+		uint8_t* const destination, const std::size_t size) noexcept
+{
+	return modbus::rtu::framing::Layout::length_prefixed(2u).store_count(destination, size);
+}
+
+extern "C" WIRE_NOINLINE bool modbus_store_count16_le(
+		uint8_t* const destination, const std::size_t size) noexcept
+{
+	return modbus::rtu::framing::Layout::length_prefixed(2u, std::endian::little)
+		.store_count(destination, size);
+}
+
+extern "C" WIRE_NOINLINE bool modbus_reject_overflowed_header() noexcept
+{
+	return modbus::rtu::framing::Layout::byte_count_at(
+		std::numeric_limits<std::size_t>::max()).supported();
 }
 
 #undef WIRE_NOINLINE

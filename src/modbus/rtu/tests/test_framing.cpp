@@ -17,6 +17,7 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -101,6 +102,12 @@ static_assert(!framing::standard_layout(kReq, 0x2Bu).supported());
 static_assert(MyFramer::layout(kReq, 0x41u).reserved() == 2u);
 static_assert(MyFramer::layout(kReq, 0x03u) == Layout::fixed(4u));
 
+constexpr std::size_t kSizeMax = std::numeric_limits<std::size_t>::max();
+static_assert(!Layout::byte_count_at(kSizeMax, 1u).supported());
+static_assert(!Layout::byte_count_at(kSizeMax, 2u).supported());
+static_assert(!Layout::byte_count_at(kSizeMax - 1u, 2u).supported());
+static_assert(!Layout::length_prefixed(kSizeMax).supported());
+
 } // namespace
 
 int main()
@@ -115,6 +122,16 @@ int main()
 	check(!Layout::byte_count_at(13u, 2u).supported(), "a two-byte count must end within the header");
 	check(!Layout::byte_count_at(0u, 3u).supported(), "count width is 1 or 2");
 	check(!Layout::byte_count_at(0u, 0u).supported(), "count width is not 0");
+	for (const std::size_t width : {1u, 2u}) {
+		for (const std::size_t offset : {kSizeMax, kSizeMax - 1u, kSizeMax - 2u}) {
+			check(!Layout::byte_count_at(offset, width).supported(),
+			      "an overflowing offset is unsupported, never a wrapped header");
+		}
+		check(Layout::byte_count_at(Layout::max_header_size - width, width).supported(),
+		      "the last whole count field fits");
+		check(!Layout::byte_count_at(Layout::max_header_size - width + 1u, width).supported(),
+		      "a field one byte past the header is refused");
+	}
 	check(Layout::byte_count_at(4u).reserved() == 0u, "application-written counts are not reserved");
 	check(Layout::length_prefixed(2u).owned && Layout::length_prefixed(2u).reserved() == 2u,
 	      "length_prefixed(2) is library-owned");
@@ -129,25 +146,47 @@ int main()
 	{
 		std::array<uint8_t, 6> data{};
 		const Layout be = Layout::length_prefixed(2u);
-		be.store_count(data.data(), data.size());
+		check(be.store_count(data.data(), data.size()), "BE16 count fits");
 		check(data[0] == 0u && data[1] == 4u, "BE16 count of the bytes after the field");
 		check(be.data_size(data) == 6u && be.matches(data), "BE16 count reads back");
 		const Layout le = Layout::length_prefixed(2u, std::endian::little);
-		le.store_count(data.data(), data.size());
+		check(le.store_count(data.data(), data.size()), "LE16 count fits");
 		check(data[0] == 4u && data[1] == 0u, "LE16 count");
 		check(le.data_size(data) == 6u && le.matches(data), "LE16 count reads back");
 		const Layout one = Layout::byte_count_at(1u);
-		one.store_count(data.data(), data.size());
+		check(one.store_count(data.data(), data.size()), "one-byte count fits");
 		check(data[1] == 4u && one.data_size(data) == 6u, "one-byte count at offset 1");
 		std::array<uint8_t, 300> big{};
-		Layout::length_prefixed(2u).store_count(big.data(), big.size());
+		check(Layout::length_prefixed(2u).store_count(big.data(), big.size()), "300 bytes fit BE16");
 		check(big[0] == 1u && big[1] == 42u && Layout::length_prefixed(2u).data_size(big) == 300u,
 		      "counts above 255 need the second byte");
 		std::array<uint8_t, 2> empty_body{};
-		Layout::length_prefixed(2u).store_count(empty_body.data(), empty_body.size());
+		check(Layout::length_prefixed(2u).store_count(empty_body.data(), empty_body.size()), "empty body fits");
 		check(empty_body[0] == 0u && empty_body[1] == 0u && Layout::length_prefixed(2u).matches(empty_body),
 		      "an empty body has count 0");
 	}
+
+	group("CountFieldBounds");
+	for (const std::size_t width : {1u, 2u}) {
+		const std::size_t maximum = width == 1u ? UINT8_MAX : UINT16_MAX;
+		for (const std::endian order : {std::endian::big, std::endian::little}) {
+			for (const std::size_t offset : {std::size_t{0u}, Layout::max_header_size - width}) {
+				const Layout layout = Layout::byte_count_at(offset, width, order);
+				std::vector<uint8_t> data(layout.header_size() + maximum, 0xA5u);
+				check(layout.store_count(data.data(), data.size()) && layout.matches(data),
+				      "the largest representable count round trips");
+				const auto before = data;
+				check(!layout.store_count(data.data(), data.size() + 1u) && data == before,
+				      "one byte beyond the count field is refused without writing");
+				check(!layout.store_count(data.data(), kSizeMax) && data == before,
+				      "SIZE_MAX count is refused without writing");
+				check(!layout.store_count(data.data(), layout.header_size() - 1u) && data == before,
+				      "a short header is refused without subtraction underflow");
+			}
+		}
+	}
+	check(!Layout::unsupported().store_count(nullptr, 0u) &&
+	      !Layout::fixed(0u).store_count(nullptr, 0u), "non-counted layouts write nothing");
 
 	group("StandardTableAgainstSpecificationExamples");
 	const std::vector<Example> examples{

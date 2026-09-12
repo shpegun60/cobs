@@ -1,0 +1,79 @@
+
+=== BUILD + FLASH 115200 baud / crc32-table CRC ===
+CONFIG optimization=-Os lto=0 baud=115200 crc=crc32-table framer=0 role=0 extra=
+CC  stm32h7rsxx_hal.c
+CC  stm32h7rsxx_hal_cortex.c
+CC  stm32h7rsxx_hal_dma.c
+CC  stm32h7rsxx_hal_dma_ex.c
+CC  stm32h7rsxx_hal_exti.c
+CC  stm32h7rsxx_hal_flash.c
+CC  stm32h7rsxx_hal_flash_ex.c
+CC  stm32h7rsxx_hal_gpio.c
+CC  stm32h7rsxx_hal_pwr.c
+CC  stm32h7rsxx_hal_pwr_ex.c
+CC  stm32h7rsxx_hal_rcc.c
+CC  stm32h7rsxx_hal_rcc_ex.c
+CC  stm32h7rsxx_hal_uart.c
+CC  stm32h7rsxx_hal_uart_ex.c
+CC  gpdma.c
+CC  gpio.c
+CC  main.c
+CC  stm32h7rsxx_hal_msp.c
+CC  stm32h7rsxx_it.c
+CC  syscalls.c
+CC  sysmem.c
+CC  system_stm32h7rsxx.c
+CC  usart.c
+CXX modbus_bench.cpp
+AS  startup
+LD  modbus_hardware_bench.elf
+   text	   data	    bss	    dec	    hex	filename
+  25168	     12	   8080	  33260	   81ec	C:/Users/admin/Documents/my_workspace/Qt/COBS/stm32_cube_test/h7s_cobs_test/out/modbus-hardware/modbus_hardware_bench.elf
+No allocator symbol linked into the Pool-only image
+ELF=/c/Users/admin/Documents/my_workspace/Qt/COBS/stm32_cube_test/h7s_cobs_test/out/modbus-hardware/modbus_hardware_bench.elf
+=== Modbus RTU hardware build OK ===
+IMAGE crc32-table: e7c7a36473c1a5e9a81c3728a0adf985ce7d7a46be782b9ac5255908fdc8b586; 25 static CRC instructions, 1024 lookup B, 1 direct outlined CRC calls, no external helper
+      -------------------------------------------------------------------
+                       STM32CubeProgrammer v2.21.0                  
+      -------------------------------------------------------------------
+
+ST-LINK SN  : 002A001F3033510135393935
+ST-LINK FW  : V3J17M11
+Board       : NUCLEO-H7S3L8
+Voltage     : 3.26V
+SWD freq    : 3300 KHz
+Connect mode: Under Reset
+Reset mode  : Hardware reset
+Device ID   : 0x485
+Revision ID : Rev Y
+Device name : STM32H7RSxx
+Flash size  : 64 KBytes (default)
+Device type : MCU
+Device CPU  : Cortex-M7
+BL Version  : 0xE3
+
+
+
+Opening and parsing file: modbus_hardware_bench.elf
+
+
+Memory Programming ...
+  File          : modbus_hardware_bench.elf
+  Size          : 24.59 KB 
+  Address       : 0x08000000
+
+
+Erasing memory corresponding to segment 0:
+Erasing internal memory sectors [0 3]
+Download in Progress:
+北北北北北北北北北北北北北北北北北北北北北北北北北
+
+Error: failed to download  Sector[0]
+Error: failed to download the File
+ 0%flash/verify at 115200 baud failed with exit code 1
+At C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\run_matrix.ps1:97 char:9
++         throw "$Operation failed with exit code $LASTEXITCODE"
++         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OperationStopped: (flash/verify at...ith exit code 1:String) [], RuntimeException
+    + FullyQualifiedErrorId : flash/verify at 115200 baud failed with exit code 1
+ 

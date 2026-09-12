@@ -993,6 +993,7 @@ cross-target code generation, benchmarks, and real hardware evidence.
 
 Raw current hardware evidence:
 
+- [2026-09-12 full-stack repeat and targeted live UART/RTU recovery](doc/HARDWARE_REGRESSION_2026-09-12.md);
 - [baseline audited H7S matrix](src/cobs/tests/hardware/h7s/results_audited_2026-09-01.jsonl);
 - [concise Format/Pool API H7S matrix](src/cobs/tests/hardware/h7s/results_format_api_2026-09-01.jsonl);
 - [UART default 128x8 10 Mbaud run](src/uart/tests/bench/results_default128x8_10M_audited_2026-09-01.csv);
@@ -1046,6 +1047,15 @@ Read active documents in this order:
 Files under [`doc/old`](doc/old) are preserved historical designs and legacy
 code. They are not the current API and should not be copied into new
 integrations.
+
+The [2026-09-11 cross-stack audit](doc/PARANOID_AUDIT_2026-09-11.md) records
+the RTU length-boundary and UART/adapter recovery fixes, independent stream
+fuzzing and sanitizer/compiler/ARM verification. Its
+[2026-09-12 hardware follow-up](doc/HARDWARE_REGRESSION_2026-09-12.md) records
+the complete COBS/RTU matrix, targeted live watchdog/deadline failures in
+three optimization builds, high-baud framing, Qt interoperability, and
+verified restoration of the original firmware. Observed programmer failures
+and the burst-framing limitation remain explicit in the evidence.
 
 ## Common questions
 

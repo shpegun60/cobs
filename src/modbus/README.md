@@ -464,12 +464,21 @@ device.send(frame);                            // N = body.size() is written bef
 
 The peer's `packet.data()` is `[N][body]`; nothing is hidden. Forgetting or
 miscounting `N` is impossible because the application never writes it.
+With `length_prefixed(1)`, the body is still limited to 255 bytes even in a
+larger `Format`: `send()` returns `Invalid` if it cannot represent the count,
+keeps the message writable, and never calls the CRC or transport. Use the
+two-byte prefix for larger bodies. `Layout::store_count()` itself returns
+`bool` and does not write on failure. Create layouts through the factories;
+invalid offsets and widths return `unsupported()`.
 
 What the policy does NOT do: it does not implement t1.5/t3.5 timing, and it
 cannot find a frame start on its own. After an unsupported function, an
 oversize declaration or a CRC failure it drops the remainder of the current
-chunk (`framing_stats().resyncs`) and starts fresh on the next chunk, which
-the UART adapter delivers at the next IDLE pause. An RX allocation failure
+chunk (`framing_stats().resyncs`) and tries a fresh start on the next chunk.
+A full DMA chunk need not start at a frame boundary: recovery requires an
+eventually frame-aligned transport chunk, and may lose additional frames
+before that happens. This is not COBS delimiter-based resynchronization.
+An RX allocation failure
 skips exactly the declared frame and keeps the stream in step. A frame that
 stops arriving is dropped by `expire_incomplete()` and counted in
 `framing_stats().stale_frames`; `assembling()` tells whether a frame is in
@@ -481,7 +490,9 @@ at the rate read live from the HAL handle) plus 5 ms after a full one. The
 silence is the hardware's word, not the absence of events: at the 5 ms the
 adapter asks the driver's `rx_progress()` whether DMA is already taking the
 remainder into the next chunk, and if so the frame lives on for one chunk
-time. The full-chunk rule assumes a continuously transmitting peer or
+time. Further extensions require new progress in that same unpublished
+chunk, not merely the old non-zero counter. An empty framed `on_rx({})`
+does not change the deadline. The full-chunk rule assumes a continuously transmitting peer or
 bridge; a strict RTU sender that paused below t1.5 after every byte could
 stretch a chunk beyond it. A task that sleeps between `proceed()` calls
 bounds its sleep by `adapter.deadline_in_ms(now)`. With

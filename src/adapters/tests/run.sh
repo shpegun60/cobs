@@ -65,4 +65,10 @@ echo "  ok    adapter_needs_rtu_endpoint rejected at the intended boundary"
 
 "$OUT/test_uart_integration.exe"
 "$OUT/test_freertos_wake.exe"
+
+echo "=== adapter integration under -O3/-DNDEBUG ==="
+# shellcheck disable=SC2086
+"$CXX" -std=gnu++20 -O3 -DNDEBUG $WARN -D_GLIBCXX_ASSERTIONS $INC \
+	"$UART_HOST/fake_hal.cpp" "$HERE/test_uart_integration.cpp" -o "$OUT/test_uart_integration_o3.exe"
+"$OUT/test_uart_integration_o3.exe"
 echo "=== all adapter suites passed ==="

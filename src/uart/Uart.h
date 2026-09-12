@@ -1636,9 +1636,18 @@ private:
 		           (errorCode != uart::detail::no_error);
 
 		// RX should be actively receiving whenever we believe it is armed.
-		// RxState is present on every HAL recent enough to have ReceiveToIdle.
-		if (!bad && m_started && m_huart->RxState != HAL_UART_STATE_BUSY_RX) {
-			bad = true; // receiver silently stopped (missed error IRQ, aborted elsewhere)
+		// HAL's state alone is insufficient: if the normal-mode DMA completion
+		// interrupt never ran, its counter is exhausted but RxState and the
+		// DMA software state still say BUSY. A disabled peripheral request is
+		// equally unable to receive. Inspect hardware only on this slow path;
+		// the existing debounce allows a pending completion ISR to re-arm.
+		// A non-zero, unchanged counter is NOT a fault: an idle RX line may
+		// legitimately wait forever. No progress timer belongs in the driver.
+		if (!bad && m_started) {
+			const uint32_t remaining = __HAL_DMA_GET_COUNTER(m_huart->hdmarx);
+			bad = m_huart->RxState != HAL_UART_STATE_BUSY_RX ||
+			      (m_huart->Instance->CR3 & USART_CR3_DMAR) == 0u ||
+			      remaining == 0u || remaining > ChunkSize;
 		}
 
 		// DMA stream/channel error codes (DMA, BDMA, GPDMA — all report

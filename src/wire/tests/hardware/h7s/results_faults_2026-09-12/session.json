@@ -1,0 +1,579 @@
+{
+  "backup_bytes": 65536,
+  "backup_sha256": "a5903024dba85fab5121150ca8ad13482f97384aa450aab67413881991fb9456",
+  "completed": false,
+  "error": "RuntimeError('rtu-crc32-table-115200 failed (exit 1); preserved log: C:\\\\Users\\\\admin\\\\Documents\\\\my_workspace\\\\Qt\\\\COBS\\\\src\\\\wire\\\\tests\\\\out\\\\fault-matrix-20260912T090337Z\\\\rtu-crc32-table-115200.log')",
+  "finished": "2026-09-12T09:18:04.044889+00:00",
+  "phases": [
+    {
+      "completed": true,
+      "elf_sha256": "8f8a2be58b6d73fafcf522fbc8854a2b75e9508ebacef9e0b3cd52e1d18811d3",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "de00acef22de4825f2e35a9434174a2197cc794a09982e92b98004885ddd7c13",
+      "results": "cobs-bitwise-253-115200.jsonl",
+      "results_sha256": "a4a62545870a9cd47bc89a551a71379ad2d6d915ed4757fa97aa6a21965abfd4",
+      "tag": "cobs-bitwise-253-115200"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "1e81e795c432d14ca072f9ae5e94952338178c816e3d01e30538cef1c4c18fd3",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "85ac8ffd88b9ed7632445fcc835cf6b1fa5cff0b05c86f8fa54de6d7a89ffcd2",
+      "results": "cobs-bitwise-253-1000000.jsonl",
+      "results_sha256": "420ac92ceed574eba3939499d8fe2efc55e322f7303bbee5deb147ff13c7b946",
+      "tag": "cobs-bitwise-253-1000000"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "465853f962d0ef3815c061bced4f62d9d69f5e025c8675f1a06d184566648d45",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "babce5f68a0a0ae2800fe23fa4bee73af01253ce6fdb6ea3029be7f1d48c8ecb",
+      "results": "cobs-bitwise-253-3000000.jsonl",
+      "results_sha256": "cba72aa6ada4c9d9de644789c29b125a2ecb9df47d966fbc9ad0f93e1365d5e6",
+      "tag": "cobs-bitwise-253-3000000"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "83a798e0df05a3d452145ca7eed53104b8fb09188ca4b0d65823cd612260c23b",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "ae4c8ea65422a52852bbc069d83eaa56a524b9aae049d78d41a0379540022126",
+      "results": "cobs-bitwise-253-6000000.jsonl",
+      "results_sha256": "85037449e911b3d1f0f7267030d295b8ddeb3ce99cfd0e8c8ecec7d3d6870135",
+      "tag": "cobs-bitwise-253-6000000"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "7cb12c5be3b227947db62b0dacb069db9dc4b120cacbb2961081f662496e5e28",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "bf23e01fbe2f7264199bb1aad595b453c215192f89f2419ef48ca458c8429770",
+      "results": "cobs-bitwise-253-10000000.jsonl",
+      "results_sha256": "932c885e1eabd7dd7cd401624daca0d6e607a30adad91182270ea43aea553d35",
+      "tag": "cobs-bitwise-253-10000000"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "c53a156927c9a19bd1ccbb8de26acbd4c87e14fbef7317c338475c1943c3050c",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "cc0195c13da95aa334844d27d8ad880b13b172af467cd61877477ddfbc40ea36",
+      "results": "cobs-table-253-115200.jsonl",
+      "results_sha256": "7dd72fafa35288f129a9ec355c39d3cc07329c1e771b22432f694b5f7b13c82b",
+      "tag": "cobs-table-253-115200"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "263338e50b5be39472afc4d95ed615e2462ad0d07016bf28361ff0edf9f445c4",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "25c68ff72f33d77003c9f25b54e56a5b81c8fbd12aedd4c08818a09c990c4c1b",
+      "results": "cobs-table-253-1000000.jsonl",
+      "results_sha256": "52d0fe6993696459818dfaf2e2dd4f2c5d17091c1430fde54fe3a21183c052f4",
+      "tag": "cobs-table-253-1000000"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "f67ff45bc6e5d530b58d04c0845e65e7523d4c566d4146b8854ff4666ff0f800",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "7bfc75d8c1edc03f260c897512c87bcdafc005bb54bea598ddb0bd88abddc39e",
+      "results": "cobs-table-253-3000000.jsonl",
+      "results_sha256": "093f77bc34a1aaf4a515b048dbc5e5cc03169be3ac960a47f24521704dbfdfa3",
+      "tag": "cobs-table-253-3000000"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "59d14bea7a82cd3f7febb5d88398a4d0e4376a557b9ec28fa453b5fd2f46766a",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "23cbefd760cce6863074aa80fb0f36c5e182025a24182ac080a72f32878fc5b9",
+      "results": "cobs-table-253-6000000.jsonl",
+      "results_sha256": "2f1e007f810cd5884ff08b2816cbd54cd8a43a0edaaacfa70bae79fdee974299",
+      "tag": "cobs-table-253-6000000"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "8bbdbf2912b2d435f7f33f6152a7eff382fea51ed4105d1632ba431ba05af8c1",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "5a294c3fbe3e0ed5404ab0fef09ebce79fb957e571ffff71de9938ce5bbec8d6",
+      "results": "cobs-table-253-10000000.jsonl",
+      "results_sha256": "28d705bd6a8d306ccded8517f17ca5331c99cc221e086149aa80785ba198ce70",
+      "tag": "cobs-table-253-10000000"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "68eab9a962748e804782254f2686097d43d8d01f4ffb640826287b5d30b02dbc",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "8a58388a1e15cfb76a7a77b1f7a168691c15f948e8ea7821b5da05811110913b",
+      "results": "cobs-none-1024-115200.jsonl",
+      "results_sha256": "85fabd31e642a4c4be5f9694f4a60a319ef5afff0a5cf981ae64014097e6621c",
+      "tag": "cobs-none-1024-115200"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "1063ee1eaffd83e83a76ff48fbe1172671c955e51bf1d74f096626405eb9e8f1",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "fcb3840cf696084c30f0be82fc075dc648bc34f6dc38561d8594caf512b6888e",
+      "results": "cobs-none-1024-1000000.jsonl",
+      "results_sha256": "a4560dd37b5f0c01693428f5dec26b2e6509b12b7d1a7c3855460464ca33450f",
+      "tag": "cobs-none-1024-1000000"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "c53f5f81ae543cc0cc0e4030a4ac0b8bb515cb11f6ec18fa23196bb674dd1e0e",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "8b7bf1053fe9211a4dae3ed9a0ccb4c29dec18ffec27cb5a711a2d46c7beef84",
+      "results": "cobs-none-1024-3000000.jsonl",
+      "results_sha256": "8f23e45968e2efecaff74cd5be705d633199b7cbfb24d41dc218acf98063cb0c",
+      "tag": "cobs-none-1024-3000000"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "270cd01404df5a24b7bdc6588a601bd18c08e79a7780e66865f69bb8b1f3e16b",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "0f51112d73869b3230291663f370dbc0bcbdfcef29cc8425ab60c6f3e8a28f1c",
+      "results": "cobs-none-1024-6000000.jsonl",
+      "results_sha256": "ac54f94983b4cc0e43bde0e5246b767825505375b7d039744276bfb89203d343",
+      "tag": "cobs-none-1024-6000000"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "8fb054348ece5c1786aca47a6b981dfb147dd14495c36f414e1bba9d02803b71",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "847a59dd22fe9c113d7615665fe3c1154665d3d43f8cff5fce8d4fd881ef5d36",
+      "results": "cobs-none-1024-10000000.jsonl",
+      "results_sha256": "3ad446105657ee892265015dd1d7804e4b2983e791615438f44ab7ed9dd25c84",
+      "tag": "cobs-none-1024-10000000"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "2662033670252d47f368cd03d60638e23897d9f02d1e4b2f02ab7da16d453aa2",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "b3d98e52e5106fb86d63b78b9a101893b57d5e1051870a8307b67e6793cc57cf",
+      "results": "rtu-nocrc-115200.jsonl",
+      "results_sha256": "a3232e0be3ae0f5c8ef5d4f2028718c4b0d1c772704a731d92bb2ccad92a7b76",
+      "tag": "rtu-nocrc-115200"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "b85095d1e4b4aa88614ab6dda70d3894071972715d5eecf0692a497dba9974ad",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "c3863d4d3c3121d9cd53fdd383c41ffb8adf0f4085083026904928dde1d52aee",
+      "results": "rtu-nocrc-1000000.jsonl",
+      "results_sha256": "f3e7ff3887f6b62130e12dd5d3928c34516d034e1f263b1f32b6f5cba4d3944a",
+      "tag": "rtu-nocrc-1000000"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "120491509e76dadf59ed38a0b25d9e6c7f8435a00bf79b8f81ee6351db54c3a5",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "9fd2a5b966e105e7d6795cc184cfb129d9c2746381603503626db9a118c6e64a",
+      "results": "rtu-crc8-bitwise-115200.jsonl",
+      "results_sha256": "9a09b26e5ddac82879e6dba93b2c99066b74c3b4398b58507c4e2689c4627668",
+      "tag": "rtu-crc8-bitwise-115200"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "14f4fbb1c1c9d8ce391f92aa3a9e42da3546696618469218c93e3d0e526f9c23",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "51d8aeea0af06a43f75453ee96361450b714d2fdd9b90172330aa97702a1cfab",
+      "results": "rtu-crc8-bitwise-1000000.jsonl",
+      "results_sha256": "63f5ec7ba008e8d4309024f18da4e96af9abf853a93bdb3f3dce418615a10573",
+      "tag": "rtu-crc8-bitwise-1000000"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "c0fdd40c153c5c7f5065cfe81e4ae68307156c5cccdd35f6c923a3e4ba10d620",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "613b52db29e95fdf52a669ff8d5245c7502c0de9ddc97aead65cfc8df84a95b2",
+      "results": "rtu-crc8-table-115200.jsonl",
+      "results_sha256": "c8461741625ec63ea8d90e2d795c7d508d979882e5bb3b2f42a1f780c67fc20e",
+      "tag": "rtu-crc8-table-115200"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "3de483207aa09d6e48ca96fed6b816c6d4ef3b1aee36949df375ddb54e27fa4e",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "df29357384ed7af98fd540558ea6047e9f5a5577103df33be8f6aa57420e6823",
+      "results": "rtu-crc8-table-1000000.jsonl",
+      "results_sha256": "859f8faf821d0b0db9702bd0fd67ea645dfe005cc7847a38a4e8193d0c78c154",
+      "tag": "rtu-crc8-table-1000000"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "abb5eaec14112ef3161a29fac2415ab2e6aac80e29d22edce3b51401803fc3a7",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "bc6f4d3dcb8f555f934862213ebbe9eb4e78c4f043bc7e0f0d468d49981781eb",
+      "results": "rtu-crc16-bitwise-115200.jsonl",
+      "results_sha256": "8e7847a09eb7f7366a742f38ae763b184f96b3e6a8363ad3665c4146eed12018",
+      "tag": "rtu-crc16-bitwise-115200"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "9c8abd7d5b33c24c9b6c6a9b5bf92d63e406e7ffd5fcfe071e5c3eef5a8df02f",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "c03a3a1012ce2bdddc6485e854ced8f1b843f1b6e801506575bcfd190fce2acf",
+      "results": "rtu-crc16-bitwise-1000000.jsonl",
+      "results_sha256": "aff91532b249759f5ab83c8d10d9fbac72483e50a03b5be14a045cf4755cfb92",
+      "tag": "rtu-crc16-bitwise-1000000"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "fce1ee602239edd235d749d2d02528a41fe2932ad40cd4fb3b4927503ed28720",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "0f2b04cf6438ddd41ac1317ba0d58aa939ff1b5826e93c94b89fe0bf2a866fb4",
+      "results": "rtu-crc16-table-115200.jsonl",
+      "results_sha256": "741930d1d185eda43bffd3a65559c96347d1dcd78f99d13ac4849cd623ab4f08",
+      "tag": "rtu-crc16-table-115200"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "9fa04a5b32880d705d3247a35b085d783ae8df194b445c1506c58aca1fdcdf96",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "1a1bc3052ccb07c31cf563b44eae4ba843fc72d54441ed5f6c5ec16aa92a249d",
+      "results": "rtu-crc16-table-1000000.jsonl",
+      "results_sha256": "a17ed40ba32acb12b80cd32eab78b75798f7c67b88f322714e11986c35b20e82",
+      "tag": "rtu-crc16-table-1000000"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "430e2d24c26aea1688a151fc1acb5c2f5baf2c6e22f55d208aa8e7e17e521bb9",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "435b6fa6985505ff6cfc9890db39254ada754d5b69cce6267a933c9742bdf414",
+      "results": "rtu-crc32-bitwise-115200.jsonl",
+      "results_sha256": "a9788f367a363d3da585931075369a814cf2dc910ea7ed2511fd8c839b22c1a3",
+      "tag": "rtu-crc32-bitwise-115200"
+    },
+    {
+      "completed": true,
+      "elf_sha256": "8ad382d66939b0d25dd181cc227b63a4fc588cb6ff198dbfb0454397031d11f7",
+      "exit_code": 0,
+      "flash_verified": true,
+      "log_sha256": "728166319110779e4e42a154aca7f12cd5c542ae36b21221016fa500353613e5",
+      "results": "rtu-crc32-bitwise-1000000.jsonl",
+      "results_sha256": "fdeac3ba01b6ffd41e1d2e9a2f2c245bc38ddc52f31c0bb37e46f9c48583af29",
+      "tag": "rtu-crc32-bitwise-1000000"
+    },
+    {
+      "completed": false,
+      "elf_sha256": "92e7c09f192b5dc1500c8aed4b318bccf17691760f37c1a0667fe65d5f4994bb",
+      "exit_code": 1,
+      "flash_verified": false,
+      "log_sha256": "59e3e819ffc34172a7115a47502cedfd5e111dfab7318eb8c191405a2e063c61",
+      "results": "rtu-crc32-table-115200.jsonl",
+      "tag": "rtu-crc32-table-115200"
+    }
+  ],
+  "plan": [
+    {
+      "baud": 115200,
+      "extended_seconds": 0,
+      "maximum": 253,
+      "policy": "bitwise",
+      "protocol": "cobs",
+      "seconds": 10,
+      "tag": "cobs-bitwise-253-115200"
+    },
+    {
+      "baud": 1000000,
+      "extended_seconds": 0,
+      "maximum": 253,
+      "policy": "bitwise",
+      "protocol": "cobs",
+      "seconds": 10,
+      "tag": "cobs-bitwise-253-1000000"
+    },
+    {
+      "baud": 3000000,
+      "extended_seconds": 0,
+      "maximum": 253,
+      "policy": "bitwise",
+      "protocol": "cobs",
+      "seconds": 10,
+      "tag": "cobs-bitwise-253-3000000"
+    },
+    {
+      "baud": 6000000,
+      "extended_seconds": 0,
+      "maximum": 253,
+      "policy": "bitwise",
+      "protocol": "cobs",
+      "seconds": 10,
+      "tag": "cobs-bitwise-253-6000000"
+    },
+    {
+      "baud": 10000000,
+      "extended_seconds": 30,
+      "maximum": 253,
+      "policy": "bitwise",
+      "protocol": "cobs",
+      "seconds": 10,
+      "tag": "cobs-bitwise-253-10000000"
+    },
+    {
+      "baud": 115200,
+      "extended_seconds": 0,
+      "maximum": 253,
+      "policy": "table",
+      "protocol": "cobs",
+      "seconds": 10,
+      "tag": "cobs-table-253-115200"
+    },
+    {
+      "baud": 1000000,
+      "extended_seconds": 0,
+      "maximum": 253,
+      "policy": "table",
+      "protocol": "cobs",
+      "seconds": 10,
+      "tag": "cobs-table-253-1000000"
+    },
+    {
+      "baud": 3000000,
+      "extended_seconds": 0,
+      "maximum": 253,
+      "policy": "table",
+      "protocol": "cobs",
+      "seconds": 10,
+      "tag": "cobs-table-253-3000000"
+    },
+    {
+      "baud": 6000000,
+      "extended_seconds": 0,
+      "maximum": 253,
+      "policy": "table",
+      "protocol": "cobs",
+      "seconds": 10,
+      "tag": "cobs-table-253-6000000"
+    },
+    {
+      "baud": 10000000,
+      "extended_seconds": 30,
+      "maximum": 253,
+      "policy": "table",
+      "protocol": "cobs",
+      "seconds": 10,
+      "tag": "cobs-table-253-10000000"
+    },
+    {
+      "baud": 115200,
+      "extended_seconds": 0,
+      "maximum": 1024,
+      "policy": "none",
+      "protocol": "cobs",
+      "seconds": 10,
+      "tag": "cobs-none-1024-115200"
+    },
+    {
+      "baud": 1000000,
+      "extended_seconds": 0,
+      "maximum": 1024,
+      "policy": "none",
+      "protocol": "cobs",
+      "seconds": 10,
+      "tag": "cobs-none-1024-1000000"
+    },
+    {
+      "baud": 3000000,
+      "extended_seconds": 0,
+      "maximum": 1024,
+      "policy": "none",
+      "protocol": "cobs",
+      "seconds": 10,
+      "tag": "cobs-none-1024-3000000"
+    },
+    {
+      "baud": 6000000,
+      "extended_seconds": 0,
+      "maximum": 1024,
+      "policy": "none",
+      "protocol": "cobs",
+      "seconds": 10,
+      "tag": "cobs-none-1024-6000000"
+    },
+    {
+      "baud": 10000000,
+      "extended_seconds": 30,
+      "maximum": 1024,
+      "policy": "none",
+      "protocol": "cobs",
+      "seconds": 10,
+      "tag": "cobs-none-1024-10000000"
+    },
+    {
+      "baud": 115200,
+      "extended_seconds": 0,
+      "policy": "nocrc",
+      "protocol": "rtu",
+      "seconds": 5,
+      "tag": "rtu-nocrc-115200"
+    },
+    {
+      "baud": 1000000,
+      "extended_seconds": 15,
+      "policy": "nocrc",
+      "protocol": "rtu",
+      "seconds": 5,
+      "tag": "rtu-nocrc-1000000"
+    },
+    {
+      "baud": 115200,
+      "extended_seconds": 0,
+      "policy": "crc8-bitwise",
+      "protocol": "rtu",
+      "seconds": 5,
+      "tag": "rtu-crc8-bitwise-115200"
+    },
+    {
+      "baud": 1000000,
+      "extended_seconds": 15,
+      "policy": "crc8-bitwise",
+      "protocol": "rtu",
+      "seconds": 5,
+      "tag": "rtu-crc8-bitwise-1000000"
+    },
+    {
+      "baud": 115200,
+      "extended_seconds": 0,
+      "policy": "crc8-table",
+      "protocol": "rtu",
+      "seconds": 5,
+      "tag": "rtu-crc8-table-115200"
+    },
+    {
+      "baud": 1000000,
+      "extended_seconds": 15,
+      "policy": "crc8-table",
+      "protocol": "rtu",
+      "seconds": 5,
+      "tag": "rtu-crc8-table-1000000"
+    },
+    {
+      "baud": 115200,
+      "extended_seconds": 0,
+      "policy": "crc16-bitwise",
+      "protocol": "rtu",
+      "seconds": 5,
+      "tag": "rtu-crc16-bitwise-115200"
+    },
+    {
+      "baud": 1000000,
+      "extended_seconds": 15,
+      "policy": "crc16-bitwise",
+      "protocol": "rtu",
+      "seconds": 5,
+      "tag": "rtu-crc16-bitwise-1000000"
+    },
+    {
+      "baud": 115200,
+      "extended_seconds": 0,
+      "policy": "crc16-table",
+      "protocol": "rtu",
+      "seconds": 5,
+      "tag": "rtu-crc16-table-115200"
+    },
+    {
+      "baud": 1000000,
+      "extended_seconds": 15,
+      "policy": "crc16-table",
+      "protocol": "rtu",
+      "seconds": 5,
+      "tag": "rtu-crc16-table-1000000"
+    },
+    {
+      "baud": 115200,
+      "extended_seconds": 0,
+      "policy": "crc32-bitwise",
+      "protocol": "rtu",
+      "seconds": 5,
+      "tag": "rtu-crc32-bitwise-115200"
+    },
+    {
+      "baud": 1000000,
+      "extended_seconds": 15,
+      "policy": "crc32-bitwise",
+      "protocol": "rtu",
+      "seconds": 5,
+      "tag": "rtu-crc32-bitwise-1000000"
+    },
+    {
+      "baud": 115200,
+      "extended_seconds": 0,
+      "policy": "crc32-table",
+      "protocol": "rtu",
+      "seconds": 5,
+      "tag": "rtu-crc32-table-115200"
+    },
+    {
+      "baud": 1000000,
+      "extended_seconds": 15,
+      "policy": "crc32-table",
+      "protocol": "rtu",
+      "seconds": 5,
+      "tag": "rtu-crc32-table-1000000"
+    },
+    {
+      "baud": 115200,
+      "extended_seconds": 0,
+      "policy": "crc64-bitwise",
+      "protocol": "rtu",
+      "seconds": 5,
+      "tag": "rtu-crc64-bitwise-115200"
+    },
+    {
+      "baud": 1000000,
+      "extended_seconds": 15,
+      "policy": "crc64-bitwise",
+      "protocol": "rtu",
+      "seconds": 5,
+      "tag": "rtu-crc64-bitwise-1000000"
+    },
+    {
+      "baud": 115200,
+      "extended_seconds": 0,
+      "policy": "crc64-table",
+      "protocol": "rtu",
+      "seconds": 5,
+      "tag": "rtu-crc64-table-115200"
+    },
+    {
+      "baud": 1000000,
+      "extended_seconds": 15,
+      "policy": "crc64-table",
+      "protocol": "rtu",
+      "seconds": 5,
+      "tag": "rtu-crc64-table-1000000"
+    }
+  ],
+  "port": "COM6",
+  "readback_sha256": "a5903024dba85fab5121150ca8ad13482f97384aa450aab67413881991fb9456",
+  "restore_errors": [],
+  "restored_and_verified": true,
+  "runner_sha256": "6d99a3dcf667114808f9b65e5c2f42fb4c04654c93f1ca5c1bdf5f4065e0c3fd",
+  "schema": 1,
+  "serial": "002A001F3033510135393935",
+  "session": "C:\\Users\\admin\\Documents\\my_workspace\\Qt\\COBS\\src\\wire\\tests\\out\\fault-matrix-20260912T090337Z",
+  "source_base_commit": "464ccc50d519ab53e8a4ee751597a95e563e8f88",
+  "started": "20260912T090337Z"
+}

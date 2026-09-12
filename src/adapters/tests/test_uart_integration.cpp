@@ -611,5 +611,76 @@ int main()
 		check(fake::model().violations.empty(), "no ownership violation");
 	}
 
+	group("EmptyInputDoesNotChangeDeadline");
+	{
+		fake::reset();
+		Fixture<FramedLink> f;
+		check(f.start(9600u), "framed endpoint at 9600");
+		const auto adu = wide_frame(300u, 21u);
+		const std::span<const uint8_t> bytes{adu};
+		feed(bytes.first(256u), true);
+		f.loop();
+		const uint32_t deadline = f.adapter.deadline_in_ms(fake::model().tick);
+		f.adapter.on_rx({}); // a harness/different transport may deliver an empty span
+		check(f.adapter.deadline_in_ms(fake::model().tick) == deadline,
+		      "empty input neither shortens the full-chunk deadline nor renews it");
+		fake::advance_tick(300u);
+		f.loop();
+		feed(bytes.subspan(256u), false);
+		f.loop();
+		check(equal(f.pop_adu(), adu) && f.link.framing_stats().stale_frames == 0u,
+		      "an empty transport notification cannot expire a healthy slow frame");
+		check(fake::model().violations.empty(), "no ownership violation");
+	}
+
+	group("StalledDmaProgressCannotRenewForever");
+	{
+		fake::reset();
+		Fixture<FramedLink> f;
+		check(f.start(115200u), "framed endpoint at 115200");
+		const auto adu = wide_frame(300u, 21u);
+		const std::span<const uint8_t> bytes{adu};
+		feed(bytes.first(150u), false);
+		f.loop();
+		fake::advance_tick(1u);
+		fake::rx_bytes(bytes.data() + 150u, 1u); // no publication event, one byte in DMA
+		fake::advance_tick(4u);
+		f.loop();
+		check(f.link.assembling() && f.adapter.deadline_in_ms(fake::model().tick) == 32u,
+		      "first progress buys one chunk window");
+		fake::advance_tick(32u);
+		f.loop();
+		check(!f.link.assembling() && !f.adapter.deadline_armed() &&
+		      f.link.framing_stats().stale_frames == 1u && f.link.storage().rx_available() == 4u,
+		      "a frozen non-zero counter expires once and releases the RX block");
+		fake::advance_tick(32u);
+		f.loop();
+		check(f.link.framing_stats().stale_frames == 1u, "no repeated expiry after the frame was released");
+		feed(bytes.subspan(151u), false); // late tail belongs to the expired frame
+		f.loop();
+		check(!f.link.assembling() && !f.link.has_packet(), "late tail is discarded at its invalid function");
+
+		// A new chunk can have the SAME count as the preceding stalled one.
+		// Publication resets the baseline; actual subsequent advances also
+		// extend it, but seeing the same value on a later deadline does not.
+		feed(bytes.first(150u), false);
+		f.loop();
+		fake::rx_bytes(bytes.data() + 150u, 1u);
+		fake::advance_tick(5u);
+		f.loop();
+		check(f.link.assembling() && f.adapter.deadline_in_ms(fake::model().tick) == 32u,
+		      "a new chunk starts a fresh progress domain");
+		fake::rx_bytes(bytes.data() + 151u, 1u);
+		fake::advance_tick(32u);
+		f.loop();
+		check(f.link.assembling() && f.link.framing_stats().stale_frames == 1u,
+		      "an advancing counter is still progress");
+		feed(bytes.subspan(152u), false);
+		f.loop();
+		check(equal(f.pop_adu(), adu) && !f.adapter.deadline_armed(),
+		      "publication still completes the frame and cancels the deadline");
+		check(fake::model().violations.empty(), "stale-frame recovery never touches DMA-owned data");
+	}
+
 	return finish();
 }

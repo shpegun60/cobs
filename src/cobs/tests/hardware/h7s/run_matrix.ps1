@@ -98,10 +98,24 @@ function Build-And-Flash([int]$Baud) {
     & $GitBash $buildScript
     Assert-NativeSuccess "ARM build at $Baud baud"
 
-    & $CubeProgrammer `
-        -c port=SWD "sn=$StLinkSerial" mode=UR reset=HWrst freq=4000 `
-        -w $elf -v -rst
-    Assert-NativeSuccess "flash/verify at $Baud baud"
+    # Retry only the programmer's known pre-test download failure. Every
+    # attempt remains in the log; a test/CRC/ownership failure is never retried.
+    # Programming succeeds only with BOTH exit 0 and positive read verification.
+    for ($attempt = 1; $attempt -le 3; ++$attempt) {
+        $flashOutput = (& $CubeProgrammer `
+            -c port=SWD "sn=$StLinkSerial" mode=UR reset=HWrst freq=4000 `
+            -w $elf -v -rst | Out-String)
+        $flashExit = $LASTEXITCODE
+        Write-Host $flashOutput
+        if ($flashExit -eq 0 -and $flashOutput.Contains('Download verified successfully')) {
+            return
+        }
+        if ($attempt -eq 3 -or -not $flashOutput.Contains('Error: failed to download')) {
+            throw "flash/verify at $Baud baud failed on attempt $attempt (exit $flashExit)"
+        }
+        Write-Warning "ST-Link download failed before tests; retrying the same ELF (attempt $attempt of 3)"
+        Start-Sleep -Milliseconds 500
+    }
 }
 
 function Run-Suite([int]$Baud, [string]$Suite, [int]$Seconds,

@@ -267,8 +267,7 @@ private:
 				return false;
 			}
 			if (layout.owned) {
-				layout.store_count(data_ptr(), m_size);
-				return true;
+				return layout.store_count(data_ptr(), m_size);
 			}
 			return layout.data_size({data_ptr(), m_size}) == m_size;
 		}

@@ -530,6 +530,18 @@ registered callbacks, and randomized interleavings.
 
 ## 11. Residual contracts
 
+The [2026-09-11 follow-up](PARANOID_AUDIT_2026-09-11.md) extends the RX
+watchdog to detect exhausted/invalid DMA counters and a missing DMAR request
+even when HAL still reports BUSY_RX. It adds no UART fields or ISR work.
+The fresh host variants pass 254 checks (267 registered callbacks), plus a
+32-seed, one-million-events-per-seed ASan/UBSan run. These are host and
+code-generation results, not a repeat of the live-board measurements above.
+The [2026-09-12 board regression](HARDWARE_REGRESSION_2026-09-12.md) separately
+confirms the new recovery paths with real GPDMA/USART faults in `-Os/-O2/-O3`,
+as well as the COBS/RTU matrix and MCU/Qt integration. Both caches and UART
+FIFO remain enabled; quiet RX causes no false watchdog restart. This is
+fresh correctness evidence, not a new UART-only CPU-utilization benchmark.
+
 These boundaries are required for deterministic embedded behavior:
 
 1. The UART object and all HAL/DMA handles outlive active DMA. Static lifetime

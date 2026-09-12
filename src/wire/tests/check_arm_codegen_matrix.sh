@@ -42,6 +42,7 @@ PROTOCOL_STRAIGHT_FUNCTIONS="
 	cobs_store_length16 cobs_load_length16
 	modbus_crc_store modbus_crc_load
 	modbus_read_be32_exact modbus_read_le32_exact
+	modbus_reject_overflowed_header
 "
 CONTROL_FLOW='[[:space:]](b(eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)?(\.n|\.w)?|cbz|cbnz)[[:space:]]'
 ASSEMBLY=""
@@ -134,7 +135,8 @@ for cpu in cortex-m0 cortex-m0plus cortex-m3 cortex-m4 cortex-m7 \
 done
 
 protocol_count=0
-for cpu in cortex-m0 cortex-m4 cortex-m7 cortex-m33 cortex-m55; do
+for cpu in cortex-m0 cortex-m0plus cortex-m3 cortex-m4 cortex-m7 \
+		cortex-m23 cortex-m33 cortex-m55; do
 	for optimization in -Os -O2 -O3; do
 		optimization_name="${optimization#-}"
 		for byte_order in little big; do
@@ -153,6 +155,10 @@ for cpu in cortex-m0 cortex-m4 cortex-m7 cortex-m33 cortex-m55; do
 				"$ARM_OBJDUMP" -dr "$object" > "$assembly"
 				ASSEMBLY="$assembly"
 				inspect_straight_line "$PROTOCOL_STRAIGHT_FUNCTIONS"
+				for name in modbus_store_count8 modbus_store_count16_be modbus_store_count16_le; do
+					forbid_instruction "$name" '[[:space:]]blx?(\.n|\.w)?[[:space:]]' 'a helper call'
+					require_instruction "$name" '[[:space:]]strb(\.w)?[[:space:]]' 'alignment-safe count stores'
+				done
 				forbid_instruction modbus_crc_calculate \
 					'[[:space:]]blx?(\.n|\.w)?[[:space:]]' 'a helper call'
 				forbid_instruction modbus_crc_calculate \
@@ -170,7 +176,8 @@ for cpu in cortex-m0 cortex-m4 cortex-m7 cortex-m33 cortex-m55; do
 done
 
 cobs_count=0
-for cpu in cortex-m0 cortex-m4 cortex-m7 cortex-m33 cortex-m55; do
+for cpu in cortex-m0 cortex-m0plus cortex-m3 cortex-m4 cortex-m7 \
+		cortex-m23 cortex-m33 cortex-m55; do
 	for optimization in -Os -O2 -O3; do
 		optimization_name="${optimization#-}"
 		for source in "$SRC/cobs/Decoder.cpp" "$SRC/cobs/Encoder.cpp"; do

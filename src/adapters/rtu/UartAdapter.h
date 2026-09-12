@@ -68,7 +68,10 @@
  *     transfer time (14 ms for 150 bytes at 115200, far longer at 9600);
  *     then the frame is alive and the deadline becomes one chunk time plus
  *     the guard, as after a full chunk. Zero progress after 5 ms is a dead
- *     frame.
+ *     frame. A further extension requires the counter to have advanced
+ *     since the previous overdue snapshot of the same unpublished chunk:
+ *     a non-zero but frozen counter (for example after a lost IDLE event)
+ *     cannot keep an RX block alive forever.
  *   - After a full chunk the line is still busy: the next chunk needs
  *     ChunkSize character times to arrive, and only silence longer than that
  *     plus a guard is a dead frame. This is what a sender that dies exactly on
@@ -282,8 +285,12 @@ public:
 		m_now_ms = now_ms;
 		(void)refresh_timing();
 		if constexpr (framed) {
-			m_line_resumed = m_deadline_active && due(now_ms) &&
-				m_uart.rx_progress() != 0u;
+			m_line_resumed = false;
+			if (m_deadline_active && due(now_ms)) {
+				const uint16_t progress = m_uart.rx_progress();
+				m_line_resumed = progress > m_last_progress;
+				m_last_progress = progress;
+			}
 		}
 	}
 
@@ -311,6 +318,10 @@ public:
 	void on_rx(const std::span<const uint8_t> bytes) noexcept
 	{
 		if constexpr (framed) {
+			if (bytes.empty()) {
+				return; // no publication: keep both the deadline and progress baseline
+			}
+			m_last_progress = 0u; // publication ended the chunk sampled by prepare()
 			m_endpoint.consume(bytes);
 			if (!m_endpoint.assembling()) {
 				m_deadline_active = false;
@@ -328,6 +339,7 @@ public:
 	void on_gap() noexcept
 	{
 		m_deadline_active = false;
+		m_last_progress = 0u;
 		m_endpoint.notify_gap();
 	}
 
@@ -380,6 +392,7 @@ private:
 		}
 		m_deadline_active = false;
 		m_line_resumed = false;
+		m_last_progress = 0u;
 		m_bound = false;
 	}
 
@@ -389,6 +402,7 @@ private:
 	uint32_t m_full_chunk_ms = 0u;
 	uint32_t m_now_ms = 0u;
 	uint32_t m_deadline_ms = 0u;
+	uint16_t m_last_progress = 0u; // overdue snapshot of the current unpublished chunk
 	bool m_deadline_active = false;
 	bool m_line_resumed = false;
 	bool m_bound = false;

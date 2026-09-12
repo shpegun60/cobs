@@ -890,6 +890,71 @@ void testWatchdogRejectsEveryNonBusyRxState()
 	      "the watchdog restores RESET/invalid RX state to BUSY_RX");
 }
 
+void testWatchdogChecksHardwareDespiteBusyHalState()
+{
+	for (unsigned fault = 0u; fault < 3u; ++fault) {
+		fake::reset();
+		Fixture f;
+		check(f.start(), "hardware RX watchdog fixture starts");
+		if (fault == 0u) {
+			const std::array<uint8_t, kChunk> bytes{};
+			fake::rx_bytes(bytes.data(), bytes.size()); // hardware finished; no DMA IRQ
+		} else if (fault == 1u) {
+			f.usart.CR3 &= ~USART_CR3_DMAR; // request stopped without updating HAL state
+		} else {
+			f.dma_rx.CountRemaining = static_cast<uint32_t>(kChunk + 1u);
+		}
+		check(f.huart.RxState == HAL_UART_STATE_BUSY_RX && f.dma_rx.State == HAL_DMA_STATE_BUSY,
+		      "software state alone still claims an active receiver");
+		audits(f, UART_ENGINE_FAIL_THRESHOLD + 1);
+		check(fake::model().rx_armed && f.dma_rx.CountRemaining == kChunk &&
+		      (f.usart.CR3 & USART_CR3_DMAR) != 0u && f.uart.stats().restarts > 1u,
+		      "exhausted, disabled or impossible RX hardware recovers after debounce");
+		f.loop(); // drain the ordered discontinuity marker
+		check(events() == "gap", "untrusted old chunk becomes one gap, never fabricated data");
+		fake::rx_bytes("OK", 2u);
+		fake::rx_idle();
+		f.loop();
+		check(events() == "gap|data:2" && rxText() == "OK", "recovery permits the next real frame");
+		checkNoViolations("watchdog recovery retains ownership until DMA is stopped");
+	}
+}
+
+void testRxWatchdogAllowsIdleAndDelayedCompletion()
+{
+	fake::reset();
+	Fixture f;
+	check(f.start(), "idle RX watchdog fixture starts");
+	const uint32_t restarts = f.uart.stats().restarts;
+	audits(f, 4 * UART_ENGINE_FAIL_THRESHOLD);
+	check(f.uart.stats().restarts == restarts && events().empty(), "an idle armed receiver does not time out");
+	const std::array<uint8_t, kChunk> bytes{};
+	fake::rx_bytes(bytes.data(), bytes.size());
+	audits(f, 1); // one bad observation, completion is merely delayed
+	fake::rx_tc();
+	f.loop();
+	audits(f, UART_ENGINE_FAIL_THRESHOLD);
+	check(f.uart.stats().restarts == restarts && rxText().size() == kChunk &&
+	      events() == "data:64", "a completion inside the debounce window is delivered without a restart");
+	checkNoViolations("delayed completion preserves ownership");
+}
+
+void testTortureGeneratorRespectsTheLastRxByte()
+{
+	bool valid = true;
+	for (uint32_t seed = 1u; seed <= 256u; ++seed) {
+		fake::reset();
+		torture::State state;
+		if (!state.f.start()) { valid = false; break; }
+		const std::array<uint8_t, kChunk - 1u> bytes{};
+		fake::rx_bytes(bytes.data(), bytes.size());
+		torture::Rng rng{seed};
+		torture::step(state, rng);
+		valid = valid && fake::model().violations.empty();
+	}
+	check(valid, "the generator never forces a two-byte DMA write into one remaining byte");
+}
+
 } // namespace
 
 // `test_uart --seed 0xDEADBEEF --steps 1000000` beats the driver with a
@@ -977,6 +1042,8 @@ int main(int argc, char** argv)
 	group("Watchdog");
 	testWatchdogRevivesDeadReceiver();
 	testWatchdogRejectsEveryNonBusyRxState();
+	testWatchdogChecksHardwareDespiteBusyHalState();
+	testRxWatchdogAllowsIdleAndDelayedCompletion();
 
 	group("BaudRate");
 	testBaudRefusedWhileTransmitting();
@@ -989,6 +1056,7 @@ int main(int argc, char** argv)
 	testBaudChangeRejectsNonsense();
 
 	group("RandomizedTorture");
+	testTortureGeneratorRespectsTheLastRxByte();
 	testRandomizedTorture(steps);
 
 	std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

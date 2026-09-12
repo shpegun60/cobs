@@ -10,8 +10,9 @@
  * that only ever handles small PDUs may bind a smaller ceiling to save RAM
  * (a local capacity choice, still standard Modbus on the wire), and a private
  * RTU-like protocol on a fast link may bind a larger one (no longer standard
- * Modbus RTU; both peers must agree, and the UART adapter must deliver the
- * whole candidate in one burst).
+ * Modbus RTU; both peers must agree). A burst endpoint still needs one whole
+ * candidate per receive_adu(); an endpoint with a framing policy can instead
+ * assemble a large ADU from multiple UART chunks through consume().
  */
 
 #ifndef MODBUS_RTU_LIMITS_H_

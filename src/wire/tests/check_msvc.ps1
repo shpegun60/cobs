@@ -18,6 +18,7 @@ $cases = @(
     @{name='rtu_geometry'; sources=@('modbus/rtu/tests/test_crc_geometry.cpp')},
     @{name='rtu_framing'; sources=@('modbus/rtu/tests/test_framing.cpp')},
     @{name='rtu_stream'; sources=@('modbus/rtu/tests/test_stream.cpp')},
+    @{name='rtu_stream_fuzz'; sources=@('modbus/rtu/tests/test_stream_fuzz.cpp')},
     @{name='rtu_layout'; sources=@('modbus/rtu/tests/test_layout.cpp')}
 )
 Push-Location $src

@@ -381,6 +381,12 @@ else from it:
   `Base::layout`. `length_prefixed(2)` is the recommended shape for a
   variable-length private function: `[N: BE16][body]`, with `N` filled by the
   library; `packet.data()` on the peer is `[N][body]`, nothing is hidden.
+  A one-byte prefix can represent at most 255 body bytes, even when `MaxAdu`
+  is larger. A body beyond that field's range is rejected before CRC or TX;
+  storage capacity never widens a count field. Construct layouts with the
+  factory functions: an invalid width or offset (including `SIZE_MAX`) gives
+  `unsupported()`. `store_count()` returns `bool`; failure leaves all bytes
+  unchanged. Direct mutation into an invalid Layout is outside its contract.
 - **Two-stage assembly, one copy.** Address, function and the bytes the
   layout needs are collected into a 16-byte local buffer; the data size is
   then known, `acquire_rx(header + adu)` is sized exactly, the remaining bytes
@@ -464,7 +470,12 @@ whether DMA has already taken bytes into the chunk it still owns, which is
 the case for the whole transfer time of a resumed remainder that has not yet
 ended in IDLE or filled the chunk (14 ms for 150 bytes at 115200, far longer
 at 9600); then the frame is alive and the deadline becomes one chunk time
-plus the guard. A bridge that splits a frame resumes within microseconds and
+plus the guard. A later extension requires an increase since the previous
+overdue snapshot of that same unpublished chunk; a frozen non-zero count
+cannot retain a packet forever. Publication or a gap resets that baseline.
+An empty `on_rx({})` is a no-op for framed endpoints: it is not a new partial
+chunk and must neither shorten nor renew the deadline.
+A bridge that splits a frame resumes within microseconds and
 never reaches the 5 ms with zero progress. The full-chunk rule assumes a continuously
 transmitting peer or bridge whose stalls inside a frame are small against a
 chunk's transmission; strict RTU permits a pause below t1.5 between every
