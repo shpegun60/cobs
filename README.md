@@ -964,6 +964,11 @@ The corresponding Modbus consumer is
 
 ## Verification
 
+Latest fixes and fresh receipts: [reader/CRC/FreeRTOS contract hardening](doc/CONTRACT_HARDENING_2026-09-12.md).
+It records 53 final H7S images, the 6,360-object ARM CRC repeat, the
+overflow-safe wait codegen checks, and the separately retained pre-test
+programming failure. See the report for exact coverage and remaining limits.
+
 The repository distinguishes host behavior, compile-time contracts,
 cross-target code generation, benchmarks, and real hardware evidence.
 
@@ -981,11 +986,12 @@ cross-target code generation, benchmarks, and real hardware evidence.
 | Shared scalar/API host oracle | `sh src/wire/tests/run.sh` | exhaustive scalar values, reader facade identity, COBS/Modbus public API parity, intentional protocol differences, sanitizers and O3/LTO |
 | GCC strict/LTO consumers | `MATRIX_TAG=<compiler> CXX=<g++> sh src/wire/tests/check_gcc_matrix.sh` | real COBS/Modbus consumers and API parity under strict alias/alignment/bounds warnings plus `-fshort-enums`/`-funsigned-char` scalar proof |
 | Cortex-M endian hot path | `sh src/wire/tests/check_arm_hotpath.sh` | little- and big-endian ARM builds prove compile-time selection: native order is direct, opposite order uses REV/REV16, and neither calls a helper |
-| Cortex-M codegen matrix | `sh src/wire/tests/check_arm_codegen_matrix.sh` | 96 scalar, 60 protocol and 30 COBS objects across M0/M0+/M3/M4/M7/M23/M33/M55, plus Bitwise/Table references, Os/O2/O3, endian and strict-alignment variants |
+| Cortex-M codegen matrix | `sh src/wire/tests/check_arm_codegen_matrix.sh` | 96 scalar, 96 protocol and 48 COBS objects across M0/M0+/M3/M4/M7/M23/M33/M55, plus Bitwise/Table references, Os/O2/O3, endian and strict-alignment variants |
 | Modbus CRC layout/codegen | `sh src/modbus/rtu/tests/check_arm_crc_codegen.sh` | default Endpoint emits no table; Table emits one private 512-byte read-only lookup; empty policies add no RAM |
 | Modbus RTU host suite | `sh src/modbus/rtu/tests/run.sh` | headers, compile-fail boundaries, every CRC width/method, custom three-byte and hardware policies, `NoCrc`, derived geometry, storage, ownership, endpoint and fuzz properties |
 | Modbus qmake consumer | `sh src/modbus/rtu/tests/qmake_consumer/run.sh` | downstream header-only use with Heap, Pool and Table policy |
 | Adapters: RTU over the UART driver, FreeRTOS wake (fake HAL, fake FreeRTOS) | `sh src/adapters/tests/run.sh` |
+| FreeRTOS finite wait codegen | `sh src/adapters/tests/check_wake_codegen.sh` | 108 ARM objects; 50-ms conversion is constant, dynamic 1-kHz conversion needs no arithmetic helper |
 | Qt adapters: `QSerialPort` transport and the QModbus-shaped RTU client (event loop, no COM port) | `sh src/adapters/qt/tests/run.sh` |
 | The RTU stack against QtSerialBus on the H7S, both ways round | `python -B src/adapters/qt/tests/hardware/h7s/run_qmodbus.py ...` then `verify_qmodbus.py` | short IDLE ADU, exact 256-byte TC ADU, gaps, recovery, and DMA TX borrow |
 | Cortex-M Modbus layout | `sh src/modbus/rtu/tests/check_arm_layout.sh` | ARM object layout and static RAM assertions |

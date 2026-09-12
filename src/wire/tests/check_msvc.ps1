@@ -34,6 +34,12 @@ $cases = @(
     @{name='tcp_advanced'; sources=@('modbus/tcp/tests/test_advanced.cpp')},
     @{name='tcp_data_limits'; sources=@('modbus/tcp/tests/test_data_limits.cpp')}
 )
+foreach ($tickBits in @(16, 32, 64)) {
+    foreach ($tickRate in @(100, 1000, 1024, 10000)) {
+        $cases += @{name="wake_${tickBits}_${tickRate}"; sources=@('adapters/tests/test_wake_ticks.cpp');
+                    flags="/Iadapters/tests/fake_freertos /DFAKE_FREERTOS_TICK_BITS=$tickBits /DconfigTICK_RATE_HZ=$tickRate"}
+    }
+}
 Push-Location $src
 try {
     foreach ($arch in @('x64', 'x86')) {
@@ -41,13 +47,14 @@ try {
         New-Item -ItemType Directory -Force $out | Out-Null
         foreach ($case in $cases) {
             $sources = $case.sources -join ' '
+            $extraFlags = if ($case.ContainsKey('flags')) { $case.flags } else { '' }
             $exe = Join-Path $out ($case.name + '.exe')
             $command = "call `"$DeveloperCommand`" -arch=$arch -host_arch=x64 > nul && " +
                 "cl /nologo /std:c++20 /Zc:__cplusplus /permissive- /EHsc /utf-8 /O2 /DNDEBUG /WX " +
-                "/I. /Icobs /I`"$repo\libs\delegate`" $sources /Fo`"$out/`" /Fe`"$exe`" && `"$exe`""
+                "/I. /Icobs /I`"$repo\libs\delegate`" $extraFlags $sources /Fo`"$out/`" /Fe`"$exe`" && `"$exe`""
             & $env:ComSpec /d /c $command
             if ($LASTEXITCODE -ne 0) { throw "MSVC $arch $($case.name) failed" }
         }
     }
-    Write-Host 'MSVC x64/x86: CRC, shared storage, protocol parity/custom memory, COBS CRC/layout, RTU geometry/framing/stream/layout, TCP core/advanced passed'
+    Write-Host 'MSVC x64/x86: CRC, storage, protocol/reader contracts, COBS/RTU/TCP, and 12 wait-conversion configurations passed'
 } finally { Pop-Location; $env:Path = $msvcOriginalPath }

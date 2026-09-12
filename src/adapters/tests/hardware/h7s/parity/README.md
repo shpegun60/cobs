@@ -1,7 +1,18 @@
 <!-- Author: shpegun60; SPDX-License-Identifier: MIT -->
 # COBS / RTU API parity on the H7S with real FreeRTOS
 
-Latest repeat after the cross-stack UART fixes: [audit receipt](results_audit_2026-09-12/session.json)
+Latest contract-fix repeat: [final optimized receipt](results_contracts_final_2026-09-12/session.json)
+and [raw exchanges](results_contracts_final_2026-09-12/results.jsonl), **14 images,
+704 exchanges, 560 exact echoes, 1,596 MCU-local checks**, all passed. Schema 2
+adds CRC overload selection and enum-reader checks for COBS/RTU/TCP plus
+finite conversion boundaries and two real delayed-notification waits per
+image. It adds no protocol timer. The 67 verifier mutations pass for old and
+new records; original firmware was restored and read back. The separate
+[first checkpoint](results_contracts_2026-09-12/session.json) predates the
+explicit compile-time 1-kHz optimization. See the
+[full fix report](../../../../../../doc/CONTRACT_HARDENING_2026-09-12.md).
+
+Earlier repeat after the cross-stack UART fixes: [audit receipt](results_audit_2026-09-12/session.json)
 and [raw exchanges](results_audit_2026-09-12/results.jsonl). **14 images, 704
 exchanges, 560 exact echoes and 280 MCU-local lifecycle checks** passed with
 zero MCU/ISR/task assertion failures. Local artifact/kernel/restore verification
@@ -70,10 +81,17 @@ partial RX frame, check Pool availability 2 -> 3 -> 4, rebind and recover.
 Framed RTU also drops an orphan before a new frame arrives 25 ms later,
 proving the 5 ms adapter deadline bounds the default 50 ms wait.
 
-The separate 20-check local Endpoint test executes on the MCU but not through
+The original 20-check local Endpoint test executes on the MCU but not through
 UART. It covers `Invalid/Unbound/Busy/Failed/Sent`, byte-identical prepared
 retry, endian writers/readers, bounds/strong guarantee, shared Packet lifetime,
 TX completion polling and complete Pool reclamation.
+
+Current firmware/schema 2 adds 94 checks to that body: 36 reader, 42 CRC-policy
+round-trip checks across all three protocols, 13 conversion boundaries, one
+static notifier creation and two real large-wait wakeups. The count is exactly
+114 per image, independently required by the verifier. A small auxiliary task
+notifies after ten ticks, so the formerly zero-tick overflow must actually
+block; the test does not sleep for the full 71-minute/49-day budgets.
 
 The control envelope is `B6 50 52 54 <command>`; replies contain 24 LE32 words
 whose layout is declared next to `status()` in `parity_bench.cpp`. Raw TX/RX

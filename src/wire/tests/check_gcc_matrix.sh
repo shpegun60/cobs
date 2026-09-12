@@ -69,6 +69,13 @@ COMMON="-std=gnu++20 -O3 -DNDEBUG -flto \
 	"$HERE/test_scalar.cpp" -o "$OUT/scalar_abi_flags.exe"
 "$OUT/scalar_abi_flags.exe"
 
+# Reader rejection and CRC overload selection must survive altered enum ABI
+# and the same strict optimizer/aliasing flags as an application consumer.
+"$CXX" $COMMON -fshort-enums -funsigned-char \
+	"$HERE/test_contracts.cpp" "$SRC/cobs/Decoder.cpp" "$SRC/cobs/Encoder.cpp" \
+	-o "$OUT/contracts_abi_flags.exe"
+"$OUT/contracts_abi_flags.exe"
+
 # Compile-only wrappers keep every scalar/protocol hot path available for
 # warning and aliasing analysis without depending on a benchmark main().
 # shellcheck disable=SC2086

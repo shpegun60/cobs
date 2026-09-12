@@ -108,9 +108,15 @@ namespace detail {
 	              static_cast<uint64_t>(configTICK_RATE_HZ) <= UINT32_MAX);
 	static_assert(portMAX_DELAY > 0u);
 	constexpr uint64_t maximum = static_cast<uint64_t>(portMAX_DELAY) - 1u;
-	const uint64_t ticks = static_cast<uint64_t>(milliseconds) *
-		static_cast<uint64_t>(configTICK_RATE_HZ) / 1000u;
-	return static_cast<TickType_t>(ticks < maximum ? ticks : maximum);
+	if constexpr (configTICK_RATE_HZ == 1000u) {
+		// Explicitly remove the multiply/divide. Cortex-M0 GCC -Os can otherwise
+		// retain a 64-bit multiply in the saturation comparison even at 1 kHz.
+		return static_cast<TickType_t>(milliseconds < maximum ? milliseconds : maximum);
+	} else {
+		const uint64_t ticks = static_cast<uint64_t>(milliseconds) *
+			static_cast<uint64_t>(configTICK_RATE_HZ) / 1000u;
+		return static_cast<TickType_t>(ticks < maximum ? ticks : maximum);
+	}
 }
 
 } // namespace detail

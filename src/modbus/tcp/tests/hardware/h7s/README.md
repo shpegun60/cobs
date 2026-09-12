@@ -177,6 +177,14 @@ No network stack, client transaction manager or custom MBAP framer was added.
 
 ## Cross-stack audit repeat
 
+The later [contract-fix receipt](results_contracts_2026-09-12/session.json)
+repeats all six images after the shared CRC-call and enum-reader fixes:
+24,850 TCP checks, 36 OOM checks, 318 local RTU checks, 1,974 exact UART
+exchanges and 38 live rejection trials, all passed. All flashes succeeded
+on their first attempts; the fresh boot backup was restored and read back.
+The [follow-up report](../../../../../../doc/CONTRACT_HARDENING_2026-09-12.md)
+also covers the new FreeRTOS waits, COBS/RTU matrix and ARM evidence.
+
 The [fresh record](results_audit_2026-09-12/session.json) started at
 **2026-09-12 17:10:34 UTC**, after the UART DMA-ownership fixes described in
 the [cross-stack audit](../../../../../../doc/PARANOID_AUDIT_2026-09-12.md).

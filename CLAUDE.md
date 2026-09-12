@@ -68,6 +68,18 @@ the existing RTU deadline. Old CPU measurements remain historical.
 
 ## Project overview
 
+The explicit follow-up fixes and evidence are in
+`doc/CONTRACT_HARDENING_2026-09-12.md`: COBS now passes a const checksum
+lvalue to the policy like RTU/TCP; crc::Policy checks temporary-argument
+overloads too. Readers reject unscoped enums (use enum class or read and
+validate an integer). FreeRtosWake uses overflow-safe finite tick conversion
+with a compile-time 1-kHz path, not pdMS_TO_TICKS. Host/sanitizer/MSVC/ARM
+checks and 53 final live images passed. The initial 14-image RTOS receipt
+is pinned separately by 5696139; final schema 2 checks 114 local contracts
+per image. No COBS timer, CRC-semantic validation or new UART ISR work was
+added. A verbose ST flash-loader Write rejection remains a pre-test
+programming failure, not a runtime library failure or a proved vendor fix.
+
 `modbus::tcp` was added as a separate transport-independent MBAP core on
 2026-09-12. See `doc/MODBUS_TCP_PLAN.md`, `src/modbus/tcp/README.md` and
 `src/modbus/tcp/tests/hardware/h7s/README.md`. Its spelling is
