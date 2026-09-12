@@ -432,7 +432,10 @@ private:
 		}
 		// The last moment the header is still plain bytes.
 		Layout::store_length(frame_raw, m_size + Layout::crc_size);
-		crc.store(raw() + m_size, crc.calculate({raw(), m_size}));
+		// Match the const-lvalue result checked by crc::Policy, as RTU/TCP do.
+		// Passing the temporary directly could select an unchecked overload.
+		const typename CrcT::value_type checksum = crc.calculate({raw(), m_size});
+		crc.store(raw() + m_size, checksum);
 
 		const auto frame = cobs::codec::encode_in_place(
 			std::span<uint8_t>{begin, cobs::codec::max_wire_size(decoded)}, enc_offset, decoded);

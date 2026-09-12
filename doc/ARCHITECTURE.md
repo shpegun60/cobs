@@ -127,6 +127,11 @@ Native I/O uses the target object representation; BE/LE select an explicit byte
 order entirely at compile time. A stable cross-platform protocol uses fixed-
 width integer types and explicitly sized enum underlying types. It does not use
 `size_t`, `long`, plain enums, or structs with padding as wire fields.
+Readers enforce a scoped-enum boundary (`enum class`); all unscoped enums
+are rejected because C++20 cannot portably detect their fixedness. An
+application using one reads an integer and validates it before conversion.
+Writing an already-valid unscoped enum remains supported. This is a
+compile-time restriction, not extra runtime validation on integer fields.
 
 ### 2.2 Storage extension surface
 

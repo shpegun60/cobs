@@ -63,7 +63,7 @@ def main():
                   transport="UART byte transport; no TCP/IP stack", completed=False, restored_and_verified=False,
                   images=[], log_sha256={}, source_base_commit=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
                   source_sha256=sources())
-    connection = ["-c", "port=SWD", f"sn={args.serial}", "mode=UR", "reset=HWrst", "freq=4000"]
+    connection = ["-vb", "3", "-c", "port=SWD", f"sn={args.serial}", "mode=UR", "reset=HWrst", "freq=4000"]
 
     def save():
         output.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")

@@ -346,6 +346,10 @@ to one `wire::SendResult` type. See the shared
 [end-user API contract](../../doc/API_PARITY.md), including the same
 `UartAdapter` lifecycle and the protocol-independent `uart::FreeRtosWake`.
 They are bounds checked and leave both cursor and output unchanged on failure.
+Enum readers accept `enum class`, not unscoped enums; for the latter, read
+an integer and validate it before conversion. This prevents constructing an
+invalid unfixed-enum value from wire bytes and adds no runtime checks to
+integer fields. Writer support for already-valid enum values is unchanged.
 COBS exposes the identical calls as `cobs::read_*`. Both namespaces re-export
 one implementation from `src/wire/Read.h`, so interface parity adds neither a
 forwarding call nor duplicated endian logic.

@@ -59,6 +59,13 @@ Every endpoint must outlive every Packet and Message it issued. All these
 objects belong to one execution context; shared packet references are not
 atomic. Transport delegates must not throw or re-enter the endpoint.
 
+The same reader constraints apply in every namespace: integer/floating/byte
+fields and scoped enums (`enum class`), but no unscoped enum. Read an integer
+and validate it before converting to an unscoped enum; C++20 has no portable
+fixed-underlying-enum trait. No runtime enum-range checks or cursor state are
+added. A CRC policy's checksum is passed to `store` as a const lvalue in all
+three protocols, matching the `crc::Policy` exception contract.
+
 ## Ownership and failure semantics
 
 - `make_message(..., capacity_hint)` reserves capacity, not application data.

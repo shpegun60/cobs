@@ -314,6 +314,13 @@ namespaces: `read_native`, `read_be`, `read_le`, and `read_bytes`. `Packet`
 stores no mutable parser cursor; the application owns an offset, which makes
 independent parsers over one immutable packet safe and explicit.
 
+Readers accept `enum class` (prefer an explicit underlying type such as
+`uint16_t`), but reject every unscoped enum at compile time. C++20 cannot
+portably tell a fixed unscoped enum from an unfixed one, for which arbitrary
+wire bytes can produce undefined behavior. For an unscoped enum, read the
+underlying integer and validate its value before converting. Writers remain
+unchanged. Readers check byte bounds, not whether an enum value has a name.
+
 The selected serializer applies only to application payload/function data.
 Library-owned framing never uses native object order: COBS writes and reads its
 length prefix explicitly little-endian, while a Modbus RTU CRC policy owns its

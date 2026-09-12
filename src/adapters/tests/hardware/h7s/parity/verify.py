@@ -138,8 +138,11 @@ def check_rows(rows, images):
             assert len(answer) == 101 and answer[:4] == MAGIC
             assert answer[4] == (ord("d") if kind == "partial" else body[4])
             w = struct.unpack("<24I", answer[5:])
-            assert w[:6] == (1, p, c, 600000000, baud, 100602), "wrong firmware/platform/kernel"
-            assert w[8] == 20 and w[7] == w[9] == w[10] == w[12] == w[16] == 0, "device failure"
+            version = image.get("firmware_version", 1)
+            assert version in (1, 2), "unknown firmware contract"
+            assert w[:6] == (version, p, c, 600000000, baud, 100602), "wrong firmware/platform/kernel"
+            expected_checks = 114 if version == 2 else 20
+            assert w[8] == expected_checks and w[7] == w[9] == w[10] == w[12] == w[16] == 0, "device failure"
             # Uart::init() itself calls receiveRestart(): exactly one startup
             # start, with no additional error-recovery restart during traffic.
             assert w[23] == 1, "unexpected UART restart after init"
@@ -160,7 +163,8 @@ def verify(directory, local_images=False):
     receipt = json.loads((directory / "session.json").read_text())
     results = directory / "results.jsonl"
     rows = [json.loads(line) for line in results.read_text().splitlines()]
-    assert receipt["schema"] == 1 and receipt["completed"] and receipt["restored_and_verified"]
+    assert receipt["schema"] in (1, 2) and receipt["completed"] and receipt["restored_and_verified"]
+    assert all(i.get("firmware_version", 1) == receipt["schema"] for i in receipt["images"])
     assert receipt["backup_bytes"] == 65536 and receipt["readback_sha256"] == receipt["backup_sha256"]
     assert digest(results) == receipt["results_sha256"]
     assert receipt["kernel_version"] == "V10.6.2" and len(receipt["kernel_sha256"]) > 10
@@ -208,8 +212,9 @@ def verify(directory, local_images=False):
         assert digest(log) == receipt["restore_flash"]["log_sha256"] and "Download verified successfully" in log.read_text()
     else:
         print("CAVEAT local ELF/flash/backup/kernel bytes not re-read; use --local-images on the measuring machine")
+    local_checks = sum(114 if i.get("firmware_version", 1) == 2 else 20 for i in receipt["images"])
     print(f"PASS {len(receipt['images'])} real FreeRTOS images; {len(rows)} exchanges; "
-          f"{40 * len(receipt['images'])} exact echoes; {20 * len(receipt['images'])} MCU-local lifecycle checks; restored")
+          f"{40 * len(receipt['images'])} exact echoes; {local_checks} MCU-local contract checks; restored")
 
 
 if __name__ == "__main__":

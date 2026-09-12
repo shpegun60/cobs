@@ -7,6 +7,7 @@
 #include "adapters/cobs/UartAdapter.h"
 #include "adapters/rtu/UartAdapter.h"
 #include "adapters/freertos/FreeRtosWake.h"
+#include "wire/tests/contract_checks.h"
 #include "uart_bench.h"
 #include "usart.h"
 
@@ -148,6 +149,36 @@ struct Capture {
 	}
 	bool occupied() const noexcept { return busy; }
 };
+void delayed_notification(void* target)
+{
+	for (;;) {
+		(void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+		vTaskDelay(10u);
+		xTaskNotifyGive(static_cast<TaskHandle_t>(target));
+	}
+}
+void wait_contract()
+{
+	static_assert(configTICK_RATE_HZ == 1000u && sizeof(TickType_t) == 4u);
+	for (const uint32_t ms : std::array<uint32_t, 13u>{0u, 1u, 5u, 50u, 1000u, 65534u, 65535u, 65536u,
+	                         4294967u, 4294968u, 7200000u, UINT32_MAX - 1u, UINT32_MAX}) {
+		check(uart::detail::wake_ticks_for(ms) == (ms == UINT32_MAX ? UINT32_MAX - 1u : ms));
+	}
+	static StaticTask_t notifier_tcb;
+	static StackType_t notifier_stack[512u];
+	const auto notifier = xTaskCreateStatic(delayed_notification, "wait-check", 512u,
+		xTaskGetCurrentTaskHandle(), 2u, notifier_stack, &notifier_tcb);
+	check(notifier != nullptr);
+	if (notifier == nullptr) { return; }
+	for (const uint32_t ms : std::array<uint32_t, 2u>{4294968u, UINT32_MAX}) {
+		(void)ulTaskNotifyTake(pdTRUE, 0u);
+		const auto started = xTaskGetTickCount();
+		xTaskNotifyGive(notifier);
+		const auto taken = uart::FreeRtosWake::wait(ms);
+		const auto elapsed = xTaskGetTickCount() - started;
+		check(taken == 1u && elapsed >= 10u && elapsed < 100u);
+	}
+}
 void local_contract()
 {
 	const auto before_checks = checks, before_failed = failed;
@@ -190,6 +221,9 @@ void local_contract()
 	check(link.stats().rx.frames_received == 1u && link.stats().tx.frames_sent == 1u && link.stats().tx.send_failed == 1u);
 	held.reset();
 	check(link.storage().rx_available() == 4u);
+	contract_checks::readers(check);
+	contract_checks::policies<wire::Pool<2u, 2u>>(check);
+	wait_contract();
 	local_checks = checks - before_checks; local_failed = failed - before_failed;
 }
 bool send_body(std::span<const uint8_t> body)
@@ -202,7 +236,7 @@ void status(uint8_t command)
 	// Stable 24-word telemetry. Values are a thread-context snapshot, not a CPU benchmark.
 	const auto uart = serial.stats();
 	const std::array<uint32_t, 24u> words{
-		1u, PARITY_PROTOCOL, PARITY_CRC, SystemCoreClock, PARITY_BAUD,
+		2u, PARITY_PROTOCOL, PARITY_CRC, SystemCoreClock, PARITY_BAUD,
 		10000u * tskKERNEL_VERSION_MAJOR + 100u * tskKERNEL_VERSION_MINOR + tskKERNEL_VERSION_BUILD,
 		checks, failed, local_checks, local_failed, g_parity_assertions,
 		g_parity_isr_notifies, g_parity_bad_notify_context, notified, timed_out,

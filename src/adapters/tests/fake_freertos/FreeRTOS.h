@@ -17,14 +17,30 @@
 
 using BaseType_t = long;
 using UBaseType_t = unsigned long;
+#ifndef FAKE_FREERTOS_TICK_BITS
+#define FAKE_FREERTOS_TICK_BITS 32
+#endif
+#if FAKE_FREERTOS_TICK_BITS == 16
+using TickType_t = uint16_t;
+#elif FAKE_FREERTOS_TICK_BITS == 32
 using TickType_t = uint32_t;
+#elif FAKE_FREERTOS_TICK_BITS == 64
+using TickType_t = uint64_t;
+#else
+#error unsupported FAKE_FREERTOS_TICK_BITS
+#endif
+#ifndef configTICK_RATE_HZ
+#define configTICK_RATE_HZ 1000u
+#endif
 struct tskTaskControlBlock;
 using TaskHandle_t = tskTaskControlBlock*;
 
 #define pdFALSE ((BaseType_t)0)
 #define pdTRUE ((BaseType_t)1)
-#define portMAX_DELAY ((TickType_t)0xFFFFFFFFu)
-#define pdMS_TO_TICKS(ms) ((TickType_t)(ms))
+#define portMAX_DELAY (static_cast<TickType_t>(~TickType_t{0u}))
+// Same narrow-intermediate conversion as FreeRTOS V10.6.2, deliberately NOT
+// an identity: an identity fake concealed real-kernel duration overflow.
+#define pdMS_TO_TICKS(ms) ((TickType_t)(((TickType_t)(ms) * (TickType_t)configTICK_RATE_HZ) / (TickType_t)1000u))
 
 namespace fake_freertos {
 

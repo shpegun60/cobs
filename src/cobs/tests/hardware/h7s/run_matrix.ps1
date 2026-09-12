@@ -103,6 +103,7 @@ function Build-And-Flash([int]$Baud) {
     # Programming succeeds only with BOTH exit 0 and positive read verification.
     for ($attempt = 1; $attempt -le 3; ++$attempt) {
         $flashOutput = (& $CubeProgrammer `
+            -vb 3 `
             -c port=SWD "sn=$StLinkSerial" mode=UR reset=HWrst freq=4000 `
             -w $elf -v -rst | Out-String)
         $flashExit = $LASTEXITCODE

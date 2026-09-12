@@ -92,4 +92,17 @@ echo "=== adapter integration under -O3/-DNDEBUG ==="
 	"$UART_HOST/fake_hal.cpp" "$HERE/test_uart_parity.cpp" \
 	"$SRC/cobs/Encoder.cpp" "$SRC/cobs/Decoder.cpp" -o "$OUT/test_uart_parity_o3.exe"
 "$OUT/test_uart_parity_o3.exe"
+echo "=== finite wait conversion: 16/32/64-bit ticks, 100/1000/1024/10000 Hz ==="
+for bits in 16 32 64; do
+	for hz in 100 1000 1024 10000; do
+		for mode in sanitized optimized; do
+			FLAGS="-O1 -g $SAN"
+			[ "$mode" = optimized ] && FLAGS="-O3 -DNDEBUG"
+			"$CXX" -std=gnu++20 $FLAGS $WARN $INC \
+				-DFAKE_FREERTOS_TICK_BITS=$bits -DconfigTICK_RATE_HZ=$hz \
+				"$HERE/test_wake_ticks.cpp" -o "$OUT/test_wake_ticks_${bits}_${hz}_${mode}.exe"
+			"$OUT/test_wake_ticks_${bits}_${hz}_${mode}.exe"
+		done
+	done
+done
 echo "=== all adapter suites passed ==="

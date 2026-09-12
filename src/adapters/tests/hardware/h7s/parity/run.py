@@ -94,6 +94,7 @@ def sources():
         files.update(p for p in root.rglob("*.h") if "tests" not in p.relative_to(root).parts)
     files.update(REPO / "src/cobs" / name for name in ("Encoder.cpp", "Decoder.cpp"))
     files.add(REPO / "src/uart/tests/bench/uart_bench.h")
+    files.add(REPO / "src/wire/tests/contract_checks.h")
     for name in ("delegate", "spsc"):
         root = REPO / "libs" / name
         for pattern in ("*.h", "*.hpp"):
@@ -192,9 +193,9 @@ def main():
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     session = PROJECT / "out" / ("api-rtos-" + stamp)
     session.mkdir()
-    connection = ["-c", "port=SWD", f"sn={args.serial}", "mode=UR", "reset=HWrst", "freq=4000"]
+    connection = ["-vb", "3", "-c", "port=SWD", f"sn={args.serial}", "mode=UR", "reset=HWrst", "freq=4000"]
     plan = [(p, c, b) for p, c in ((0, 0), (0, 1), (0, 2), (1, 1), (2, 0), (2, 1), (2, 2)) for b in bauds]
-    receipt = dict(schema=1, started=stamp, session=str(session), port=args.port, serial=args.serial,
+    receipt = dict(schema=2, started=stamp, session=str(session), port=args.port, serial=args.serial,
                    plan=plan, images=[], completed=False, restored_and_verified=False,
                    source_base_commit=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
                    kernel_root=str(KERNEL), kernel_version="V10.6.2", kernel_sha256=kernel_sources())
@@ -236,7 +237,7 @@ def main():
                 shutil.copy2(build / ("parity_bench." + suffix), session / (tag + "." + suffix))
             elf, binary = session / (tag + ".elf"), session / (tag + ".bin")
             assert binary.stat().st_size <= 65536
-            image = dict(tag=tag, protocol=protocol, policy=policy, baud=baud,
+            image = dict(tag=tag, protocol=protocol, policy=policy, baud=baud, firmware_version=2,
                          elf_sha256=digest(elf), binary_sha256=digest(binary), binary_bytes=binary.stat().st_size,
                          source_sha256=before, build_log_sha256=digest(log))
             image["flash"] = flash("flash-" + tag, elf)

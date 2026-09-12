@@ -293,6 +293,12 @@ bool start_comm() noexcept
 }
 ```
 
+Explicit fallback durations are converted with a 64-bit intermediate and
+clamped to `portMAX_DELAY - 1`, so a large finite millisecond budget never
+overflows into zero or becomes an indefinite kernel wait. Conversion floors
+to whole ticks and does not use application overrides of `pdMS_TO_TICKS`.
+The default remains 50 ms; no protocol timer or ISR work is added.
+
 Contract, in one place: the communication task is the only one touching
 the driver, the endpoint and its packets; `wait()` is called by that task
 only, and notification index 0 of that task belongs to the wake; the USART

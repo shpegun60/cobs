@@ -56,6 +56,8 @@ build test_endpoint_parity "$HERE/test_endpoint_parity.cpp" \
 	"$SRC/cobs/Encoder.cpp" "$SRC/cobs/Decoder.cpp"
 build test_payload_limits "$HERE/test_payload_limits.cpp" \
 	"$SRC/cobs/Encoder.cpp" "$SRC/cobs/Decoder.cpp"
+build test_contracts "$HERE/test_contracts.cpp" \
+	"$SRC/cobs/Encoder.cpp" "$SRC/cobs/Decoder.cpp"
 
 # The release build is a DIFFERENT build, so it is tested as one: the pool's
 # double-free and foreign-pointer rejection must survive -DNDEBUG, because a
@@ -70,6 +72,7 @@ build test_storage_ndebug    -DNDEBUG "$HERE/test_storage.cpp"
 "$OUT/test_protocol_storage.exe"
 "$OUT/test_endpoint_parity.exe"
 "$OUT/test_payload_limits.exe"
+"$OUT/test_contracts.exe"
 
 echo "=== the same pool guarantees, built with -DNDEBUG ==="
 "$OUT/test_block_pool_ndebug.exe"
@@ -91,6 +94,10 @@ echo "=== the same pool guarantees, built with -DNDEBUG ==="
 	-I"$SRC" -I"$LIBS/delegate" "$HERE/test_payload_limits.cpp" \
 	"$SRC/cobs/Encoder.cpp" "$SRC/cobs/Decoder.cpp" -o "$OUT/test_payload_limits_o3_lto.exe"
 "$OUT/test_payload_limits_o3_lto.exe"
+"$CXX" -std=gnu++20 -O3 -DNDEBUG -flto $WARN \
+	-I"$SRC" -I"$LIBS/delegate" "$HERE/test_contracts.cpp" \
+	"$SRC/cobs/Encoder.cpp" "$SRC/cobs/Decoder.cpp" -o "$OUT/test_contracts_o3_lto.exe"
+"$OUT/test_contracts_o3_lto.exe"
 
 # Interpose malloc/free at the ELF linker boundary: exercise the real Heap,
 # not a custom fake Storage. MinGW uses CRT import indirection instead.

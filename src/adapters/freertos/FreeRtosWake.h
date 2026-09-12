@@ -50,14 +50,19 @@
  * that same loop uses just the fallback timeout with COBS; there is no COBS
  * timer and no protocol parsing in this ISR wake handler.
  *
- * The wait is as fine as the kernel tick. pdMS_TO_TICKS() truncates to
- * whole ticks, so with a tick coarser than the deadline (configTICK_RATE_HZ
+ * The wait is as fine as the kernel tick. Conversion truncates to whole
+ * ticks, so with a tick coarser than the deadline (configTICK_RATE_HZ
  * of 100 gives 10 ms ticks; a 5 ms deadline becomes 0 ticks) wait() returns
  * at once and the loop services proceed() back to back until HAL_GetTick()
  * reaches the deadline: correct, but a busy loop for those milliseconds.
  * Give the kernel a tick at least as fine as the deadlines the transport
  * uses (the usual 1 kHz STM32 configuration is); no timer of its own is
  * kept here to paper over a coarse one.
+ *
+ * Durations use a wide intermediate instead of pdMS_TO_TICKS(): the default
+ * FreeRTOS macro can overflow before division, even when the result fits.
+ * The result saturates at portMAX_DELAY - 1, never the indefinite-wait sentinel.
+ * Application overrides of pdMS_TO_TICKS do not change this bounded contract.
  *
  * wait() acts on the CALLING task (ulTaskNotifyTake has no task argument):
  * it must be called only by the task whose handle was attached, and
@@ -94,6 +99,21 @@
 #include <concepts>
 
 namespace uart {
+
+namespace detail {
+
+[[nodiscard]] constexpr TickType_t wake_ticks_for(const uint32_t milliseconds) noexcept
+{
+	static_assert(configTICK_RATE_HZ > 0u &&
+	              static_cast<uint64_t>(configTICK_RATE_HZ) <= UINT32_MAX);
+	static_assert(portMAX_DELAY > 0u);
+	constexpr uint64_t maximum = static_cast<uint64_t>(portMAX_DELAY) - 1u;
+	const uint64_t ticks = static_cast<uint64_t>(milliseconds) *
+		static_cast<uint64_t>(configTICK_RATE_HZ) / 1000u;
+	return static_cast<TickType_t>(ticks < maximum ? ticks : maximum);
+}
+
+} // namespace detail
 
 class FreeRtosWake final {
 public:
@@ -136,7 +156,7 @@ public:
 	[[nodiscard]] static uint32_t wait(const uint32_t fallback_ms) noexcept
 	{
 		return static_cast<uint32_t>(
-			ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(fallback_ms)));
+			ulTaskNotifyTake(pdTRUE, detail::wake_ticks_for(fallback_ms)));
 	}
 
 	// The platform adapter owns its clock. This wake layer needs no HAL,

@@ -55,6 +55,9 @@ while (auto packet = link.pop_packet()) {
 ```
 
 `read_native/be/le/bytes` leave output and offset unchanged on failure.
+Enum readers accept scoped `enum class` only, exactly as COBS/RTU do. For
+an unscoped enum, read its integer representation and validate it before
+conversion; no named-enumerator or function-data validation is implicit.
 Packet has no mutable parser cursor. `Packet::size()` is `data().size()`;
 resetting or destroying the last copy returns its memory to its exact owner.
 No function code, exception code or unit value is interpreted by the framer.

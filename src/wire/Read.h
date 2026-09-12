@@ -25,8 +25,21 @@
 
 namespace wire {
 
-template<Scalar T>
-	requires (!std::is_const_v<T>)
+namespace detail {
+
+// All bit patterns of a scoped enum's fixed underlying type are valid enum
+// values (not necessarily named enumerators). An unfixed enum has a narrower
+// value range: loading arbitrary wire bytes into it can already be UB.
+// C++20 cannot portably distinguish fixed from unfixed *unscoped* enums, so
+// readers reject both. Read their underlying integer and validate it first.
+// Writers still accept valid unscoped enum values; their contract is unchanged.
+template<class T>
+concept ReadableScalar = Scalar<T> && !std::is_const_v<T> &&
+	(!std::is_enum_v<T> || !std::is_convertible_v<T, std::underlying_type_t<T>>);
+
+} // namespace detail
+
+template<detail::ReadableScalar T>
 [[nodiscard]] inline bool read_native(
 		const std::span<const uint8_t> data,
 		std::size_t& offset,
@@ -42,7 +55,7 @@ template<Scalar T>
 }
 
 template<EndianScalar T>
-	requires (!std::is_const_v<T>)
+	requires detail::ReadableScalar<T>
 [[nodiscard]] inline bool read_be(
 		const std::span<const uint8_t> data,
 		std::size_t& offset,
@@ -59,7 +72,7 @@ template<EndianScalar T>
 }
 
 template<EndianScalar T>
-	requires (!std::is_const_v<T>)
+	requires detail::ReadableScalar<T>
 [[nodiscard]] inline bool read_le(
 		const std::span<const uint8_t> data,
 		std::size_t& offset,

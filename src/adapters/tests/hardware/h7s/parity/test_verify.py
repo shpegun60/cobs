@@ -47,7 +47,7 @@ def main():
     reject(lambda rows: rows[2].update(body="ff"))
     reject(lambda rows: rows[2].update(rx=""))
     reject(lambda rows: rows[2].update(status="failed"))
-    for index, value in ((0, 2), (3, 480000000), (5, 100500), (7, 1), (8, 19),
+    for index, value in ((0, 99), (3, 480000000), (5, 100500), (7, 1), (8, 19),
                          (9, 1), (10, 1), (11, 0), (12, 1), (13, 0), (15, 0),
                          (16, 1), (19, 2), (20, 0), (23, 2)):
         reject(lambda rows, i=index, v=value: status(rows, "hello", i, v))

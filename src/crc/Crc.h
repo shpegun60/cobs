@@ -156,6 +156,14 @@ concept Policy = requires {
 	{ policy.calculate(bytes) } noexcept -> std::same_as<typename T::value_type>;
 	{ policy.store(destination, value) } noexcept -> std::same_as<void>;
 	{ policy.load(source) } noexcept -> std::same_as<typename T::value_type>;
+	// Protocols also pass temporary spans and computed pointers. Check those
+	// overloads too; noexcept on an lvalue overload says nothing about them.
+	{ policy.calculate(std::span<const uint8_t>{bytes}) }
+		noexcept -> std::same_as<typename T::value_type>;
+	{ policy.store(static_cast<uint8_t*>(destination), value) }
+		noexcept -> std::same_as<void>;
+	{ policy.load(static_cast<const uint8_t*>(source)) }
+		noexcept -> std::same_as<typename T::value_type>;
 };
 
 namespace detail {
@@ -480,10 +488,10 @@ template<Policy PolicyT>
 	const std::size_t body_size = frame.size() - PolicyT::wire_size;
 	const typename PolicyT::value_type expected =
 		policy.calculate(frame.first(body_size));
-	const uint8_t* trailer = frame.data();
-	if constexpr (PolicyT::wire_size != 0u) {
-		trailer += body_size;
-	}
+	// Keep the pointer const, matching the lvalue expression in Policy. Avoid
+	// pointer arithmetic on a null empty span for a zero-width policy.
+	const uint8_t* const trailer = PolicyT::wire_size == 0u
+		? frame.data() : frame.data() + body_size;
 	const typename PolicyT::value_type received =
 		policy.load(trailer);
 	// Match the exact conversion checked by NothrowEqualityComparable. A

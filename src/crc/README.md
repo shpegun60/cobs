@@ -133,6 +133,13 @@ polynomial, compare against a built-in, or require the result to be a CRC. A
 peer may intentionally use a wrapping sum as long as both ends select the same
 policy and wire codec.
 
+All protocols pass the computed result to `store()` as a **const lvalue**;
+`void store(uint8_t*, const value_type&) noexcept` is also supported, even
+with a deleted rvalue-result overload. The concept checks both named and
+temporary span/pointer arguments, because overloading must not select a
+throwing operation inside a protocol's `noexcept` path. None of these checks
+validates checksum semantics, changes the wire, or adds runtime dispatch.
+
 For fixed-width unsigned results, derive from
 `crc::Codec<Value, WireSize, WireOrder>` and implement only `calculate()`:
 
