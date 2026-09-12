@@ -15,6 +15,7 @@ Contents
 - [Wake API: every public operation](#wake-api-every-public-operation)
 - [Raw UART without a protocol adapter](#raw-uart-without-a-protocol-adapter)
 - [COBS with wake but without UartAdapter](#cobs-with-wake-but-without-uartadapter)
+- [RTU with wake but without UartAdapter](#rtu-with-wake-but-without-uartadapter)
 - [IRQ priorities, ownership and task shutdown](#irq-priorities-ownership-and-task-shutdown)
 - [Verify and understand the boundary](#verify-and-understand-the-boundary)
 
@@ -34,7 +35,7 @@ checkboxes to select. Choose one of the complete combinations below.
 | Framed RTU + UART adapter | same | exactly the same body | RTU adapter |
 | Raw UART, no protocol | attach wake, set RX/gap handlers, init UART | `wait(50u); serial.proceed(HAL_GetTick());` | application, if needed |
 | COBS manually bound to UART | raw UART setup plus Endpoint sender/busy/RX/gap | wait, UART proceed, Endpoint poll, pop | no COBS stale timer |
-| RTU without an adapter | application must provide candidate boundaries or a framed stream recovery policy | explicit UART/parser/poll service | application; see [manual integration](INTEGRATION.md#without-an-adapter) |
+| RTU without an adapter | manual framed client + attach wake in owning task | `manual_rtu::step()` includes bounded wait, UART/parser/poll | application request budget; [complete recipe](#rtu-with-wake-but-without-uartadapter) |
 | Busy-loop/bare metal | no wake object required | adapter proceed, or raw UART proceed + Endpoint poll | same as above |
 
 `FreeRtosWake` works with UART regardless of the protocol. It is not a COBS
@@ -305,6 +306,50 @@ COBS requires no incomplete-frame timer here. `poll()` reclaims TX; it is not
 the call that reads UART or runs the COBS RX parser. That parsing happens in
 the RX callback triggered by `serial.proceed()`.
 
+## RTU with wake but without UartAdapter
+
+Use the complete [manual RTU client](INTEGRATION.md#complete-manual-rtu--uart-client)
+with `DOC_WAKE=1`. Its `step()` waits for the shorter of the remaining
+application request budget and a 50-ms health-service fallback, then takes
+a fresh HAL tick and services UART/parser/TX. There is no protocol adapter
+whose deadline can be queried: this is explicitly application-owned timing.
+
+Place this alternative task entry in the **same translation unit** as the
+manual implementation, instead of the adapter-based task above:
+
+<!-- example: examples/rtu_uart_direct.cpp#manual-rtu-task -->
+```cpp
+#include "FreeRTOS.h"
+#include "task.h"
+extern UART_HandleTypeDef huart3;
+
+void communication_task(void*)
+{
+    if (!manual_rtu::wake.attach(manual_rtu::serial, xTaskGetCurrentTaskHandle()) ||
+        !manual_rtu::start(huart3) || !manual_rtu::begin_read()) {
+        for (;;) { vTaskSuspend(nullptr); } // application fatal-error policy
+    }
+    for (;;) {
+        manual_rtu::step();
+        // Observe manual_rtu::result; Completed supplies manual_rtu::value.
+        // This demo sends once. Decide recovery before requesting again.
+    }
+}
+```
+<!-- /example -->
+
+Create this task once using the static-task recipe above. The same ownership,
+notification-index and IRQ-priority rules apply. A request timeout does not
+delete a DMA-borrowed Message: continue servicing and check `stop()` before
+ending the task. `stop()` removes the wake callback after TX is released;
+it is not UART reinitialization or proof that future late RTU replies vanished.
+
+`rtu_uart_direct` and `rtu_uart_direct_wake` run the same fake-HAL controls:
+split response, continuation queued at deadline, empty input, unpublished
+progress, gap, Busy persistence/expiry, live TX after timeout, tick wrap,
+exception and teardown. The wake version also checks the remaining wait
+across wrap. See [verification](TESTING.md) for host versus real-HAL compile scope.
+
 ## IRQ priorities, ownership and task shutdown
 
 - Enable FreeRTOS task notifications and reserve notification index 0 for
@@ -345,8 +390,8 @@ sh src/adapters/tests/check_wake_codegen.sh
 sh doc/examples/check_freertos_arm.sh
 ```
 
-The cookbook covers 16 host configurations, including raw wake, manual COBS
-wake and both task-entry variants. Those use a fake HAL/notification recorder,
+The cookbook covers 19 host configurations, including raw wake, manual COBS/RTU
+wake, split RTU adapter servicing and both task-entry variants. Those use a fake HAL/notification recorder,
 not a real scheduler. Compile the entry TU with the real kernel/HAL headers
 for your port; static task creation requires `configSUPPORT_STATIC_ALLOCATION`.
 The [hardware checkpoint](HARDWARE_EXTENSIONS_2026-09-12.md) separately records

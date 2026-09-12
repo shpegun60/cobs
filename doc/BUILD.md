@@ -113,7 +113,7 @@ sh doc/examples/qt/build.sh
 sh doc/examples/check_freertos_arm.sh
 ```
 
-The last command compiles both task-entry variants against real FreeRTOS/HAL
+The last command compiles both task-entry and both manual RTU variants against real FreeRTOS/HAL
 headers, without DOC_HOST. It does not link, flash, or execute firmware. Set
 `ARM_TOOLS`, `FREERTOS_SOURCE` and `H7S_CUBE_PROJECT` for other local locations.
 The host runner supports `CXX`; Qt supports `QMAKE`, `MAKE` and its kit variables.

@@ -35,11 +35,12 @@ sh doc/examples/qt/build.sh
 DOC_SANITIZE=1 sh doc/examples/build.sh
 ```
 
-The first command checks links/anchors, contents and synchronized excerpts.
-The second builds/runs 16 configurations: portable core programs and
+The first command checks links/anchors, contents and synchronized excerpts;
+the second runs the checker's own negative controls.
+`build.sh` builds/runs 19 configurations: portable core programs and
 STM32/FreeRTOS compositions against host fakes. Output is in
 `doc/examples/out/`, with a compile log and executable per configuration.
-The third builds/runs three real-Qt event-loop programs; its serial I/O is
+`qt/build.sh` builds/runs three real-Qt event-loop programs; its serial I/O is
 fake during self-test, and TCP uses real localhost sockets.
 
 Use GCC/C++20 for the portable runner; set `CXX` if needed. On Windows run it
@@ -79,6 +80,9 @@ ADUs are not described as standard Modbus configurations.
 |---|---|---|
 | `cobs_adapter` | [cobs_adapter.cpp](examples/cobs_adapter.cpp) | UART → COBS adapter, polling, exact echo |
 | `rtu_adapter` | [rtu_adapter.cpp](examples/rtu_adapter.cpp) | Request-framed RTU, two requests with TX Busy, retained reply |
+| `rtu_adapter_split` | [rtu_adapter.cpp](examples/rtu_adapter.cpp) | same checks with `DOC_SPLIT=1`; [prepare/UART/finish/poll order](INTEGRATION.md#rtu-adapter-split-servicing-and-lifecycle) |
+| `rtu_uart_direct` | [rtu_uart_direct.cpp](examples/rtu_uart_direct.cpp) | complete manual client, explicit request budget, Busy/gap/timeout/DMA-lifetime controls |
+| `rtu_uart_direct_wake` | [rtu_uart_direct.cpp](examples/rtu_uart_direct.cpp) | same with `DOC_WAKE=1`; [task integration](FREERTOS.md#rtu-with-wake-but-without-uartadapter) |
 | `cobs_direct` | [cobs_direct.cpp](examples/cobs_direct.cpp) | manual RX/gap/send/busy, no adapter |
 | `cobs_manual_wake` | [cobs_direct.cpp](examples/cobs_direct.cpp) | same program with `DOC_WAKE=1`, no protocol adapter |
 | `uart_wake` | [uart_wake.cpp](examples/uart_wake.cpp) | raw UART, borrowed RX, caller-owned TX, ISR notification |

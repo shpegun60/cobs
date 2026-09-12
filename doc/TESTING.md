@@ -8,10 +8,12 @@ Contents
 - [Fast checks for a user or documentation change](#fast-checks-for-a-user-or-documentation-change)
 - [Host regression suites](#host-regression-suites)
   - [Documentation refresh checkpoint, 2026-09-12](#documentation-refresh-checkpoint-2026-09-12)
+  - [Documentation preservation follow-up, 2026-09-13](#documentation-preservation-follow-up-2026-09-13)
   - [Commands for the complete library suites](#commands-for-the-complete-library-suites)
 - [Consumer, compiler and assembly checks](#consumer-compiler-and-assembly-checks)
 - [Latest full H7S hardware checkpoint](#latest-full-h7s-hardware-checkpoint)
 - [Hardware and benchmark entry points](#hardware-and-benchmark-entry-points)
+  - [Historical raw records: direct links retained](#historical-raw-records-direct-links-retained)
 
 <!-- /toc -->
 
@@ -29,7 +31,7 @@ sh doc/examples/build.sh
 sh doc/examples/qt/build.sh
 ```
 
-These check navigation/excerpts, 16 portable/fake-platform cookbook
+These check navigation/excerpts, 19 portable/fake-platform cookbook
 configurations, and three Qt event-loop programs. The Qt TCP example opens
 localhost sockets; the serial self-tests do not open COM ports. Compilation
 and execution of examples do not replace the complete library regression.
@@ -58,6 +60,35 @@ only a historical-source comment. The removed legacy tree is recorded in
 [the removal/recovery note](LEGACY_REVIEW.md). Saved hardware receipts and
 the connected board were not modified by this checkpoint.
 
+### Documentation preservation follow-up, 2026-09-13
+
+The [content-preservation record](DOC_PRESERVATION.md) maps the previous
+README/integration sections to their current homes. It records restored
+manual RTU/UART examples, split adapter servicing, the README masthead and
+the benchmark/raw-evidence links. The initial 16-configuration checkpoint
+above is unchanged; the expanded cookbook now has 19 configurations.
+
+| Gate repeated for the preservation follow-up | Observed result |
+|---|---|
+| Cookbook, WSL GCC with ASan/UBSan | 19/19 configurations pass, including process-exit destruction |
+| Cookbook, MinGW GCC 13 | 19/19 configurations compile and execute successfully |
+| Manual RTU/UART client | 53 checks without wake; 55 with wake |
+| Combined/split RTU adapter recipe | both pass Busy, queued-continuation, empty-input and frozen-progress controls |
+| Real H7RS HAL / FreeRTOS headers | four strict ARM GCC compiles: COBS task, RTU task, manual RTU with/without wake; no DOC_HOST |
+| Qt cookbook | all three event-loop programs pass help/self-test/invalid-option checks; no COM port |
+| Existing STM32/FreeRTOS adapter suite | `sh src/adapters/tests/run.sh` passes under WSL, including sanitized execution, parity, and the finite-wait tick matrix |
+| Navigation/excerpts and negative controls | 26 maintained documents; 12 checker tests pass, including deletion of a still-existing target's link |
+| Pre-reorganization README local destinations | 64/65 still directly linked by maintained guides; the sole exception is approved doc/old deletion with Git recovery |
+
+This is documentation/example validation. No production implementation was
+changed and no board was flashed. The raw hardware files remain byte-identical
+to the pre-reorganization baseline; older results are not relabelled as fresh.
+
+The manual RTU recipe has a deliberately application-owned, fixed request
+budget. It is not a new library timer or a copy of the UART adapter's stale
+rule. Both servicing forms of that adapter also check queued continuation
+at deadline, empty input and frozen DMA progress.
+
 ### Commands for the complete library suites
 
 Run from the repository root with a C++20 compiler and the documented tools:
@@ -82,8 +113,8 @@ platform diagnostic rather than treating an unsupported sanitizer as a pass.
 
 | Check | Entry point |
 |---|---|
-| Real downstream COBS consumer | `sh src/cobs/tests/qmake_consumer/run.sh` |
-| Real downstream RTU consumer | `sh src/modbus/rtu/tests/qmake_consumer/run.sh` |
+| Real downstream COBS consumer | `sh src/cobs/tests/qmake_consumer/run.sh`; [complete source](../src/cobs/tests/qmake_consumer/main.cpp) |
+| Real downstream RTU consumer | `sh src/modbus/rtu/tests/qmake_consumer/run.sh`; [complete source](../src/modbus/rtu/tests/qmake_consumer/main.cpp) |
 | Real downstream TCP consumer | `sh src/modbus/tcp/tests/qmake_consumer/run.sh` |
 | Strict GCC/LTO consumers | `sh src/wire/tests/check_gcc_matrix.sh` |
 | MSVC consumers/contracts | `src/wire/tests/check_msvc.ps1` |
@@ -134,6 +165,7 @@ touching a connected board; a documentation check is not authority to flash.
 | RTU and high-baud framing | [RTU H7S harness](../src/modbus/rtu/tests/hardware/h7s/README.md) |
 | TCP core over UART | [TCP H7S harness](../src/modbus/tcp/tests/hardware/h7s/README.md) |
 | UART CPU/chunks | [UART bench](../src/uart/tests/bench/README.md) |
+| COBS host codec/Endpoint hot paths | [host benchmark](../src/cobs/tests/bench/README.md); `sh src/cobs/tests/bench/run.sh` |
 | Matched protocol comparison | [shared H7S harness](../src/wire/tests/hardware/h7s/README.md), [comparison](PROTOCOL_COMPARISON.md) |
 | CRC width/method | [live CRC benchmark](../src/modbus/rtu/tests/hardware/h7s/CRC_BENCHMARK.md) |
 | Heap/Pool + peripheral CRC | [measurements and usage](HEAP_AND_HARDWARE_CRC.md) |
@@ -144,3 +176,31 @@ The [documentation index](README.md#tests-measurements-and-hardware-receipts)
 links earlier audits, plans and performance reports. Their dates, counts and
 raw JSON/JSONL/CSV remain historical snapshots, not automatically updated test
 results. This documentation change leaves those evidence files untouched.
+
+### Historical raw records: direct links retained
+
+These are the original raw entry points from the pre-reorganization README,
+not new runs or performance promises for the current revision. Use each
+harness/report for configuration, provenance and acceptance limits. In
+particular, failed high-baud burst controls remain failures.
+
+| Original checkpoint | Raw record / explanation |
+|---|---|
+| COBS audited baseline, 2026-09-01 | [JSONL](../src/cobs/tests/hardware/h7s/results_audited_2026-09-01.jsonl) |
+| COBS concise Format/Pool API, 2026-09-01 | [JSONL](../src/cobs/tests/hardware/h7s/results_format_api_2026-09-01.jsonl) |
+| UART default 128x8 at 10M, 2026-09-01 | [CSV](../src/uart/tests/bench/results_default128x8_10M_audited_2026-09-01.csv); [chunk comparison](../src/uart/tests/bench/README.md#fresh-audited-run-2026-09-01) |
+| RTU accepted baseline, 2026-09-02 | [JSONL](../src/modbus/rtu/tests/hardware/h7s/results_audited_2026-09-02.jsonl) |
+| RTU scalar API, 2026-09-02 | [JSONL](../src/modbus/rtu/tests/hardware/h7s/results_scalar_api_final_2026-09-02.jsonl) |
+| RTU paranoid Os, 2026-09-02 | [JSONL](../src/modbus/rtu/tests/hardware/h7s/results_paranoid_final_2026-09-02.jsonl) |
+| RTU O2, 2026-09-02 | [JSONL](../src/modbus/rtu/tests/hardware/h7s/results_paranoid_o2_2026-09-02.jsonl) |
+| RTU O3/LTO, 2026-09-02 | [JSONL](../src/modbus/rtu/tests/hardware/h7s/results_paranoid_o3_lto_2026-09-02.jsonl) |
+| RTU extracted CRC module, 2026-09-05 | [JSONL](../src/modbus/rtu/tests/hardware/h7s/results_crc_library_2026-09-05.jsonl) |
+| RTU Bitwise/Table A/B, 2026-09-05 | [JSONL](../src/modbus/rtu/tests/hardware/h7s/results_crc_policy_2026-09-05.jsonl) |
+| RTU 3M IDLE-boundary probe, 2026-09-02 | [JSONL](../src/modbus/rtu/tests/hardware/h7s/results_high_baud_probe_2026-09-02.jsonl) |
+| RTU framing versus burst, 2026-09-05 | [JSONL](../src/modbus/rtu/tests/hardware/h7s/results_framing_2026-09-05.jsonl) |
+
+The historical 10M COBS extended-run counts (61,611 frames / 19,133,016 payload
+bytes) remain in the [COBS H7S report](../src/cobs/tests/hardware/h7s/README.md).
+The CPU/throughput methodology remains in [COBS performance](COBS_PERFORMANCE.md)
+and [matched COBS/RTU comparison](PROTOCOL_COMPARISON.md). A host benchmark run
+does not validate the current board or reproduce those old measurements.

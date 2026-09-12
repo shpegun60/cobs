@@ -20,15 +20,18 @@ sh doc/examples/build.sh
 sh doc/examples/qt/build.sh
 ```
 
-`build.sh` runs 16 portable/host-fake configurations. `qt/build.sh` runs three
+`build.sh` runs 19 portable/host-fake configurations. `qt/build.sh` runs three
 Qt programs; serial self-tests use a fake port, TCP uses localhost. Neither
 flashes a board. `check_freertos_arm.sh` optionally compiles both task-entry
-variants against real H7RS HAL/FreeRTOS headers, without executing firmware.
+variants and both manual RTU variants against real H7RS HAL/FreeRTOS headers,
+without executing firmware.
 
 ## What is application code and what is test scaffolding
 
 `freertos_entry.cpp` exposes the real task entry outside `DOC_HOST`; choose
-RTU with `DOC_RTU=1`. Other MCU programs have explicit host mains that inject
+RTU with `DOC_RTU=1`. `rtu_uart_direct.cpp` likewise keeps its manual UART/RTU
+implementation outside DOC_HOST; enable DOC_WAKE for its bounded task wait.
+Other MCU programs have explicit host mains that inject
 fake interrupts. `platform_fake.h`, `qt/LoopPort.h` and `Example.h` are
 test/example helpers, not extra library dependencies for your firmware.
 

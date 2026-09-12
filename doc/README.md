@@ -34,6 +34,7 @@ was tested at that checkpoint; plans and old code are history, not API recipes.
 | [FreeRTOS](FREERTOS.md) | you need a sleeping task with the same COBS/RTU service loop |
 | [Build](BUILD.md) | you need include paths, sources, qmake/CMake or toolchain commands |
 | [Testing](TESTING.md) | you need the right check and its actual coverage boundary |
+| [Documentation preservation](DOC_PRESERVATION.md) | you want to see where older README/integration content went |
 
 ## Current contracts and module reference
 
@@ -82,6 +83,8 @@ a later table does not retroactively change an older measurement.
 ### Performance and reproducible harnesses
 
 - [COBS CPU and throughput matrix](COBS_PERFORMANCE.md).
+- [COBS host hot-path benchmark](../src/cobs/tests/bench/README.md).
+- [Historical raw hardware records, directly indexed](TESTING.md#historical-raw-records-direct-links-retained).
 - [Matched COBS versus RTU comparison](PROTOCOL_COMPARISON.md).
 - [Heap versus Pool and STM32 CRC](HEAP_AND_HARDWARE_CRC.md).
 - [CRC width/method H7S benchmark](../src/modbus/rtu/tests/hardware/h7s/CRC_BENCHMARK.md).

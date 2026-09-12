@@ -1,5 +1,30 @@
-<!-- Author: shpegun60; SPDX-License-Identifier: MIT -->
-# COBS, Modbus RTU/TCP and STM32 UART
+<!--
+Author: shpegun60
+SPDX-License-Identifier: MIT
+-->
+
+# CRC, COBS, Modbus RTU/TCP + STM32 DMA UART for C++20
+
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C.svg)](https://en.cppreference.com/w/cpp/20)
+[![STM32](https://img.shields.io/badge/STM32-DMA%20UART-03234B.svg)](https://www.st.com/stm32)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+Production-oriented C++20 libraries for framed serial communication:
+
+- a streaming COBS codec and ownership-safe packet endpoint;
+- a protocol-independent CRC8/16/32/64 policy library with bitwise/table modes
+  and `NoCrc`;
+- a Modbus RTU endpoint with policy-derived integrity framing, explicit
+  protocol metadata, and the same ownership model;
+- a transport-independent [Modbus TCP endpoint](src/modbus/tcp/README.md),
+  framed only by MBAP, with the same storage and ownership API; standard
+  NoCrc by default, optional explicit private CRC/size extensions;
+- an always-DMA STM32 UART byte transport with zero-copy RX chunks;
+- fixed-pool or heap-backed COBS and Modbus storage;
+- explicit transport-gap propagation, backpressure, recovery, and statistics;
+- host, compile-fail, Cortex-M, benchmark, and real-silicon verification.
+
+Author: [shpegun60](https://github.com/shpegun60)
 
 <!-- toc -->
 
@@ -25,6 +50,9 @@ at compile time; no virtual transport hierarchy is required.
 [Documentation index](doc/README.md) · [Examples](doc/EXAMPLES.md) ·
 [Qt](doc/QT.md) · [FreeRTOS](doc/FREERTOS.md) · [Build](doc/BUILD.md) ·
 [Testing and hardware evidence](doc/TESTING.md)
+
+Older documentation was reorganized, not treated as disposable:
+[where each previous section lives, corrections and recovery](doc/DOC_PRESERVATION.md).
 
 ## Choose a protocol
 

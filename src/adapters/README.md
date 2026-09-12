@@ -35,6 +35,11 @@ Keep driver/port and endpoint alive longer than their adapter. Install handlers
 once, in the owning execution context. An adapter's bind does not initialize
 hardware, and replacing its underlying RX callback breaks its wiring.
 
+The [STM32 lifecycle and split RTU servicing reference](../../doc/INTEGRATION.md#rtu-adapter-split-servicing-and-lifecycle)
+documents `prepare → UART proceed → finish → Endpoint poll`, binding failures,
+detach semantics and all timing accessors. A [complete manual RTU client](../../doc/INTEGRATION.md#complete-manual-rtu--uart-client)
+also shows the no-UartAdapter option and its explicit application request budget.
+
 The guides contain full lifecycle, Busy/failure, disconnect and wake recipes.
 [Testing](../../doc/TESTING.md) distinguishes host fakes, real Qt,
 real-FreeRTOS compile checks and live MCU receipts.

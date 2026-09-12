@@ -130,9 +130,10 @@ The stable documentation is split by boundary:
 
 - `doc/INTEGRATION.md` — the usage guide: every supported composition (RTU
   through `UartAdapter`, COBS through its adapter or on the driver directly, FreeRTOS on top, RTU
-  without the adapter, any other byte transport); its snippets are the
-  translation units in `doc/examples/`, compiled and run by
-  `sh doc/examples/build.sh` against the real headers and the host fakes;
+  without the adapter, any other byte transport). Complete programs are in
+  `doc/examples/`; synchronized source excerpts are checked by `doc/check_docs.py`.
+  `sh doc/examples/build.sh` runs 19 portable/host-fake configurations, not
+  a claim that every illustrative fragment or hardware setup is executed;
 - `doc/ARCHITECTURE.md` — canonical component/API/ownership entry point for COBS;
 - `doc/PROTOCOL.md` — normative COBS wire format (v2: length prefix + CRC trailer) and decoder behavior;
 - `doc/STORAGE.md` — the shared raw-byte storage contract used by both protocols;
@@ -350,3 +351,9 @@ excerpts with `python -B doc/check_docs.py` (use `--write` to refresh generated
 blocks), then run `sh doc/examples/build.sh` and `sh doc/examples/qt/build.sh`.
 The removed `doc/old/` code remains in Git at `f09494a`; do not resurrect its
 obsolete API as a current integration example.
+
+`doc/DOC_PRESERVATION.md` maps older README/integration content to its current
+home and records justified replacements. Maintain that map when moving useful
+content. The docs checker guards critical navigation against silent link removal;
+run `python -B doc/test_docs.py` too. Manual UART/RTU uses an explicit application
+request budget, not a second copy of the production adapter's stale timer.

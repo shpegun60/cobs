@@ -1,6 +1,6 @@
 #!/bin/sh
 # Author: shpegun60; SPDX-License-Identifier: MIT
-# Compile-only proof of the task entry with REAL H7RS HAL + FreeRTOS headers.
+# Compile-only proof of task entries/manual RTU with REAL H7RS HAL + FreeRTOS headers.
 # No host fake, linking, firmware image, COM port, flashing or board mutation.
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -18,9 +18,15 @@ mkdir -p "$OUT"
 for file in "$TOOLS/arm-none-eabi-g++.exe" "$PROJECT/Boot/Core/Inc/main.h" "$KERNEL/include/task.h" "$PORT/portmacro.h"; do
     [ -f "$file" ] || { echo "required local dependency missing: $file" >&2; exit 1; }
 done
-for protocol in 0 1; do
+for mode in task-cobs task-rtu manual-rtu manual-rtu-wake; do
+    case "$mode" in
+        task-cobs) source=freertos_entry.cpp; define=-DDOC_RTU=0 ;;
+        task-rtu) source=freertos_entry.cpp; define=-DDOC_RTU=1 ;;
+        manual-rtu) source=rtu_uart_direct.cpp; define=-DDOC_WAKE=0 ;;
+        manual-rtu-wake) source=rtu_uart_direct.cpp; define=-DDOC_WAKE=1 ;;
+    esac
     "$TOOLS/arm-none-eabi-g++.exe" -std=gnu++20 -mcpu=cortex-m7 -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard \
-        -DUSE_HAL_DRIVER -DSTM32H7S3xx -DDOC_RTU="$protocol" -Os --specs=nano.specs \
+        -DUSE_HAL_DRIVER -DSTM32H7S3xx "$define" -Os --specs=nano.specs \
         -fno-exceptions -fno-rtti -fno-use-cxa-atexit -ffunction-sections -fdata-sections \
         -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Werror \
         -I"$ROOT/src" -I"$PROJECT/Boot/Core/Inc" \
@@ -30,6 +36,6 @@ for protocol in 0 1; do
         -isystem "$PROJECT/Drivers/CMSIS/Device/ST/STM32H7RSxx/Include" \
         -isystem "$PROJECT/Drivers/CMSIS/Include" -isystem "$KERNEL/include" -isystem "$PORT" \
         -isystem "$ROOT/libs/delegate" -isystem "$ROOT/libs/spsc" -isystem "$ROOT/libs/spsc/src" \
-        -c "$HERE/freertos_entry.cpp" -o "$OUT/task-$protocol.o"
-    echo "real FreeRTOS/HAL task entry: DOC_RTU=$protocol compile PASS"
+        -c "$HERE/$source" -o "$OUT/$mode.o"
+    echo "real FreeRTOS/HAL: $mode compile PASS"
 done

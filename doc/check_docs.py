@@ -22,9 +22,25 @@ MANAGED = (
     "src/modbus/README.md", "src/modbus/ARCHITECTURE.md", "src/modbus/tcp/README.md",
     "src/crc/README.md", "doc/LEGACY_REVIEW.md", "doc/examples/README.md",
     "src/adapters/README.md", "src/cobs/README.md", "src/wire/README.md", "src/uart/README.md",
+    "doc/DOC_PRESERVATION.md",
 )
 TOC = re.compile(r"<!-- toc -->.*?<!-- /toc -->", re.S)
 EXCERPT = re.compile(r"<!-- example: ([^\n]+) -->.*?<!-- /example -->", re.S)
+# These routes were once silently removed while every remaining link still passed.
+# An intentional move needs a replacement route here and in DOC_PRESERVATION.md.
+PRESERVED_LINKS = {
+    "README.md": {"doc/USER_GUIDE.md", "doc/DOC_PRESERVATION.md"},
+    "doc/README.md": {"DOC_PRESERVATION.md", "TESTING.md"},
+    "doc/INTEGRATION.md": {"examples/rtu_uart_direct.cpp", "examples/rtu_adapter.cpp"},
+    "doc/TESTING.md": {
+        "../src/cobs/tests/bench/README.md",
+        "../src/cobs/tests/qmake_consumer/main.cpp",
+        "../src/modbus/rtu/tests/qmake_consumer/main.cpp",
+        "../src/cobs/tests/hardware/h7s/results_audited_2026-09-01.jsonl",
+        "../src/cobs/tests/hardware/h7s/results_format_api_2026-09-01.jsonl",
+        "../src/uart/tests/bench/results_default128x8_10M_audited_2026-09-01.csv",
+    },
+}
 
 
 def without_fences(text: str) -> str:
@@ -115,15 +131,24 @@ def format_toc(text: str) -> str:
     return text[:first.end()] + "\n\n" + block + text[first.end():]
 
 
-def links(path: Path, text: str, errors: list[str]) -> int:
+def link_targets(text: str) -> list[str]:
     plain = without_fences(text)
     # Inline links and reference definitions. Titles may follow a quoted space;
     # targets containing spaces must use the normal Markdown <...> form.
     targets = re.findall(r"!?\[[^\]\n]*\]\((<[^>]+>|[^\s)]+)(?:\s+\"[^\"]*\")?\)", plain)
     targets += re.findall(r"^\s*\[[^]]+\]:\s*(<[^>]+>|\S+)", plain, re.M)
+    return [target.removeprefix("<").removesuffix(">") for target in targets]
+
+
+def preserved_links(path: Path, text: str, errors: list[str]) -> None:
+    name = path.relative_to(ROOT).as_posix()
+    for target in sorted(PRESERVED_LINKS.get(name, set()) - set(link_targets(text))):
+        errors.append(f"{name}: preserved navigation removed: {target}")
+
+
+def links(path: Path, text: str, errors: list[str]) -> int:
     count = 0
-    for target in targets:
-        target = target.removeprefix("<").removesuffix(">")
+    for target in link_targets(text):
         url = urlsplit(target)
         if url.scheme or url.netloc:
             continue # external URLs are references, not checked by this offline gate
@@ -161,6 +186,8 @@ def main() -> int:
         except (OSError, ValueError) as error:
             errors.append(f"{name}: {error}")
     total = sum(links(path, text, errors) for path, text in documents)
+    for path, text in documents:
+        preserved_links(path, text, errors)
     for error in errors:
         print(f"FAIL {error}")
     if errors:

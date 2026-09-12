@@ -8,9 +8,11 @@ Contents
 - [Supported combinations](#supported-combinations)
 - [Common setup and ownership](#common-setup-and-ownership)
 - [STM32 with an adapter](#stm32-with-an-adapter)
+  - [RTU adapter: split servicing and lifecycle](#rtu-adapter-split-servicing-and-lifecycle)
 - [Without an adapter](#without-an-adapter)
   - [Bare RTU requires a whole candidate](#bare-rtu-requires-a-whole-candidate)
   - [Framed RTU can consume fragments](#framed-rtu-can-consume-fragments)
+  - [Complete manual RTU + UART client](#complete-manual-rtu--uart-client)
 - [Your own byte transport](#your-own-byte-transport)
 - [Error handling and shutdown](#error-handling-and-shutdown)
 - [Storage, CRC and build dependencies](#storage-crc-and-build-dependencies)
@@ -35,6 +37,7 @@ labelled as such; a code fragment does not pretend to include platform startup.
 | Raw UART + optional FreeRTOS wake | application byte handler | UART proceed | [raw UART](FREERTOS.md#raw-uart-without-a-protocol-adapter) |
 | Bare RTU, any externally delimited transport | one whole ADU → receive_adu | Endpoint poll | [rtu_direct.cpp](examples/rtu_direct.cpp) |
 | Framed RTU, custom transport | arbitrary cuts → consume | transport service + Endpoint poll; own stale policy | [both RTU roles](examples/rtu_framing.cpp) |
+| Framed RTU + UART, no protocol adapter | manually installed RX/gap/send/busy | one-request budget + UART proceed + Endpoint poll | [complete manual client](#complete-manual-rtu--uart-client) |
 | COBS + QSerialPort | SerialAdapter | Qt event loop | [Qt COBS](QT.md#cobs-over-qserialport) |
 | RTU + QSerialPort | framed SerialAdapter or RtuClient | Qt event loop | [Qt RTU](QT.md#rtu-client-and-server) |
 | TCP + QTcpSocket | arbitrary cuts → consume, MBAP only | application socket glue/event loop | [Qt TCP](QT.md#tcp-over-qtcpsocket) |
@@ -83,15 +86,15 @@ version is [cobs_adapter.cpp](examples/cobs_adapter.cpp):
 using Serial = Uart<256, 4>;
 using Link = cobs::Endpoint<wire::Pool<8, 2>>;
 static Serial serial;
-static Link endpoint;
-static cobs::UartAdapter adapter{serial, endpoint};
+static Link g_endpoint;
+static cobs::UartAdapter adapter{serial, g_endpoint};
 
 bool start(UART_HandleTypeDef& handle) {
     return serial.init(&handle) && adapter.bind();
 }
 void loop_step() {
     adapter.proceed();
-    while (auto packet = endpoint.pop_packet()) {
+    while (auto packet = g_endpoint.pop_packet()) {
         // Read packet.data() here, or retain a Packet in this same context.
     }
 }
@@ -112,8 +115,8 @@ For RTU, replace the protocol and adapter types:
 namespace framing = modbus::rtu::framing;
 using Link = modbus::rtu::Endpoint<wire::Pool<8, 2>, modbus::rtu::Format<>,
     framing::Standard<framing::Direction::Request>>;
-static Link endpoint;
-static modbus::rtu::UartAdapter adapter{serial, endpoint};
+static Link g_endpoint;
+static modbus::rtu::UartAdapter adapter{serial, g_endpoint};
 ```
 
 This is an alternative declaration block, not a second adapter to bind to the
@@ -131,6 +134,65 @@ adapter.proceed();
 See [FreeRTOS](FREERTOS.md) for the full task creation, attach order, wake API,
 pending replies, error policy and raw/no-adapter variants. There is no COBS
 incomplete-frame timer hiding behind this common spelling.
+
+### RTU adapter: split servicing and lifecycle
+
+Ordinary code uses `adapter.proceed()`. If your loop needs separate timing
+scopes around UART work, use this complete alternative from
+[rtu_adapter.cpp](examples/rtu_adapter.cpp), built also with `DOC_SPLIT=1`:
+
+<!-- example: examples/rtu_adapter.cpp#rtu-split-service -->
+```cpp
+void service_transport() noexcept
+{
+#if DOC_SPLIT
+	const uint32_t now = HAL_GetTick(); // one clock sample for all four calls
+	adapter.prepare(now);              // baud refresh and DMA-progress snapshot
+	serial.proceed(now);               // deliver queued RX/gaps BEFORE judging expiry
+	adapter.finish(now);               // judge the incomplete frame after delivery
+	g_endpoint.poll(now);              // finish() alone does not reclaim TX
+#else
+	adapter.proceed();                 // ordinary application: the same steps internally
+#endif
+}
+```
+<!-- /example -->
+
+Call `service_transport()`, then drain packets and send pending replies as
+usual. Do not also call `adapter.proceed()` in that iteration. All four calls
+use the same millisecond clock/sample; no synthetic tick mixed with HAL time.
+`prepare` must precede UART delivery, `finish` must follow it, and `poll`
+must remain last. Otherwise a continuation already queued at its deadline can
+be expired before delivery, or a completed TX block can remain unreclaimed.
+
+| STM32 adapter operation | Contract |
+|---|---|
+| `bind()`, `bound()`, `unbind()` | same names for COBS/RTU; driver initialized first; failed bind/unbind changes neither wiring nor binding |
+| `proceed()` / `proceed(now)` | service UART, protocol-specific recovery and endpoint TX reclamation; automatic or explicit HAL-millisecond domain |
+| `deadline_in_ms()` / `(now)` | delay until RTU incomplete-frame expiry; COBS always returns `no_deadline` |
+| RTU `prepare(now)` / `finish(now)` | advanced split of proceed, with UART delivery between them and endpoint poll afterward |
+| RTU `on_rx(bytes)` / `on_gap()` | entry points installed by bind; custom callers must preserve service order; empty RX does not restart a deadline |
+| RTU `baud()`, `full_chunk_ms()`, `deadline_armed()` | inspect the adapter's current timing state; baud is refreshed during prepare/proceed |
+| RTU `chunk_time_ms(baud)` | pure geometry-based duration helper, rounded up; returns 0 for baud 0 (bind still requires a real nonzero rate) |
+
+One adapter owns a UART's RX/gap callbacks at a time. There is no ownership
+registry preventing a second adapter from overwriting the first one's callbacks.
+Explicitly unbind the old one before installing another. An active endpoint TX
+blocks unbind even if DMA has just completed: service poll first. Destruction
+detaches RX but does not make an outstanding TX borrow disappear; keep the
+driver and endpoint alive and service that borrow to completion before destroying them.
+
+Detaching RTU silently discards its incomplete candidate. Detaching COBS uses
+the counted `notify_gap()` recovery: discard through the next delimiter, which
+can sacrifice the first new frame after rebind. Already queued Packets survive
+both. Neither detach is a promise that the next byte starts a valid frame.
+
+RTU's adapter allows 5 ms after a partial published chunk, or one full chunk's
+transfer time plus 5 ms after a full chunk, using 12 bits/character and the
+current UART baud. At expiry it checks **new** DMA progress, not merely a
+nonzero counter. The cookbook checks queued continuation at the deadline,
+empty input and frozen progress under both combined and split servicing.
+This is transport-aware stale recovery, not strict physical t1.5/t3.5 timing.
 
 ## Without an adapter
 
@@ -177,7 +239,8 @@ candidate is abandoned. `expire_incomplete()` is an explicit stale event;
 reports known physical loss. They are not interchangeable with successful
 frame completion. For an actual STM32 UART, use the supplied adapter unless
 you intend to own and test its progress/deadline responsibilities yourself.
-This guide does not replace that proven code with a partial timer pseudocode.
+The complete manual example below deliberately uses a different, application
+transaction budget; it does not approximate the UART adapter's silence rule.
 
 The standard table rejects unknown RX functions and deliberately does not
 claim every possible variable Modbus layout (notably 0x2B). Extend it for
@@ -185,6 +248,192 @@ private functions with an explicit layout. Known TX layouts are checked;
 unknown TX layouts pass through instead of being a universal function filter.
 See [RTU framing](../src/modbus/README.md) and
 [the private-prefix example](EXAMPLES.md#rtu-framing-and-private-functions).
+
+### Complete manual RTU + UART client
+
+[rtu_uart_direct.cpp](examples/rtu_uart_direct.cpp) wires the actual STM32 UART
+to a Response-framed endpoint, without `UartAdapter`. The demo reads one
+holding register (unit `0x11`, FC03, register 0, count 1). It has one pending
+Message, no hidden queue, no automatic retry, and a **1000-ms total request
+budget** including Busy, TX and response. Choose a budget for your actual
+baud, maximum frame, peer processing time and scheduling latency.
+
+The following three consecutive blocks contain the entire firmware-side
+implementation. Leave `DOC_HOST` undefined: that section of the source is
+only the executable fake-HAL tests. For bare metal, `DOC_WAKE` defaults to 0.
+
+<!-- example: examples/rtu_uart_direct.cpp#manual-rtu-types -->
+```cpp
+#define UART_ENGINE_IMPLEMENT // exactly one TU in the firmware
+#include "uart/Uart.h"
+#include "modbus/rtu/Rtu.h"
+#include <algorithm>
+
+#ifndef DOC_WAKE
+#define DOC_WAKE 0
+#endif
+#if DOC_WAKE
+#include "adapters/freertos/FreeRtosWake.h"
+#endif
+
+namespace manual_rtu {
+namespace framing = modbus::rtu::framing;
+using Serial = Uart<256, 4>;
+using Link = modbus::rtu::Endpoint<wire::Pool<4, 2>, modbus::rtu::Format<>,
+    framing::Standard<framing::Direction::Response>>;
+
+// Place the UART AND its borrowed Pool TX buffers in DMA-accessible RAM.
+static Serial serial;
+static Link endpoint;
+static Link::Message pending;
+#if DOC_WAKE
+static uart::FreeRtosWake wake;
+#endif
+enum class Result { Idle, Pending, Waiting, Completed, Timeout, Gap, Failed, ResponseError };
+static Result result = Result::Idle;
+static bool initialized = false;
+static uint16_t value = 0;
+static uint32_t started_ms = 0;
+constexpr uint32_t request_budget_ms = 1000u; // Busy + TX + response, not RTU t1.5/t3.5
+
+bool active() noexcept { return result == Result::Pending || result == Result::Waiting; }
+```
+<!-- /example -->
+
+<!-- example: examples/rtu_uart_direct.cpp#manual-rtu-start -->
+```cpp
+bool start(UART_HandleTypeDef& handle) noexcept
+{
+    if (!serial.init(&handle) || !endpoint.bind(
+            Link::Sender{tiny::bind<&Serial::send>(serial)},
+            Link::BusyQuery{tiny::bind<&Serial::tx_busy>(serial)})) { return false; }
+    serial.setRxHandler(Serial::RxHandler{[](std::span<const uint8_t> bytes) noexcept {
+        if (active()) { endpoint.consume(bytes); } // arbitrary cuts, never receive_adu(chunk)
+    }});
+    serial.setRxGapHandler(Serial::GapHandler{[]() noexcept {
+        endpoint.notify_gap();
+        if (active()) { pending = {}; result = Result::Gap; }
+    }});
+    initialized = true;
+    return true;
+}
+
+bool begin_read() noexcept
+{
+    if (!initialized || active() || endpoint.tx_active()) { return false; }
+    // Caller establishes a new request boundary; this cannot identify future late responses.
+    endpoint.discard_incomplete();
+    while (auto packet = endpoint.pop_packet()) {} // drop previously queued unsolicited packets
+    pending = endpoint.make_message(0x11u, 0x03u);
+    if (!pending || !pending.append_be(uint16_t{0}) || !pending.append_be(uint16_t{1})) {
+        pending = {}; result = Result::Failed; return false;
+    }
+    started_ms = HAL_GetTick();
+    result = Result::Pending;
+    return true;
+}
+```
+<!-- /example -->
+
+<!-- example: examples/rtu_uart_direct.cpp#manual-rtu-service -->
+```cpp
+void step() noexcept
+{
+#if DOC_WAKE
+    uint32_t wait_ms = 50u; // periodic UART health service, also when no request is active
+    if (active()) {
+        const uint32_t elapsed = HAL_GetTick() - started_ms;
+        wait_ms = elapsed >= request_budget_ms ? 0u
+            : std::min(wait_ms, request_budget_ms - elapsed);
+    }
+    (void)uart::FreeRtosWake::wait(wait_ms); // called only by the task attached to wake
+#endif
+    const uint32_t now = HAL_GetTick(); // fresh after waking; one tick for this iteration
+    serial.proceed(now);               // RX/gap callbacks execute here, not in ISR
+    endpoint.poll(now);                // release only TX memory no longer borrowed
+
+    // Drain already published responses BEFORE applying the application's deadline.
+    while (auto packet = endpoint.pop_packet()) {
+        if (result != Result::Waiting || packet.address() != 0x11u ||
+            (packet.function() != 0x03u && packet.function() != 0x83u)) { continue; }
+        std::size_t offset = 0;
+        uint8_t count = 0;
+        uint16_t received = 0;
+        const bool valid = packet.function() == 0x03u &&
+            modbus::read_be(packet.data(), offset, count) && count == 2u &&
+            modbus::read_be(packet.data(), offset, received) && offset == packet.size();
+        if (valid) { value = received; }
+        result = valid ? Result::Completed : Result::ResponseError;
+        endpoint.discard_incomplete(); // no second response belongs to this one-request demo
+    }
+
+    if (active() && static_cast<uint32_t>(now - started_ms) >= request_budget_ms) {
+        pending = {};                 // cancels an unsent Message; not an accepted DMA borrow
+        endpoint.expire_incomplete();  // explicit transaction abandonment, not a silence guess
+        result = Result::Timeout;
+    }
+    if (result == Result::Pending) {
+        const auto sent = endpoint.send(pending);
+        if (sent == wire::SendResult::Sent) { result = Result::Waiting; }
+        else if (sent != wire::SendResult::Busy) {
+            pending = {}; result = Result::Failed; // no automatic physical-error retry
+        }
+    }
+}
+
+bool stop() noexcept
+{
+    // Keep calling step until the transport has provably released its borrow.
+    if (serial.tx_busy() || endpoint.tx_active() || !endpoint.unbind()) { return false; }
+    serial.setRxHandler({});
+    serial.setRxGapHandler({});
+#if DOC_WAKE
+    serial.setWakeHandler({});
+#endif
+    pending = {};
+    endpoint.discard_incomplete();
+    while (auto packet = endpoint.pop_packet()) {}
+    initialized = false;
+    result = Result::Idle;
+    return true;
+}
+} // namespace manual_rtu
+```
+<!-- /example -->
+
+Use this code in one application TU. After platform configuration, check
+`manual_rtu::start(huart3)`, then check `manual_rtu::begin_read()`. Call
+`manual_rtu::step()` continuously from the same owner loop. Once `result` is
+`Completed`, `value` holds the validated register. The other terminal results
+are Timeout, Gap, Failed or ResponseError (including Modbus exceptions).
+Observe/save the result before beginning another request. Initialization is
+one-shot; `stop()` detaches the protocol, not a UART deinit/reinit facility.
+
+Important boundaries of this explicit policy:
+
+- A response is assembled from arbitrary chunks; UART IDLE never means ADU end.
+- A complete response already published to the driver is processed before the
+  deadline verdict. This is a cooperative application budget, not a physical
+  timestamp proving when the last UART bit arrived.
+- Empty input, repeated partial bytes and unpublished DMA progress do not extend
+  the fixed transaction budget. No separate per-fragment stale timer is used.
+- Timeout cancels pending work and explicitly expires a partial response, but
+  does not free a live TX borrow. Keep servicing until ownership is released;
+  `stop()` and the next request refuse an outstanding endpoint TX.
+- Incoming bytes outside an active request are ignored. Starting a request
+  clears parser/queued data, **not unpublished DMA bytes or future late replies**.
+  RTU has no transaction ID: a late reply with the same address/function may
+  match a new request. After loss/timeout, establish your application's recovery
+  boundary before retrying; this demo does not prove at-most-once execution.
+- `Failed` is not replayed automatically. Even a transport-refused send may
+  have put a prefix on the physical line; the application decides recovery.
+
+For the sleeping-task variant and its startup sequence, see
+[manual RTU with FreeRTOS wake](FREERTOS.md#rtu-with-wake-but-without-uartadapter).
+Both variants execute the same deadline, gap, Busy, exception, tick-wrap and
+DMA-lifetime checks. The ready UART adapter remains the option for its own
+progress-aware stale policy; this example documents a genuinely different
+application-owned policy instead of duplicating its implementation.
 
 ## Your own byte transport
 

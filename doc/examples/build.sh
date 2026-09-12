@@ -46,6 +46,9 @@ run_hal() {
 }
 COBS_CORE="$SRC/cobs/Decoder.cpp $SRC/cobs/Encoder.cpp"
 run_hal rtu_adapter rtu_adapter.cpp
+run_hal rtu_adapter_split rtu_adapter.cpp -DDOC_SPLIT=1
+run_hal rtu_uart_direct rtu_uart_direct.cpp -DDOC_HOST=1
+run_hal rtu_uart_direct_wake rtu_uart_direct.cpp -DDOC_HOST=1 -DDOC_WAKE=1
 run_hal cobs_direct cobs_direct.cpp $COBS_CORE
 run_hal cobs_manual_wake cobs_direct.cpp -DDOC_WAKE=1 $COBS_CORE
 run_hal cobs_adapter cobs_adapter.cpp $COBS_CORE
@@ -59,5 +62,5 @@ run_hal freertos_entry_rtu freertos_entry.cpp -DDOC_HOST=1 -DDOC_RTU=1 $COBS_COR
 for name in protocols backpressure policies rtu_framing tcp_stream; do
 	run "$name" "$HERE/$name.cpp" $COBS_CORE
 done
-if [ $status -eq 0 ]; then echo "=== all 16 host cookbook configurations passed (not hardware tests) ==="; else echo "=== cookbook FAILURES ==="; fi
+if [ $status -eq 0 ]; then echo "=== all 19 host cookbook configurations passed (not hardware tests) ==="; else echo "=== cookbook FAILURES ==="; fi
 exit $status

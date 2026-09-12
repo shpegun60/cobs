@@ -6,6 +6,7 @@
 #include "adapters/rtu/UartAdapter.h"
 #include "platform_fake.h"
 #include "Test.h"
+#include "Example.h"
 #include <cstdio>
 #include <vector>
 
@@ -42,9 +43,24 @@ bool start() noexcept
 
 static unsigned g_replies = 0;
 
+// example-begin: rtu-split-service
+void service_transport() noexcept
+{
+#if DOC_SPLIT
+	const uint32_t now = HAL_GetTick(); // one clock sample for all four calls
+	adapter.prepare(now);              // baud refresh and DMA-progress snapshot
+	serial.proceed(now);               // deliver queued RX/gaps BEFORE judging expiry
+	adapter.finish(now);               // judge the incomplete frame after delivery
+	g_endpoint.poll(now);              // finish() alone does not reclaim TX
+#else
+	adapter.proceed();                 // ordinary application: the same steps internally
+#endif
+}
+// example-end: rtu-split-service
+
 void loop_step() noexcept
 {
-	adapter.proceed();   // uart.proceed -> frame verdict -> g_endpoint.poll
+	service_transport();
 	if (!pending) {
 		if (auto request = g_endpoint.pop_packet()) {
 			pending = g_endpoint.make_message(request.address(), request.function());
@@ -81,6 +97,24 @@ int main()
 	ok = ok && !pending && g_replies == 2u && g_endpoint.tx_active();
 	fake::tx_done();
 	loop_step();
+	// Both ordinary and split servicing must deliver a queued continuation at the deadline.
+	fake::rx_bytes(adu.data(), 3u); fake::rx_idle(); loop_step();
+	CHECK(g_endpoint.assembling() && adapter.deadline_in_ms() == 5u);
+	fake::advance_tick(5u);
+	fake::rx_bytes(adu.data() + 3u, adu.size() - 3u); fake::rx_idle(); loop_step();
+	CHECK(g_replies == 3u && !g_endpoint.assembling());
+	fake::tx_done(); loop_step();
+	// A nonzero but frozen DMA count is not new progress on every deadline.
+	fake::rx_bytes(adu.data(), 3u); fake::rx_idle(); loop_step();
+	fake::advance_tick(4u); adapter.on_rx({});
+	CHECK(adapter.deadline_in_ms() == 1u);
+	fake::rx_bytes(adu.data() + 3u, 1u);
+	fake::advance_tick(1u); loop_step();
+	CHECK(g_endpoint.assembling() && adapter.deadline_in_ms() > 0u);
+	fake::advance_tick(adapter.deadline_in_ms()); loop_step();
+	CHECK(!g_endpoint.assembling() && g_endpoint.framing_stats().stale_frames == 1u);
+	fake::rx_idle(); loop_step();
+	CHECK(adapter.unbind()); // releases any late, incomplete tail without counting it stale
 	std::printf("rtu_adapter: replies=%u released=%d violations=%zu -> %s\n", g_replies,
 	            !g_endpoint.tx_active(), fake::model().violations.size(), ok && !g_endpoint.tx_active() ? "ok" : "FAIL");
 	return ok && !g_endpoint.tx_active() && fake::model().violations.empty() ? 0 : 1;

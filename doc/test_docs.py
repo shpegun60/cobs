@@ -49,6 +49,32 @@ class NavigationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "escapes repository"):
             docs.inside_root(docs.ROOT / ".." / "outside.md")
 
+    def test_preserved_route_removal_fails_even_if_the_target_exists(self):
+        path = docs.ROOT / "doc/TESTING.md"
+        targets = docs.PRESERVED_LINKS["doc/TESTING.md"]
+        complete = "\n".join(f"[record]({target})" for target in targets)
+        errors = []
+        docs.preserved_links(path, complete, errors)
+        self.assertEqual(errors, [])
+        removed = "../src/cobs/tests/bench/README.md"
+        docs.preserved_links(path, complete.replace(f"[record]({removed})", ""), errors)
+        self.assertEqual(len(errors), 1)
+        self.assertIn(removed, errors[0])
+        self.assertTrue((path.parent / removed).exists())
+
+    def test_fenced_link_does_not_restore_navigation(self):
+        errors = []
+        docs.preserved_links(docs.ROOT / "README.md", "```md\n[guide](doc/USER_GUIDE.md)\n```", errors)
+        self.assertTrue(any("doc/USER_GUIDE.md" in error for error in errors))
+
+    def test_readme_keeps_project_identity(self):
+        text = (docs.ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("# CRC, COBS, Modbus RTU/TCP + STM32 DMA UART for C++20", text)
+        self.assertIn("[![C++20]", text)
+        self.assertIn("[![STM32]", text)
+        self.assertIn("[![License: MIT]", text)
+        self.assertIn("Author: shpegun60", text)
+
     def test_unmatched_generated_blocks(self):
         with self.assertRaisesRegex(ValueError, "unmatched example"):
             docs.format_excerpts(docs.ROOT / "guide.md", "<!-- example: x.cpp#part -->")
