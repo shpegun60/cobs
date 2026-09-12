@@ -309,6 +309,20 @@ int main()
 	          0x00B2C3D4u,
 	      "codec permits an intentional truncated wire width");
 
+	group("Crc8TableExhaustive");
+	using Forward8 = crc::Crc8<crc::Table, 0x07u, 0x96u, 0xA5u, false, std::endian::big>;
+	using Reflected8 = crc::Crc8<crc::Table, 0x8Cu, 0x5Au, 0xC3u, true, std::endian::big>;
+	bool every_pair = true;
+	for (unsigned first = 0u; first < 256u; ++first) {
+		for (unsigned second = 0u; second < 256u; ++second) {
+			const std::array<uint8_t, 2> input{static_cast<uint8_t>(first), static_cast<uint8_t>(second)};
+			every_pair = every_pair &&
+				Forward8{}.calculate(input) == independent_forward<uint8_t>(input, 0x07u, 0x96u, 0xA5u) &&
+				Reflected8{}.calculate(input) == independent_reflected<uint8_t>(input, 0x8Cu, 0x5Au, 0xC3u);
+		}
+	}
+	check(every_pair, "forward/reflected CRC8 Table match independent oracles for all 65,536 byte pairs, nonzero init/xor");
+
 	group("RandomOracle");
 	std::mt19937 random{0x43524331u};
 	std::uniform_int_distribution<int> length_distribution(0, 512);

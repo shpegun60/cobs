@@ -163,10 +163,22 @@ TX bytes borrowed directly by DMA must satisfy that transport's requirements.
 
 ## Built-in memory specifications
 
-`wire::Heap` is stateless. Its bound For uses nothrow global allocation,
-grants exactly requested physical bytes, has no quota/occupancy counters and
-rejects requests above Geometry. It supports only alignment guaranteed by
-ordinary operator new; stronger alignment needs a custom strategy or Pool.
+`wire::Heap` is stateless. Its bound For uses `std::malloc/std::free`, grants
+exactly the requested TX bytes, has no quota/occupancy counters and rejects
+requests above Geometry. It accepts alignment up to `alignof(std::max_align_t)`;
+stronger alignment needs a custom strategy or Pool. RX internally requests
+at least `G::alignment` bytes, even for a zero/one-byte request, so the
+alignment guarantee does not depend on a runtime's small-allocation policy.
+TX internally requests at least one byte; a successful zero-byte request
+returns an owning descriptor with `granted == 0`, not a null descriptor.
+No zero-size call is forwarded to malloc, and both null releases are no-ops.
+
+This bypasses global `new/delete` replacements and `new_handler`. Applications
+that routed storage through those hooks must now configure `malloc/free`
+appropriately or provide their own Storage. Message construction, packet
+ownership, wire bytes and the four-function Storage interface are unchanged.
+The C/C++ allocation contract and the small-request rationale are linked in
+the [live OOM recovery report](../src/wire/tests/hardware/h7s/heap_crc/recovery/README.md).
 
 `wire::Pool<RxBlocks, TxBlocks>` owns two independent fixed-block pools.
 Both quotas must be nonzero and stay explicit. Each TX acquisition grants
@@ -247,6 +259,18 @@ Keep mutation/copy/release in one externally serialized execution domain.
 A thread-safe allocator alone does not make Packet or Endpoint thread-safe.
 
 ## Conformance evidence
+
+The [live Heap/Pool comparison](HEAP_AND_HARDWARE_CRC.md) measures actual
+newlib allocation with both protocols, known-size and growing messages,
+and a specified fragmented layout. Those Heap timings are a pre-fix
+`new(std::nothrow)` baseline, not measurements of the current malloc-backed
+Heap. The generated DTCM heap still cannot supply this UART DMA's TX pointers.
+The [original OOM diagnosis](../src/wire/tests/hardware/h7s/heap_crc/oom/README.md)
+reproduced the nano C++ runtime's abort path. The
+[recovery follow-up](../src/wire/tests/hardware/h7s/heap_crc/recovery/README.md)
+proves that current Heap handles real OOM and resumes after freeing memory,
+including COBS, burst RTU and framed RTU. Global allocation operators remain
+untouched and arbitrary allocator latency is not bounded by these tests.
 
 Run `sh src/wire/tests/run.sh`. It covers raw BlockPool and storage behavior
 under checked/sanitized and NDEBUG builds, real COBS/RTU geometries, alignment

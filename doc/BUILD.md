@@ -179,6 +179,14 @@ original descriptor return and equal-width Bitwise/Table type identity.
 `check_shared_crc.sh` links two translation units: both protocols together emit
 one 512-byte CRC16 Table, or no lookup bytes for Bitwise/NoCrc.
 
+The ELF host suite also interposes `malloc/free` around the real `wire::Heap`
+to force COBS, burst RTU and framed RTU construction/growth/RX failures and
+verify retained Packet data, retries and balanced ownership, with sanitizers
+and separately under `-O3 -DNDEBUG -flto`. That linker-specific test is explicitly
+skipped on MinGW. The MSVC runner compiles with `/WX`; reflected/forward CRC8
+Table are additionally checked on all 65,536 two-byte inputs. See the
+[live Heap OOM correction and audit](../src/wire/tests/hardware/h7s/heap_crc/recovery/README.md).
+
 COBS also tests explicit legacy NoCrc vectors and its CRC16/253 default,
 all built-in policies, stateful/sum/custom-width policies, corruption, empty and
 maximum frames, and the exact inverse of physical TX geometry.

@@ -5,6 +5,13 @@ param(
     [string]$DeveloperCommand = 'C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat'
 )
 $ErrorActionPreference = 'Stop'
+$msvcOriginalPath = $env:Path
+# VsDevCmd's discovery can invoke vswhere by name even when the installer
+# directory was not inherited in PATH (e.g. a plain Codex/PowerShell session).
+$msvcInstaller = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer'
+if (Test-Path (Join-Path $msvcInstaller 'vswhere.exe')) {
+    $env:Path = "$msvcInstaller;$env:Path"
+}
 $repo = $PSScriptRoot
 while (-not (Test-Path (Join-Path $repo 'COBS.pro'))) { $repo = Split-Path $repo -Parent }
 $src = Join-Path $repo 'src'
@@ -31,11 +38,11 @@ try {
             $sources = $case.sources -join ' '
             $exe = Join-Path $out ($case.name + '.exe')
             $command = "call `"$DeveloperCommand`" -arch=$arch -host_arch=x64 > nul && " +
-                "cl /nologo /std:c++20 /Zc:__cplusplus /permissive- /EHsc /utf-8 /O2 /DNDEBUG " +
+                "cl /nologo /std:c++20 /Zc:__cplusplus /permissive- /EHsc /utf-8 /O2 /DNDEBUG /WX " +
                 "/I. /Icobs /I`"$repo\libs\delegate`" $sources /Fo`"$out/`" /Fe`"$exe`" && `"$exe`""
             & $env:ComSpec /d /c $command
             if ($LASTEXITCODE -ne 0) { throw "MSVC $arch $($case.name) failed" }
         }
     }
     Write-Host 'MSVC x64/x86: CRC, shared storage, protocol parity/custom memory, COBS CRC/layout, RTU geometry/framing/stream/layout passed'
-} finally { Pop-Location }
+} finally { Pop-Location; $env:Path = $msvcOriginalPath }

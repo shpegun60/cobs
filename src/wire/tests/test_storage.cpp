@@ -150,7 +150,11 @@ static_assert(wire::Storage<wire::Pool<8, 2>, RtuLike>);
 static_assert(wire::Storage<wire::Pool<1, 1>, CacheLine>,
 	"a fixed pool can promise any power-of-two alignment");
 static_assert(!wire::Storage<wire::Heap, CacheLine>,
-	"the heap promises only what ::operator new does, and says so as a false concept, not a hard error");
+	"the heap promises fundamental alignment, and says so as a false concept, not a hard error");
+using MaxAligned = wire::BlockGeometry<2u * alignof(std::max_align_t), 64u, alignof(std::max_align_t)>;
+using OverAligned = wire::BlockGeometry<2u * alignof(std::max_align_t), 64u, 2u * alignof(std::max_align_t)>;
+static_assert(wire::Storage<wire::Heap, MaxAligned>);
+static_assert(!wire::Storage<wire::Heap, OverAligned>);
 static_assert(!wire::Storage<NotASpec, CobsLike>);
 static_assert(!wire::Storage<SpecOfMissingTx, CobsLike>);
 static_assert(!wire::Storage<wire::Heap, UnroundedGeometry>,
@@ -370,6 +374,28 @@ void testHeapGrantsExactlyWhatWasAsked()
 	check(all_ok, "the heap grants exactly the bytes requested");
 }
 
+void testHeapTinyRequests()
+{
+	g_strategy = "heap/tiny";
+	wire::Heap::For<MaxAligned> storage;
+	std::byte* const zero = storage.acquire_rx(0u);
+	std::byte* const one = storage.acquire_rx(1u);
+	const auto tx_zero = storage.acquire_tx(0u);
+	const auto tx_one = storage.acquire_tx(1u);
+	check(zero != nullptr && one != nullptr && zero != one,
+	      "zero and one-byte RX requests yield distinct releasable owners");
+	check(zero != nullptr && one != nullptr && aligned<MaxAligned>(zero) && aligned<MaxAligned>(one),
+	      "even zero/one-byte RX requests honor the maximum fundamental alignment");
+	check(tx_zero.memory != nullptr && tx_zero.granted == 0u && tx_one.memory != nullptr &&
+	      tx_one.granted == 1u && tx_zero.memory != tx_one.memory,
+	      "zero TX owns memory but exposes exactly zero bytes; a one-byte grant is unchanged");
+	if (one) { one[0] = std::byte{0xA5}; }
+	if (tx_one.memory) { tx_one.memory[0] = std::byte{0x5A}; }
+	storage.release_rx(zero); storage.release_rx(one);
+	storage.release_tx(tx_zero); storage.release_tx(tx_one);
+	storage.release_rx(nullptr); storage.release_tx({});
+}
+
 void testPoolGrantsTheWholeSlab()
 {
 	g_strategy = "pool";
@@ -445,6 +471,7 @@ int main()
 
 	group("HeapSpecific");
 	testHeapGrantsExactlyWhatWasAsked();
+	testHeapTinyRequests();
 
 	std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;

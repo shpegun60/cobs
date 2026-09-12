@@ -1031,6 +1031,9 @@ Read active documents in this order:
    diagnostics, tests, and the burst-framing limitation.
 11. [Modbus architecture](src/modbus/ARCHITECTURE.md) — RTU ownership invariants
     and the separate future `modbus::tcp` boundary.
+12. [Heap and STM32 CRC measurements](doc/HEAP_AND_HARDWARE_CRC.md) — live
+    Pool/Heap comparison, incremental growth, peripheral CRC policy, CPU
+    results, DMA placement and the measured nano-runtime OOM caveat.
 
 Files under [`doc/old`](doc/old) are preserved historical designs and legacy
 code. They are not the current API and should not be copied into new

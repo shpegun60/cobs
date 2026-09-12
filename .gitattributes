@@ -12,6 +12,11 @@
 *.jsonl -text whitespace=trailing-space,space-before-tab,cr-at-eol
 *.json -text whitespace=trailing-space,space-before-tab,cr-at-eol
 
+# Live OOM receipts authenticate raw objdump bytes, including section-separator
+# blank lines at EOF. Never normalize their line endings or source whitespace.
+src/wire/tests/hardware/h7s/heap_crc/oom/results_*/allocator_path.dis -text -whitespace
+src/wire/tests/hardware/h7s/heap_crc/recovery/results_*/allocator_path.dis -text -whitespace
+
 # Preserve the failed programming attempt, including its native whitespace,
 # byte-for-byte against the receipt. Do not apply source-format checks to it.
 src/wire/tests/hardware/h7s/results_faults_2026-09-12/rtu-crc32-table-115200.log -text -whitespace

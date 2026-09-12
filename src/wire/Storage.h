@@ -66,9 +66,10 @@
  *     };
  *     RxSlot slots[N];              // slot i is aligned for every i
  *
- * `wire::Pool` does exactly this inside detail::BlockPool. Heap relies on
- * ::operator new, whose default alignment covers every block header this
- * repository has. The conformance suite checks the alignment of every RX
+ * `wire::Pool` does exactly this inside detail::BlockPool. Heap uses malloc
+ * with fundamental alignment, covering every block header this repository
+ * has; tiny RX requests are at least Geometry::alignment internally. The
+ * conformance suite checks the alignment of every RX
  * grant it receives, so a custom storage that gets this wrong fails there
  * before it faults on a board.
  */
@@ -80,8 +81,8 @@
 
 #include <concepts>
 #include <cstddef>
+#include <cstdlib>
 #include <limits>
-#include <new>
 #include <type_traits>
 
 namespace wire {
@@ -199,21 +200,23 @@ concept Storage = Geometry<G> && requires {
 } && ByteStorage<typename Spec::template For<G>>;
 
 /*
- * Dynamic storage: exact per-request allocations from the global heap, no
+ * Dynamic storage: exact per-request grants from the C runtime heap, no
  * quota, no occupancy counters. Stateless, so an endpoint holding it with
  * [[no_unique_address]] pays no bytes for it. The default for every protocol
  * endpoint: desktop tools, tests, and systems where dynamic allocation is an
- * accepted policy.
+ * accepted policy. malloc/free deliberately bypass global new/delete and
+ * new_handler: nullable allocation remains usable with exception-disabled
+ * nano runtimes whose nothrow new calls abort on exhaustion.
  */
 struct Heap final {
 	// Constrained rather than static_asserted so that wire::Storage<Heap, G>
 	// is FALSE for a geometry the heap cannot serve — one demanding more
-	// alignment than ::operator new guarantees — instead of a hard error
+	// alignment beyond malloc's fundamental alignment — instead of a hard error
 	// inside the concept check. Both protocols' block headers are pointer-
 	// aligned, so the limit is academic until somebody wants cache-line slabs;
 	// wire::Pool serves those.
 	template<class G>
-		requires Geometry<G> && (G::alignment <= __STDCPP_DEFAULT_NEW_ALIGNMENT__)
+		requires Geometry<G> && (G::alignment <= alignof(std::max_align_t))
 	class For final {
 	public:
 		using Geometry = G;
@@ -230,12 +233,15 @@ struct Heap final {
 			if (bytes > G::rx_block_bytes) {
 				return nullptr;
 			}
-			return static_cast<std::byte*>(::operator new(bytes, std::nothrow));
+			// Even weak-alignment malloc implementations must align for an
+			// object of this alignment when its size fits the request. This
+			// also avoids implementation-defined malloc(0) behavior.
+			return static_cast<std::byte*>(std::malloc(bytes < G::alignment ? G::alignment : bytes));
 		}
 
 		void release_rx(std::byte* const memory) noexcept
 		{
-			::operator delete(static_cast<void*>(memory)); // nullptr is a no-op
+			std::free(memory); // nullptr is a no-op
 		}
 
 		[[nodiscard]] TxBlock acquire_tx(const std::size_t bytes) noexcept
@@ -243,16 +249,16 @@ struct Heap final {
 			if (bytes > G::tx_block_bytes) {
 				return {};
 			}
-			void* const memory = ::operator new(bytes, std::nothrow);
+			void* const memory = std::malloc(bytes == 0u ? 1u : bytes);
 			if (memory == nullptr) {
 				return {};
 			}
-			return {static_cast<std::byte*>(memory), bytes}; // exactly what was asked
+			return {static_cast<std::byte*>(memory), bytes}; // exact grant, including zero
 		}
 
 		void release_tx(const TxBlock block) noexcept
 		{
-			::operator delete(static_cast<void*>(block.memory));
+			std::free(block.memory);
 		}
 	};
 };

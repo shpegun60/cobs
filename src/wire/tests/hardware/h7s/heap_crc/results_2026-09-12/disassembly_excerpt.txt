@@ -1,0 +1,86 @@
+COBS + STM32 CRC, full session 2026-09-12. Read-only excerpt from measured ELF.
+ELF SHA-256: 808102e20d9f67708377682b663bb15754761cf73296e8794dda990b378fabd5
+Full disassembly SHA-256: 5d02b415d99feec337c3b5b16d04df2c93b707e2b22a15c18f2dee556edc5d9d
+
+080039cc <_exit>:
+ 80039cc:	b508      	push	{r3, lr}
+ 80039ce:	f005 f8eb 	bl	8008ba8 <__errno>
+ 80039d2:	2316      	movs	r3, #22
+ 80039d4:	6003      	str	r3, [r0, #0]
+ 80039d6:	e7fe      	b.n	80039d6 <_exit+0xa>
+
+08003f54 <crc::stm32::Crc16::calculate(std::span<unsigned char const, 4294967295u>) const [clone .isra.0]>:
+ 8003f54:	b537      	push	{r0, r1, r2, r4, r5, lr}
+ 8003f56:	ab02      	add	r3, sp, #8
+ 8003f58:	e903 0006 	stmdb	r3, {r1, r2}
+ 8003f5c:	6801      	ldr	r1, [r0, #0]
+ 8003f5e:	2301      	movs	r3, #1
+ 8003f60:	9c00      	ldr	r4, [sp, #0]
+ 8003f62:	608b      	str	r3, [r1, #8]
+ 8003f64:	f248 0305 	movw	r3, #32773	@ 0x8005
+ 8003f68:	1915      	adds	r5, r2, r4
+ 8003f6a:	614b      	str	r3, [r1, #20]
+ 8003f6c:	f64f 73ff 	movw	r3, #65535	@ 0xffff
+ 8003f70:	610b      	str	r3, [r1, #16]
+ 8003f72:	23a9      	movs	r3, #169	@ 0xa9
+ 8003f74:	608b      	str	r3, [r1, #8]
+ 8003f76:	4613      	mov	r3, r2
+ 8003f78:	2b03      	cmp	r3, #3
+ 8003f7a:	eba5 0003 	sub.w	r0, r5, r3
+ 8003f7e:	d80b      	bhi.n	8003f98 <crc::stm32::Crc16::calculate(std::span<unsigned char const, 4294967295u>) const [clone .isra.0]+0x44>
+ 8003f80:	f022 0303 	bic.w	r3, r2, #3
+ 8003f84:	f002 0203 	and.w	r2, r2, #3
+ 8003f88:	4423      	add	r3, r4
+ 8003f8a:	441a      	add	r2, r3
+ 8003f8c:	4293      	cmp	r3, r2
+ 8003f8e:	d108      	bne.n	8003fa2 <crc::stm32::Crc16::calculate(std::span<unsigned char const, 4294967295u>) const [clone .isra.0]+0x4e>
+ 8003f90:	6808      	ldr	r0, [r1, #0]
+ 8003f92:	b280      	uxth	r0, r0
+ 8003f94:	b003      	add	sp, #12
+ 8003f96:	bd30      	pop	{r4, r5, pc}
+ 8003f98:	6800      	ldr	r0, [r0, #0]
+ 8003f9a:	3b04      	subs	r3, #4
+ 8003f9c:	ba00      	rev	r0, r0
+ 8003f9e:	6008      	str	r0, [r1, #0]
+ 8003fa0:	e7ea      	b.n	8003f78 <crc::stm32::Crc16::calculate(std::span<unsigned char const, 4294967295u>) const [clone .isra.0]+0x24>
+ 8003fa2:	f813 0b01 	ldrb.w	r0, [r3], #1
+ 8003fa6:	7008      	strb	r0, [r1, #0]
+ 8003fa8:	e7f0      	b.n	8003f8c <crc::stm32::Crc16::calculate(std::span<unsigned char const, 4294967295u>) const [clone .isra.0]+0x38>
+
+08008856 <operator delete(void*)>:
+ 8008856:	f000 b82b 	b.w	80088b0 <free>
+	...
+
+0800885c <std::get_new_handler()>:
+ 800885c:	4b02      	ldr	r3, [pc, #8]	@ (8008868 <std::get_new_handler()+0xc>)
+ 800885e:	6818      	ldr	r0, [r3, #0]
+ 8008860:	f3bf 8f5b 	dmb	ish
+ 8008864:	4770      	bx	lr
+ 8008866:	bf00      	nop
+ 8008868:	24025420 	.word	0x24025420
+
+0800886c <operator new(unsigned int, std::nothrow_t const&)>:
+ 800886c:	f000 b800 	b.w	8008870 <operator new(unsigned int)>
+
+08008870 <operator new(unsigned int)>:
+ 8008870:	2801      	cmp	r0, #1
+ 8008872:	bf38      	it	cc
+ 8008874:	2001      	movcc	r0, #1
+ 8008876:	b510      	push	{r4, lr}
+ 8008878:	4604      	mov	r4, r0
+ 800887a:	4620      	mov	r0, r4
+ 800887c:	f000 f810 	bl	80088a0 <malloc>
+ 8008880:	b100      	cbz	r0, 8008884 <operator new(unsigned int)+0x14>
+ 8008882:	bd10      	pop	{r4, pc}
+ 8008884:	f7ff ffea 	bl	800885c <std::get_new_handler()>
+ 8008888:	b908      	cbnz	r0, 800888e <operator new(unsigned int)+0x1e>
+ 800888a:	f000 f802 	bl	8008892 <abort>
+ 800888e:	4780      	blx	r0
+ 8008890:	e7f3      	b.n	800887a <operator new(unsigned int)+0xa>
+
+08008892 <abort>:
+ 8008892:	b508      	push	{r3, lr}
+ 8008894:	2006      	movs	r0, #6
+ 8008896:	f000 f95b 	bl	8008b50 <raise>
+ 800889a:	2001      	movs	r0, #1
+ 800889c:	f7fb f896 	bl	80039cc <_exit>

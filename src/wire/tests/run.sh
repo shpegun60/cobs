@@ -85,4 +85,21 @@ echo "=== the same pool guarantees, built with -DNDEBUG ==="
 	"$SRC/cobs/Encoder.cpp" "$SRC/cobs/Decoder.cpp" -o "$OUT/test_endpoint_parity_o3_lto.exe"
 "$OUT/test_endpoint_parity_o3_lto.exe"
 
+# Interpose malloc/free at the ELF linker boundary: exercise the real Heap,
+# not a custom fake Storage. MinGW uses CRT import indirection instead.
+case "$("$CXX" -dumpmachine)" in
+	*mingw*) echo "Heap OOM allocator interposition requires ELF; run this guard under WSL" ;;
+	*)
+		build test_heap_oom -fno-builtin-malloc -fno-builtin-free -fno-builtin-calloc \
+			"$HERE/test_heap_oom.cpp" "$SRC/cobs/Encoder.cpp" "$SRC/cobs/Decoder.cpp" \
+			-Wl,--wrap=malloc -Wl,--wrap=free
+		"$OUT/test_heap_oom.exe"
+		"$CXX" -std=gnu++20 -O3 -DNDEBUG -flto $WARN -fno-builtin-malloc -fno-builtin-free -fno-builtin-calloc \
+			-I"$SRC" -I"$LIBS/delegate" "$HERE/test_heap_oom.cpp" \
+			"$SRC/cobs/Encoder.cpp" "$SRC/cobs/Decoder.cpp" -Wl,--wrap=malloc -Wl,--wrap=free \
+			-o "$OUT/test_heap_oom_o3_lto.exe"
+		"$OUT/test_heap_oom_o3_lto.exe"
+		;;
+esac
+
 echo "wire scalar, storage, block-pool and API-parity suites passed"

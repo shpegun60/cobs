@@ -308,7 +308,13 @@ public:
 		constexpr unsigned width = std::numeric_limits<ValueT>::digits;
 		ValueT value = Initial;
 		for (const uint8_t byte : bytes) {
-			if constexpr (Reflected) {
+			if constexpr (width == 8u) {
+				// Both directions discard the entire old register after one
+				// byte; only the lookup remains. Spell that explicitly rather
+				// than relying on promotion/truncation of an 8-bit shift (which
+				// MSVC diagnoses as C4333 despite integral promotion).
+				value = lookup_[static_cast<std::size_t>(value ^ byte)];
+			} else if constexpr (Reflected) {
 				const std::size_t index = static_cast<std::size_t>(
 					(value ^ static_cast<ValueT>(byte)) & ValueT{0xFFu});
 				value = static_cast<ValueT>(

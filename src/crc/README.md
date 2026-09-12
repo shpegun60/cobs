@@ -179,6 +179,13 @@ adapter must handle the span's alignment/placement, complete any hardware
 operation before returning, and keep its peripheral handle valid. It must not
 retain the input for asynchronous DMA after the call.
 
+For a concrete, live-tested implementation, see
+[`crc::stm32::Crc16`](../adapters/stm32/Crc16.h) and the
+[H7S3 measurements and usage](../../doc/HEAP_AND_HARDWARE_CRC.md). It computes
+CRC-16/MODBUS with a programmable STM32 peripheral, accepts byte-aligned
+input, and works with both COBS and RTU. Exclusive peripheral ownership
+during calculation remains the caller's responsibility.
+
 Empty built-ins are eligible for `[[no_unique_address]]`; actual compression
 is an ABI/compiler choice. A stateful object adds its state and any alignment
 padding. See the [measured layouts](../../doc/SHARED_POLICIES_VALIDATION.md).

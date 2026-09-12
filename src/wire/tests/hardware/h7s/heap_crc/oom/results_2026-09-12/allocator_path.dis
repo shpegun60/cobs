@@ -1,0 +1,61 @@
+08003270 <_exit>:
+ 8003270:	b508      	push	{r3, lr}
+ 8003272:	f001 fed1 	bl	8005018 <__errno>
+ 8003276:	2316      	movs	r3, #22
+ 8003278:	6003      	str	r3, [r0, #0]
+ 800327a:	e7fe      	b.n	800327a <_exit+0xa>
+
+0800388c <__wrap_abort>:
+ 800388c:	2100      	movs	r1, #0
+ 800388e:	4803      	ldr	r0, [pc, #12]	@ (800389c <__wrap_abort+0x10>)
+ 8003890:	b508      	push	{r3, lr}
+ 8003892:	f7ff fe07 	bl	80034a4 <(anonymous namespace)::report(char const*, unsigned long)>
+ 8003896:	f001 fa9e 	bl	8004dd6 <abort>
+ 800389a:	bf00      	nop
+ 800389c:	08005157 	.word	0x08005157
+
+080038a0 <__wrap__exit>:
+ 80038a0:	4604      	mov	r4, r0
+ 80038a2:	4601      	mov	r1, r0
+ 80038a4:	4803      	ldr	r0, [pc, #12]	@ (80038b4 <__wrap__exit+0x14>)
+ 80038a6:	b508      	push	{r3, lr}
+ 80038a8:	f7ff fdfc 	bl	80034a4 <(anonymous namespace)::report(char const*, unsigned long)>
+ 80038ac:	4620      	mov	r0, r4
+ 80038ae:	f7ff fcdf 	bl	8003270 <_exit>
+ 80038b2:	bf00      	nop
+ 80038b4:	0800515d 	.word	0x0800515d
+
+08004da0 <std::get_new_handler()>:
+ 8004da0:	4b02      	ldr	r3, [pc, #8]	@ (8004dac <std::get_new_handler()+0xc>)
+ 8004da2:	6818      	ldr	r0, [r3, #0]
+ 8004da4:	f3bf 8f5b 	dmb	ish
+ 8004da8:	4770      	bx	lr
+ 8004daa:	bf00      	nop
+ 8004dac:	24020fa0 	.word	0x24020fa0
+
+08004db0 <operator new(unsigned int, std::nothrow_t const&)>:
+ 8004db0:	f000 b800 	b.w	8004db4 <operator new(unsigned int)>
+
+08004db4 <operator new(unsigned int)>:
+ 8004db4:	2801      	cmp	r0, #1
+ 8004db6:	bf38      	it	cc
+ 8004db8:	2001      	movcc	r0, #1
+ 8004dba:	b510      	push	{r4, lr}
+ 8004dbc:	4604      	mov	r4, r0
+ 8004dbe:	4620      	mov	r0, r4
+ 8004dc0:	f000 f810 	bl	8004de4 <malloc>
+ 8004dc4:	b100      	cbz	r0, 8004dc8 <operator new(unsigned int)+0x14>
+ 8004dc6:	bd10      	pop	{r4, pc}
+ 8004dc8:	f7ff ffea 	bl	8004da0 <std::get_new_handler()>
+ 8004dcc:	b908      	cbnz	r0, 8004dd2 <operator new(unsigned int)+0x1e>
+ 8004dce:	f7fe fd5d 	bl	800388c <__wrap_abort>
+ 8004dd2:	4780      	blx	r0
+ 8004dd4:	e7f3      	b.n	8004dbe <operator new(unsigned int)+0xa>
+
+08004dd6 <abort>:
+ 8004dd6:	b508      	push	{r3, lr}
+ 8004dd8:	2006      	movs	r0, #6
+ 8004dda:	f000 f8f1 	bl	8004fc0 <raise>
+ 8004dde:	2001      	movs	r0, #1
+ 8004de0:	f7fe fd5e 	bl	80038a0 <__wrap__exit>
+
