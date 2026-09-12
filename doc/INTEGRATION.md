@@ -1,629 +1,284 @@
-# Integration patterns: with and without adapters
+<!-- Author: shpegun60; SPDX-License-Identifier: MIT -->
+# Integration: choose the composition, keep the contracts
 
-This is the usage guide. It enumerates every supported way to put the
-libraries in this repository together — the STM32 UART driver, the two
-protocol endpoints (COBS and Modbus RTU), their UART adapters and the
-FreeRTOS wake glue — and says for each one what the application owns, what
-it must call from where, and where the pattern is verified. The reference
-documents stay where they are: `ARCHITECTURE.md` and `PROTOCOL.md` for COBS,
-`src/modbus/ARCHITECTURE.md` and `src/modbus/README.md` for RTU, `STORAGE.md` for
-memory, `UART_PARANOID_AUDIT.md` for the driver. This document only decides
-which of them you need.
+<!-- toc -->
 
-Every snippet below is a translation unit in `doc/examples/`, compiled and
-run against the real headers by `sh doc/examples/build.sh` (the STM32 ones
-on the host fake HAL, the FreeRTOS one on the recording FreeRTOS fake);
-platform symbols such as `huart3` and `HAL_GetTick()` are the CubeMX ones
-and come from `doc/examples/platform_fake.h` there. A snippet that stops
-compiling fails that script.
+Contents
 
-Run it on both Linux/WSL (`CXX=g++ sh doc/examples/build.sh`) and MinGW
-(put the MinGW compiler on `PATH` first). They share the output directory,
-so run those two builds sequentially. The global endpoint objects below are
-named `g_endpoint`: `link` is already a global POSIX function on Linux.
+- [Supported combinations](#supported-combinations)
+- [Common setup and ownership](#common-setup-and-ownership)
+- [STM32 with an adapter](#stm32-with-an-adapter)
+- [Without an adapter](#without-an-adapter)
+  - [Bare RTU requires a whole candidate](#bare-rtu-requires-a-whole-candidate)
+  - [Framed RTU can consume fragments](#framed-rtu-can-consume-fragments)
+- [Your own byte transport](#your-own-byte-transport)
+- [Error handling and shutdown](#error-handling-and-shutdown)
+- [Storage, CRC and build dependencies](#storage-crc-and-build-dependencies)
 
-## 1. What every pattern shares
+<!-- /toc -->
 
-Three layers, and the boundary between them never moves:
+[Documentation](README.md) · [Почни звідси](START_HERE_UK.md) · [Examples](EXAMPLES.md) · [Qt](QT.md) · [FreeRTOS](FREERTOS.md)
 
-```
-byte transport            protocol endpoint                 application
-Uart / TCP / QSerialPort  cobs::Endpoint, modbus::rtu::Endpoint   Message / Packet
-"bytes, in order,         "frames, integrity, packet          "what the bytes mean"
- with gaps announced"      lifetime, TX borrow"
-```
+This guide covers all three protocol cores, with and without adapters.
+It is the map of responsibilities; the linked platform guides contain the
+actual setup/service code in the document itself. A complete program is
+labelled as such; a code fragment does not pretend to include platform startup.
 
-The two endpoints are deliberately the same shape (`src/wire/tests/test_api_parity`):
+## Supported combinations
 
-The common types, source migration and intentional differences are fixed in
-[`API_PARITY.md`](API_PARITY.md). In particular, `SendResult` is one shared
-type, both protocol namespaces expose `read_*`, and `stats().rx.frames_received`
-counts successfully queued packets in either endpoint.
+| Protocol / use | RX entry | Service loop | Ready recipe |
+|---|---|---|---|
+| COBS + STM32 adapter | installed automatically | `adapter.proceed()` | [cobs_adapter.cpp](examples/cobs_adapter.cpp) |
+| Framed RTU + STM32 adapter | installed automatically | `adapter.proceed()` | [rtu_adapter.cpp](examples/rtu_adapter.cpp) |
+| Either above + FreeRTOS | IRQ wakes task, parsing stays in task | `wait(adapter); adapter.proceed()` | [complete task](FREERTOS.md#complete-communication-task) |
+| COBS manually bound to UART | RX → consume, gap → notify_gap | UART proceed + Endpoint poll | [manual COBS](FREERTOS.md#cobs-with-wake-but-without-uartadapter) |
+| Raw UART + optional FreeRTOS wake | application byte handler | UART proceed | [raw UART](FREERTOS.md#raw-uart-without-a-protocol-adapter) |
+| Bare RTU, any externally delimited transport | one whole ADU → receive_adu | Endpoint poll | [rtu_direct.cpp](examples/rtu_direct.cpp) |
+| Framed RTU, custom transport | arbitrary cuts → consume | transport service + Endpoint poll; own stale policy | [both RTU roles](examples/rtu_framing.cpp) |
+| COBS + QSerialPort | SerialAdapter | Qt event loop | [Qt COBS](QT.md#cobs-over-qserialport) |
+| RTU + QSerialPort | framed SerialAdapter or RtuClient | Qt event loop | [Qt RTU](QT.md#rtu-client-and-server) |
+| TCP + QTcpSocket | arbitrary cuts → consume, MBAP only | application socket glue/event loop | [Qt TCP](QT.md#tcp-over-qtcpsocket) |
+| COBS/RTU/TCP + custom byte transport | protocol-specific entry as above | transport service + Endpoint poll | [shared portable example](examples/protocols.cpp) |
 
-| Call | Meaning | Context |
-|---|---|---|
-| `bind(Sender, BusyQuery)` / `unbind()` | the transport: one delegate that writes a frame, one that says whether the last frame is still borrowed | setup, thread |
-| `consume(bytes)` | any cut of the byte stream (COBS always; RTU with a framing policy) | inside the transport's RX delivery, thread |
-| `receive_adu(candidate)` | RTU without a framing policy: exactly one complete ADU | same |
-| `notify_gap()` | bytes were lost between the previous and the next delivery | same |
-| `pop_packet()` / `has_packet()` | the ready queue | thread |
-| `make_message(...)` / `send(msg)` | build a frame in endpoint-owned memory, hand it to the transport | thread |
-| `poll(now_ms)` | reclaim a transmitted frame once the transport is no longer busy | thread, every loop iteration |
-| `stats()` / `storage()` | diagnostics | thread |
+There is no general-purpose serial multiplexing layer. Binding COBS and RTU
+to the same UART simultaneously does not make bytes distinguishable. Use one
+protocol owner per stream, or design an explicit multiplexing protocol above
+a suitable framing layer.
 
-Three rules hold in every pattern:
+## Common setup and ownership
 
-- **The application owns time.** Nothing in the libraries reads a clock. The
-  monotonic millisecond tick goes into `proceed(now)` / `poll(now)`, and every
-  deadline is stamped with the tick the caller passed. Today both endpoints
-  use the tick for nothing but the contract; the RTU stale-frame rule lives
-  in the adapter (§2), which is where the geometry it needs lives too.
-- **Delegates bind by reference, never by copy.** `tiny::bind<&T::method>(obj)`
-  points at `obj`; `obj` must outlive the binding. Capture-less lambdas are
-  the other accepted form. There is no heap and no `std::function` anywhere.
-- **One execution context per endpoint.** The endpoint, its `Packet`s and its
-  `Message`s are touched by one loop or one task; their reference counts are
-  not atomic by design. The driver's handler setters are the only calls that
-  are safe against a running ISR (they take the IRQ guard themselves).
+Create objects in an order that makes destruction safe:
 
-Choosing a pattern:
+1. Long-lived state used by custom CRC/storage and the transport.
+2. Endpoint, which owns its storage instance and protocol state.
+3. Adapter, if used; it borrows transport and endpoint.
+4. Pending Messages and retained Packets, which must die before their endpoint.
 
-| You have | Protocol | Pattern |
-|---|---|---|
-| STM32 with `src/uart/Uart.h`, bare-metal loop | RTU | §2, `UartAdapter` |
-| STM32 with `src/uart/Uart.h`, FreeRTOS | RTU or COBS | §4, `FreeRtosWake` on top of §2 or §3 |
-| STM32 with `src/uart/Uart.h` | COBS | §3, `cobs::UartAdapter` or optional direct wiring |
-| STM32 with another driver, or a stale-frame rule of your own | RTU | §5, the endpoint wired directly |
-| desktop with Qt | either | §6, `adapters/qt/SerialAdapter.h`, plus `RtuClient.h` for a master |
-| TCP, a test double, a radio | either | §7, any byte transport |
+With static embedded objects, initialization of the handle/peripheral happens
+later; constructing an Endpoint/adapter is not HAL initialization. Both
+STM32 adapters expose `bind/unbind/bound` and `proceed()`. Binding does not
+transfer ownership of the UART or endpoint.
 
-## 2. RTU on STM32 through `UartAdapter`
+Use one serialized execution context for Endpoint calls and Packet reference
+updates. RX spans from UART expire when the callback returns. Packet spans
+remain valid while an owning Packet handle lives. Message is move-only;
+`message = {}` abandons it. Packet is shared and has `reset()`.
 
-The adapter is the whole integration between the driver and an RTU endpoint:
-RX and gap handlers, the endpoint's transport binding, the order of the
-slow-path calls, and — for an endpoint with a framing policy — the rule that
-decides when a frame that stopped arriving is dead. It lives in
-`src/adapters/rtu/`, not in `src/modbus/`: it knows both the driver and the
-endpoint, and neither of them knows it. It does not include the driver; it
-reads the chunk geometry from the `Uart<ChunkSize, ChunkCount>` type and the
-line rate from the driver's bound HAL handle.
+Delegates are not virtual interfaces. They can hold a callable or bind a
+member with `tiny::bind`. Reference/member captures borrow their targets:
+the delegate does not extend the target lifetime. Sender/BusyQuery must not
+throw or re-enter the same endpoint. The examples keep these operations
+bounded and perform parsing after transport events reach application context.
+
+## STM32 with an adapter
+
+The common COBS setup is a firmware fragment; the complete host-checked
+version is [cobs_adapter.cpp](examples/cobs_adapter.cpp):
 
 ```cpp
-#define UART_ENGINE_IMPLEMENT          // in exactly one translation unit
-#include "Uart.h"
-#include "modbus/rtu/Rtu.h"
-#include "adapters/rtu/UartAdapter.h"
-
-namespace framing = modbus::rtu::framing;
-using Serial = Uart<256, 4>;
-// A device that answers requests receives Direction::Request; a client
-// receives Direction::Response. Drop the third parameter for the default
-// burst g_endpoint (one complete ADU per IDLE-ended burst, no stale rule).
-using Server = modbus::rtu::Endpoint<wire::Pool<8, 2>, modbus::rtu::Format<>,
-                                     framing::Standard<framing::Direction::Request>>;
-
-__attribute__((section(".dma"))) static Serial serial;   // DMA-reachable RAM: the application's choice
-static Server g_endpoint;
-static modbus::rtu::UartAdapter adapter{serial, g_endpoint};   // takes no configuration: safe before main()
-
-bool start() noexcept
-{
-    // init() first: bind() reads the line rate from the bound handle and is
-    // refused, without side effects, while the driver is not initialized.
-    return serial.init(&huart3) && adapter.bind();
-}
-
-void loop_step() noexcept
-{
-    adapter.proceed();   // uart.proceed -> frame verdict -> g_endpoint.poll
-    while (auto request = g_endpoint.pop_packet()) {
-        auto reply = g_endpoint.make_message(request.address(), request.function());
-        if (!build_reply(reply, request)) {
-            continue;
-        }
-        (void)g_endpoint.send(reply);       // Sent moves ownership; Busy keeps the message for a retry
-    }
-}
-```
-
-What the adapter does, so the application does not:
-
-- `bind()` is transactional: the endpoint's transport binding first, the
-  driver's RX and gap handlers only when that succeeded; a false return
-  (driver not initialized, handle without a rate, a transmission still
-  active) changes nothing. `unbind()` mirrors it, and a bound adapter detaches
-  itself in its destructor. The driver and the endpoint must outlive the
-  adapter while it is bound, and one adapter serves one driver at a time.
-- The line rate is re-read from the handle on every `proceed()`, so
-  `Uart::setBaudRate()` is followed without a second call.
-- With a framing policy, `proceed()` decides when an incomplete frame is
-  dead: 5 ms of silence after a partial (IDLE-ended) chunk, one chunk's
-  transfer time plus 5 ms after a full one (12-bit characters, the widest
-  the driver accepts), and at the 5 ms it asks the driver's `rx_progress()`
-  whether DMA is already receiving the remainder before it gives up. The
-  snapshot is taken before the driver is drained and the verdict after, so a
-  continuation already queued is never outrun by its own deadline. Detaching
-  discards a frame in flight uncounted (`discard_incomplete()`).
-- Custom schedulers can query `deadline_in_ms()` (or pass an explicit tick).
-  Normal FreeRTOS code uses `wait(adapter)` and does not calculate a deadline (§4).
-- A loop that must keep its own timing scopes around the driver composes the
-  same steps itself, in this order and with one tick:
-  `adapter.prepare(now); serial.proceed(now); adapter.finish(now); g_endpoint.poll(now);`
-  — the hardware harness does.
-
-Verified by `src/adapters/tests/test_uart_integration.cpp` (the real driver on
-the fake HAL through the adapter: lifecycle, baud changes, the stale rule at
-9600 and 115200, the DMA-progress case, tick wrap) and on the H7S by
-`src/modbus/rtu/tests/hardware/h7s/modbus_bench.cpp` with its records.
-
-## 3. COBS on STM32 through `UartAdapter`, or directly
-
-COBS needs no timing adapter. Frames end with a `0x00` delimiter, `consume()` takes
-any cut of the stream, and there is no stale-frame rule to run: a sender
-that dies mid-frame leaves a frame open, the next frame's bytes join it and
-the delimiter that ends that next frame exposes the damage — the unfinished
-frame and the first complete frame after it are lost together, counted, and
-the stream is synchronized again at that same delimiter with nothing to
-hunt for (`PROTOCOL.md` §8). The RX block the open frame held is returned
-then. A gap the driver reports is handed on with `notify_gap()`.
-
-For the same setup and loop shape as RTU, use the thin
-`src/adapters/cobs/UartAdapter.h` composition. No timer state is added:
-
-```cpp
-#define UART_ENGINE_IMPLEMENT
-#include "Uart.h"
+#include "uart/Uart.h"
 #include "cobs/Cobs.h"
 #include "adapters/cobs/UartAdapter.h"
 
 using Serial = Uart<256, 4>;
-using Link = cobs::Endpoint<wire::Pool<8, 2>, cobs::Format<crc::Crc16Bitwise, 1024>>;
-static Serial serial; // place in DMA-reachable RAM on the target
-static Link g_endpoint;
-static cobs::UartAdapter adapter{serial, g_endpoint};
+using Link = cobs::Endpoint<wire::Pool<8, 2>>;
+static Serial serial;
+static Link endpoint;
+static cobs::UartAdapter adapter{serial, endpoint};
 
-bool start() noexcept { return serial.init(&huart3) && adapter.bind(); }
-void loop_step() noexcept { adapter.proceed(); }
-```
-
-The application drains `g_endpoint.pop_packet()` after that step. The compiled
-round-trip example is [`examples/cobs_adapter.cpp`](examples/cobs_adapter.cpp).
-As with RTU, bind/unbind are transactional; the driver and endpoint outlive a
-bound adapter. Detaching COBS announces `notify_gap()`: queued packets survive,
-an incomplete frame is released, and input through the next delimiter is
-discarded (and counted as a gap). The first new frame after a rebind can be
-that discarded synchronization frame. This follows COBS recovery, not RTU's
-frame-start assumption. Destruction detaches RX while leaving any TX borrow
-with the live driver/endpoint; drain it before destroying either of them.
-
-`deadline_in_ms(now)` always returns `no_deadline` for COBS. Therefore the same
-FreeRTOS loop in §4 works without a special case.
-
-### 3.1 Optional direct wiring
-
-The earlier manual composition remains supported and is still compiled as
-[`examples/cobs_direct.cpp`](examples/cobs_direct.cpp):
-
-```cpp
-#define UART_ENGINE_IMPLEMENT
-#include "Uart.h"
-#include "Cobs.h"
-
-using Serial = Uart<256, 4>;
-using Link = cobs::Endpoint<wire::Pool<8, 2>, cobs::Format<crc::Crc16Bitwise, 1024>>;
-
-__attribute__((section(".dma"))) static Serial serial;
-static Link g_endpoint;
-
-bool start() noexcept
-{
-    serial.setRxHandler(Serial::RxHandler{
-        [](std::span<const uint8_t> bytes) noexcept { g_endpoint.consume(bytes); }});
-    serial.setRxGapHandler(Serial::GapHandler{
-        []() noexcept { g_endpoint.notify_gap(); }});
-    // Either order works here: COBS needs nothing from the handle.
-    return g_endpoint.bind(Link::Sender{tiny::bind<&Serial::send>(serial)},
-                           Link::BusyQuery{tiny::bind<&Serial::tx_busy>(serial)}) &&
-           serial.init(&huart3);
+bool start(UART_HandleTypeDef& handle) {
+    return serial.init(&handle) && adapter.bind();
 }
-
-void loop_step() noexcept
-{
-    const uint32_t now = HAL_GetTick();
-    serial.proceed(now);   // the RX and gap handlers run here, in stream order
-    g_endpoint.poll(now);      // returns a transmitted block once the driver stops borrowing it
-    while (auto packet = g_endpoint.pop_packet()) {
-        handle(packet.data());
+void loop_step() {
+    adapter.proceed();
+    while (auto packet = endpoint.pop_packet()) {
+        // Read packet.data() here, or retain a Packet in this same context.
     }
 }
 ```
 
-`Sender` and `BusyQuery` bind straight to the driver's `send()` and
-`tx_busy()`: the frame stays in endpoint-owned memory until the driver's DMA
-has finished with it, which is what `poll()` checks. The complete
-application-shaped version with a pending-message policy is in the root
-README ("Complete UART + COBS composition"); the exact silicon
-implementation is `src/cobs/tests/hardware/h7s/cobs_bench.cpp`.
+Add the driver's HAL callback implementation in exactly one TU, as described
+in [UART callback integration](USER_GUIDE.md#callback-integration).
+Do not install independent UART RX/gap handlers after adapter.bind(): that
+would replace the adapter's wiring. `adapter.proceed()` reads a fresh HAL
+millisecond tick and services UART/parser/TX reclamation.
 
-## 4. FreeRTOS on top of §2 or §3
-
-`proceed()` is a thread-context call and the RX handler runs inside it, so a
-sleeping task sees nothing until something wakes it. The driver's
-`WakeHandler` is raised from the RX event, TX completion and error ISRs
-after the driver's state is final; `src/adapters/freertos/FreeRtosWake.h` turns it into a
-task notification. The driver knows no scheduler and the glue knows no
-protocol.
-
-Use the **same** `uart::FreeRtosWake` with COBS and RTU. It attaches to UART,
-not to the endpoint; ISR notifications do not parse either protocol. With
-`cobs::UartAdapter`, the exact wait/proceed loop below uses the fallback alone
-because COBS has no deadline. This composition is compiled and run in
-[`examples/cobs_freertos.cpp`](examples/cobs_freertos.cpp), as well as in the
-shared adapter lifecycle tests. A bare-metal loop needs no FreeRTOS wake.
-
-```cpp
-#include "adapters/freertos/FreeRtosWake.h"
-#include <algorithm>
-
-static uart::FreeRtosWake wake;                    // takes no task: safe at static-init time
-static TaskHandle_t comm_task = nullptr;
-
-void comm_task_body(void*)
-{
-    for (;;) {
-        // The adapter's deadline bounds the sleep: a frame whose remainder
-        // never comes must be expired when it falls due, not when the next
-        // unrelated frame wakes the task. wait() chooses the earlier of its
-        // default 50 ms fallback and the adapter deadline. COBS has none.
-        (void)uart::FreeRtosWake::wait(adapter);
-        adapter.proceed(); // fresh platform clock after waking
-        while (auto request = g_endpoint.pop_packet()) {
-            serve(request);
-        }
-    }
-}
-
-bool start_comm() noexcept
-{
-    if (xTaskCreate(comm_task_body, "comm", 512, nullptr, 3, &comm_task) != pdPASS) {
-        return false;
-    }
-    // After the handle exists. A null handle is refused and nothing is installed.
-    return wake.attach(serial, comm_task);
-}
-```
-
-Explicit fallback durations are converted with a 64-bit intermediate and
-clamped to `portMAX_DELAY - 1`, so a large finite millisecond budget never
-overflows into zero or becomes an indefinite kernel wait. Conversion floors
-to whole ticks and does not use application overrides of `pdMS_TO_TICKS`.
-The default remains 50 ms; no protocol timer or ISR work is added.
-
-Contract, in one place: the communication task is the only one touching
-the driver, the endpoint and its packets; `wait()` is called by that task
-only, and notification index 0 of that task belongs to the wake; the USART
-and DMA interrupts must not be logically more urgent than the kernel's
-syscall ceiling (on STM32 the HAL/CMSIS number given to
-`HAL_NVIC_SetPriority()` is `>= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY`;
-never compare it against the shifted `configMAX_SYSCALL_INTERRUPT_PRIORITY`);
-the kernel tick must be at least as fine as the deadlines used, or a coarse
-tick turns the bounded wait into a busy service loop until the deadline
-passes. Several interrupts before the task runs coalesce into one wake. Cost
-with no handler installed: 4 cycles per interrupt (`UART_PARANOID_AUDIT.md`
-§9.2).
-
-Verified by `src/adapters/tests/test_freertos_wake.cpp` on the recording
-FreeRTOS fake and the `WakeHandler` group of `src/uart/tests/host/test_uart.cpp`.
-
-## 5. RTU on STM32 without the adapter
-
-Wire the endpoint yourself when the driver is not `src/uart/Uart.h` (the
-adapter reads its geometry through `UartTraits<Uart<ChunkSize, ChunkCount>>`
-and calls `instance()` and `rx_progress()`), or when the stale-frame rule
-must differ from the adapter's.
-
-The default burst endpoint is the simple case. Its contract is that every
-delivery is exactly one complete ADU, which the driver's IDLE-ended bursts
-give as long as the chunk holds a whole ADU (`ChunkSize >= 256` for the
-standard maximum):
-
-```cpp
-using Serial = Uart<256, 4>;
-using Link = modbus::rtu::Endpoint<wire::Pool<8, 2>>;   // framing::None
-
-__attribute__((section(".dma"))) static Serial serial;
-static Link g_endpoint;
-
-bool start() noexcept
-{
-    serial.setRxHandler(Serial::RxHandler{
-        [](std::span<const uint8_t> burst) noexcept { g_endpoint.receive_adu(burst); }});
-    serial.setRxGapHandler(Serial::GapHandler{
-        []() noexcept { g_endpoint.notify_gap(); }});
-    return serial.init(&huart3) &&
-           g_endpoint.bind(Link::Sender{tiny::bind<&Serial::send>(serial)},
-                           Link::BusyQuery{tiny::bind<&Serial::tx_busy>(serial)});
-}
-
-void loop_step() noexcept
-{
-    const uint32_t now = HAL_GetTick();
-    serial.proceed(now);
-    g_endpoint.poll(now);
-    while (auto request = g_endpoint.pop_packet()) { serve(request); }
-}
-```
-
-An endpoint with a framing policy takes `consume()` instead and needs a
-stale-frame rule of yours, built from the same three calls the adapter
-uses: `assembling()` (a frame is in flight), `expire_incomplete()` (drop it,
-counted in `framing_stats().stale_frames`) and, when the transport is
-detached, `discard_incomplete()` (drop it uncounted). The traps the adapter
-had to be taught, so you do not learn them again:
-
-- judge the frame only AFTER the driver has delivered what it already
-  holds, never before, or a continuation queued at the deadline is thrown
-  away;
-- a partial chunk that ends in IDLE is not silence when DMA is already
-  receiving the next chunk — ask the driver's `rx_progress()` before
-  expiring;
-- a full chunk means the line is busy: allow one chunk's transfer time plus
-  a guard, with 12-bit characters, at the CURRENT line rate read from the
-  handle, not a number captured at static-init time;
-- deadlines are differences of the millisecond tick (`int32_t(now - deadline) >= 0`),
-  so the tick may wrap;
-- a gap disarms the deadline: `notify_gap()` already dropped the frame.
-
-A minimal skeleton that observes all of them (`chunk_time_ms_at_current_baud()`
-is yours: `kChunkSize * 12 * 1000 / baud`, rounded up, with the baud read
-from `serial.instance()->Init.BaudRate`):
-
-```cpp
-namespace framing = modbus::rtu::framing;
-using Framed = modbus::rtu::Endpoint<wire::Pool<8, 2>, modbus::rtu::Format<>,
-                                     framing::Standard<framing::Direction::Request>>;
-static Framed g_endpoint;
-constexpr std::size_t kChunkSize = 256;   // the ChunkSize of Serial
-static uint32_t g_now = 0, g_deadline = 0;
-static bool g_armed = false;
-
-void on_rx(std::span<const uint8_t> bytes) noexcept
-{
-    g_endpoint.consume(bytes);
-    g_armed = g_endpoint.assembling();
-    g_deadline = g_now + (bytes.size() < kChunkSize ? 5u : chunk_time_ms_at_current_baud() + 5u);
-}
-
-void loop_step() noexcept
-{
-    g_now = HAL_GetTick();
-    const bool resumed = g_armed && int32_t(g_now - g_deadline) >= 0 && serial.rx_progress() != 0;
-    serial.proceed(g_now);                                  // may run on_rx / on_gap
-    if (g_armed && int32_t(g_now - g_deadline) >= 0) {
-        if (resumed) { g_deadline = g_now + chunk_time_ms_at_current_baud() + 5u; }
-        else         { g_armed = false; g_endpoint.expire_incomplete(); }
-    }
-    g_endpoint.poll(g_now);
-}
-```
-
-If this is what you end up writing, use the adapter: it is this, tested.
-
-## 6. Qt on the desktop: `QSerialPort`
-
-`src/adapters/qt/` is the desktop counterpart of §2: `SerialAdapter` binds a
-`QSerialPort` to either endpoint, and `RtuClient` is a Modbus master shaped
-like Qt's own `QModbusRtuSerialClient` on top of it.
-
-```cpp
-#include "adapters/qt/RtuClient.h"
-
-namespace framing = modbus::rtu::framing;
-using Link = modbus::rtu::Endpoint<wire::Heap, modbus::rtu::Format<>,
-                                   framing::Standard<framing::Direction::Response>>;
-
-QSerialPort port;
-port.setPortName("COM6");
-port.setBaudRate(9600);
-port.open(QIODevice::ReadWrite);
-
-Link g_endpoint;
-adapters::qt::RtuClient client{port, g_endpoint};
-client.update_timing_from_port();     // 3.5 character times below 19200 baud, as Qt computes it
-client.bind();
-
-const uint8_t body[] = {0x00, 0x6B, 0x00, 0x03};
-client.send(0x11, 0x03, body, decltype(client)::Handler{[](const adapters::qt::Response& response) {
-    if (response.state == adapters::qt::RequestState::Completed) { use(response.data); }
-}});
-```
-
-`SerialAdapter` alone is enough for a server, for COBS, or for an
-application that drives its own transactions: `readyRead` feeds `consume()`,
-`bytesWritten` releases the transmitted block, a read error becomes
-`notify_gap()`, a write or resource error clears the port's output and takes
-the borrowed block back (the layer above reads which happened from
-`take_transport_error()`), a short `write()` is a failed transmission rather
-than half a frame on the line, and a frame that stops arriving is expired
-50 ms after the last byte. An RTU endpoint here must carry a framing policy,
-since a serial port delivers arbitrary cuts and not IDLE-ended bursts; the
-adapter refuses the burst endpoint at compile time. Unlike the STM32
-adapter, whose transport delegates point at the driver, this one's point at
-the adapter itself, so its destructor unbinds the endpoint: a `send()` after
-the adapter is gone is refused as `Unbound`, never routed into a dead
-object.
-
-`RtuClient` adds what a master needs and what QModbus provides: one
-transaction at a time with a queue behind it, a response timeout with
-retries, matching by address and function with the exception bit masked off,
-broadcasts to address 0 completed without an answer, an inter-frame delay
-between transactions and a turnaround delay after a broadcast, and a clean
-start before every attempt. Its defaults are Qt's: 1000 ms, three retries,
-100 ms turnaround, 2 ms inter-frame at and above 19200 baud. The gaps are
-deadlines fixed before a request's handler runs, so a handler that queues
-the next request from inside the callback cannot shorten the turnaround; a
-write or resource error while a request is leaving finishes it as
-`WriteError` at once instead of after the response timeout.
-
-The configured timeout also bounds waiting for a busy port and draining the
-request's write; expiry finishes as `WriteError` without retrying a possibly
-partial frame. Write completion starts a fresh full response timeout. Allow
-enough time for the whole ADU at the configured baud. `Busy` does not consume
-retry attempts. An early response is retained when `readyRead` precedes
-`bytesWritten`; a response timeout discards its partial RX immediately.
-Cancellation affects the detached session's queue, not requests queued by a
-callback that rebinds. See the [recovery contract and tests](QT_CLIENT_RECOVERY.md).
-
-A clean start drops already buffered input, not future late bytes. RTU has no
-transaction ID, so a later response with the same address/function can still
-be indistinguishable from a new response. `Response::data` is callback-scoped;
-validate function-specific response data in the application.
-
-Where it deliberately differs from QModbus is written down in
-`SerialAdapter.h`: Qt's RTU server drops a buffered fragment when the next
-delivery arrives more than 3.5 character times after the previous one, which
-on a desktop measures the operating system's scheduling rather than the
-wire and can discard an intact frame that arrived in two deliveries; this
-adapter uses a larger, independent 50-ms silence allowance instead. That
-allowance is finite too, not a guarantee against arbitrary OS stalls. Qt reports a read error
-to the application and keeps its buffer; this adapter treats it as a stream
-discontinuity, because a lost byte inside a length-prefixed frame would
-otherwise consume the frame behind it.
-
-Build it with `include(src/adapters/qt/qt.pri)` next to `rtu.pri` or
-`cobs.pri`; it adds `QT += serialport` and nothing else. Verified by
-`sh src/adapters/qt/tests/run.sh` (202 checks on a `QIODevice` stand-in for
-the port, both protocols, a real event loop, no COM port), and against
-QtSerialBus itself on the H7S: `RtuClient` and `QModbusRtuSerialClient` run
-the same 55-step script against the board's server and agree scenario for
-scenario, and the board's client runs it against `QModbusRtuSerialServer`
-(`src/adapters/qt/tests/hardware/h7s/README.md`).
-
-## 7. Any other byte transport: TCP, tests, radios
-
-The endpoints do not know what carries their bytes. A transport is any
-object with a `send(std::span<const uint8_t>) -> bool` that writes one frame
-and a `busy() -> bool` that says whether the LAST frame's memory is still in
-use. `bind()` takes both; bytes are pushed into `consume()` wherever they
-arrive, in any cut; `poll(now)` runs regularly and returns the transmitted
-frame's block once `busy()` is false.
+For RTU, replace the protocol and adapter types:
 
 ```cpp
 #include "modbus/rtu/Rtu.h"
-#include "Cobs.h"
-
-// A transport that copies the frame (sockets, QSerialPort::write) may
-// report busy() == false at once; one that borrows the memory (DMA) must
-// report busy until it is done with it. The g_endpoint releases the frame in
-// poll() either way.
-struct Transport final {
-    bool send(std::span<const uint8_t> frame) noexcept { return write_all(frame); }
-    [[nodiscard]] bool busy() const noexcept { return false; }
-};
+#include "adapters/rtu/UartAdapter.h"
 
 namespace framing = modbus::rtu::framing;
-// Off the STM32 driver there are no IDLE-ended bursts: TCP, the OS serial
-// buffers and QSerialPort deliver arbitrary cuts, so the RTU framing policy
-// is mandatory here. Direction is what THIS g_endpoint receives.
-using RtuClient = modbus::rtu::Endpoint<wire::Heap, modbus::rtu::Format<>,
-                                        framing::Standard<framing::Direction::Response>>;
-using CobsLink = cobs::Endpoint<>;   // wire::Heap, Crc16Bitwise, 253-byte payloads
-
-Transport transport;
-RtuClient client;
-CobsLink cobs_link;
-
-bool start() noexcept
-{
-    return client.bind(RtuClient::Sender{tiny::bind<&Transport::send>(transport)},
-                       RtuClient::BusyQuery{tiny::bind<&Transport::busy>(transport)}) &&
-           cobs_link.bind(CobsLink::Sender{tiny::bind<&Transport::send>(transport)},
-                          CobsLink::BusyQuery{tiny::bind<&Transport::busy>(transport)});
-}
-
-void on_bytes(std::span<const uint8_t> bytes, uint32_t now_ms) noexcept
-{
-    client.consume(bytes);      // a fragment, several frames, or both
-    client.poll(now_ms);
-    while (auto response = client.pop_packet()) { handle(response); }
-}
-
-bool read_holding(uint8_t unit, uint16_t first, uint16_t count) noexcept
-{
-    auto request = client.make_message(unit, 0x03);
-    return request.append_be(first) && request.append_be(count) &&
-           client.send(request) == modbus::SendResult::Sent;
-}
+using Link = modbus::rtu::Endpoint<wire::Pool<8, 2>, modbus::rtu::Format<>,
+    framing::Standard<framing::Direction::Request>>;
+static Link endpoint;
+static modbus::rtu::UartAdapter adapter{serial, endpoint};
 ```
 
-Two things the STM32 patterns get for free and this one must decide:
+This is an alternative declaration block, not a second adapter to bind to the
+same serial object. Request means a server's RX; Response means a client's RX.
+The adapter handles stale partial RTU frames using UART progress and line rate.
+That timing is not strict physical Modbus t1.5/t3.5 framing.
 
-- **Frames that stop arriving.** With a framing policy the endpoint still
-  exposes only `assembling()` and `expire_incomplete()`; when to call the
-  latter is the transport's knowledge. Off the driver there is no chunk
-  geometry and no DMA counter, only the transport's own delivery latency
-  (an OS serial stack hands bytes over in bursts tens of milliseconds apart
-  at low baud), so the silence limit must be chosen for that transport — a
-  request/response client usually needs nothing beyond its response
-  timeout, since it discards the incomplete response with the request.
-- **Gaps.** A transport that can lose bytes without saying so (a radio, a
-  UDP wrapper) cannot call `notify_gap()`; the CRC and the framing table
-  then do the recovery, one frame at a time.
+For FreeRTOS the exact same adapter works with:
 
-`wire::Heap` is the default memory and the right one here; `poll(now)` takes
-any monotonic millisecond tick. Verified by `src/cobs/tests/qmake_consumer` and
-`src/modbus/rtu/tests/qmake_consumer` (a loopback transport, both endpoints,
-both built-in storages) and `src/wire/tests/test_protocol_storage` (a
-user-written memory specification through both endpoints).
+```cpp
+(void)uart::FreeRtosWake::wait(adapter);
+adapter.proceed();
+```
 
-## 8. Choosing the parameters
+See [FreeRTOS](FREERTOS.md) for the full task creation, attach order, wake API,
+pending replies, error policy and raw/no-adapter variants. There is no COBS
+incomplete-frame timer hiding behind this common spelling.
 
-**Memory.** `wire::Heap` (default) allocates per frame and is the desktop and
-default path; `wire::Pool<Rx, Tx>` is `Rx` receive blocks and `Tx` transmit
-blocks of the endpoint's exact geometry, statically owned, for deterministic
-targets — size `Rx` for the frames in flight plus the packets the
-application holds, `Tx` for the messages being built plus the one the
-transport borrows; a user type with a nested `template<class Geometry> class For`
-plugs in anything else (`STORAGE.md`, `src/wire/tests/test_protocol_storage`).
-Changing memory changes neither the API nor the wire format.
+## Without an adapter
 
-**Format.** COBS: `cobs::Format<Crc = crc::Crc16Bitwise, RxMax = 255 - Crc::wire_size, TxMax = RxMax>`;
-`Format<crc::NoCrc, 255>` is the byte-identical v1 wire format. RTU:
-`modbus::rtu::Format<Crc = crc::Crc16Bitwise, MaxData = 252>`. TCP:
-`modbus::tcp::Format<Crc = crc::NoCrc, MaxData = 252>`. Every size argument
-counts useful `data()` bytes; protocol envelopes are added automatically.
-See [payload limits](PAYLOAD_LIMITS.md). The CRC policy
-comes from `crc/` (`src/crc/README.md`): the Bitwise engines are the small ones,
-the Table engines the fast ones, equal-width policies share every type
-(`Layout`, `Storage`, `Message`, `Packet`); measured costs on the H7S are in
-`PROTOCOL_COMPARISON.md`.
+Manual binding is useful when the transport is not supported by a ready
+adapter or the application already owns its event loop. The responsibilities
+do not disappear: connect RX and ordered loss, provide honest TX/busy state,
+service the driver, reclaim TX and arrange lifetime-safe detach.
 
-**Framer (RTU).** `framing::None` (default): one complete ADU per delivery.
-`framing::Standard<Direction>`: frame ends found from the bytes, standard
-functions and every exception response, Qt Serial Bus-compatible lengths.
-A type derived from it adds private functions through `layout()`, with a
-library-owned two-byte length prefix for the variable-length ones
-(`src/modbus/README.md`, "RTU framing").
+The complete manual COBS wiring and optional FreeRTOS wake appear in
+[the no-adapter recipe](FREERTOS.md#cobs-with-wake-but-without-uartadapter).
+In a busy loop omit only the wait; still call UART proceed then Endpoint poll.
+A bare Endpoint's `poll(now_ms)` currently uses no internal clock state; it
+releases a completed TX borrow. It does not service UART or expire RTU input.
 
-**Driver geometry.** `Uart<ChunkSize, ChunkCount>`: `ChunkSize >= 256` for
-the burst RTU endpoint; the pool is `ChunkSize * ChunkCount` bytes of
-buffering — about one millisecond at 10 Mbaud for `Uart<256, 4>`, which is
-why the RTOS pattern wakes on the ISR rather than polling. The whole driver
-object must sit in DMA-reachable RAM; the application places it.
+### Bare RTU requires a whole candidate
 
-## 9. Execution and lifetime rules
+```cpp
+modbus::rtu::Endpoint<> endpoint;
+// When a separate layer has supplied exactly one complete candidate:
+endpoint.receive_adu(whole_adu);
+```
 
-| Object | Lives at least as long as | Touched from |
-|---|---|---|
-| `Uart` | every handler bound to it, the adapter, the endpoint's transport binding | ISR (its own), one thread for `proceed()`/`send()`; setters guard themselves |
-| endpoint | the adapter, every `Packet` and `Message` it handed out | one thread only |
-| `UartAdapter` | — (detaches in its destructor; needs driver and endpoint alive) | one thread only |
-| `FreeRtosWake` | the driver's use of it | ISR (`notify()`), the attached task (`wait()`) |
-| `Packet` | as long as the application keeps the handle; the span is valid that long | the endpoint's thread |
-| `Message` | until `send()` returns `Sent` (ownership moves) or the application drops it | the endpoint's thread |
+This accepts all function numbers without a length table; your application
+parses the published function data. It is not a streaming interface.
+Neither IDLE nor `Uart<256, 4>` promises a whole ADU: a bridge can insert a
+pause inside it; several frames can be delivered together. The complete
+[rtu_direct.cpp](examples/rtu_direct.cpp) demonstrates the difference on one
+known vector. CRC coincidences exist, so rejection is not a boundary proof.
 
-Nothing of an endpoint is called from an ISR. The driver's RX handler runs
-inside `proceed()`, so `consume()`/`receive_adu()` are thread calls even
-though the driver invokes them. A `Packet` may be kept after `pop_packet()`
-returns; it holds its RX block until the last handle is dropped, which is
-what the pool's `Rx` count must cover.
+### Framed RTU can consume fragments
+
+```cpp
+namespace framing = modbus::rtu::framing;
+using Link = modbus::rtu::Endpoint<wire::Pool<8, 2>, modbus::rtu::Format<>,
+    framing::Standard<framing::Direction::Request>>;
+Link endpoint;
+endpoint.consume(first_fragment);
+endpoint.consume(next_fragment);
+```
+
+Without a transport adapter your application must decide when an incomplete
+candidate is abandoned. `expire_incomplete()` is an explicit stale event;
+`discard_incomplete()` silently abandons a partial candidate; `notify_gap()`
+reports known physical loss. They are not interchangeable with successful
+frame completion. For an actual STM32 UART, use the supplied adapter unless
+you intend to own and test its progress/deadline responsibilities yourself.
+This guide does not replace that proven code with a partial timer pseudocode.
+
+The standard table rejects unknown RX functions and deliberately does not
+claim every possible variable Modbus layout (notably 0x2B). Extend it for
+private functions with an explicit layout. Known TX layouts are checked;
+unknown TX layouts pass through instead of being a universal function filter.
+See [RTU framing](../src/modbus/README.md) and
+[the private-prefix example](EXAMPLES.md#rtu-framing-and-private-functions).
+
+## Your own byte transport
+
+The contract used by all cores is:
+
+```cpp
+using Sender = tiny::delegate<bool(std::span<const uint8_t>)>;
+using BusyQuery = tiny::delegate<bool()>;
+const bool ok = endpoint.bind(sender, busy);
+```
+
+- Sender accepts the entire span or refuses without retaining it. It can copy
+  the frame synchronously, or borrow it while BusyQuery remains true.
+- BusyQuery also describes transport backpressure; report true if another
+  send cannot start. Once it is false and poll runs, the old endpoint block
+  may be released immediately.
+- Asynchronous transports must accept the whole logical request before
+  doing partial writes. Queue/borrow the entire frame, continue partial writes
+  internally, and surface failures separately. Do not return false after
+  emitting a prefix and then blindly replay the frame.
+- One active TX frame belongs to an Endpoint. There is no hidden application
+  TX queue. A queueing adapter such as Qt RtuClient documents its additional
+  responsibilities separately.
+
+A bounded copying transport, with no peripheral or allocation, is sufficient
+for an end-to-end example:
+
+```cpp
+struct Transport {
+    std::array<uint8_t, 4096> buffer{};
+    std::size_t used = 0;
+    bool send(std::span<const uint8_t> frame) noexcept {
+        if (frame.size() > buffer.size()) { return false; }
+        std::copy(frame.begin(), frame.end(), buffer.begin());
+        used = frame.size();
+        return true;
+    }
+    bool busy() const noexcept { return false; } // synchronous copy completed
+};
+
+Transport transport; // must outlive its delegate binding
+cobs::Endpoint<> endpoint;
+const bool bound = endpoint.bind(
+    cobs::Endpoint<>::Sender{tiny::bind<&Transport::send>(transport)},
+    cobs::Endpoint<>::BusyQuery{tiny::bind<&Transport::busy>(transport)});
+```
+
+Add `<array>`, `<algorithm>` and the protocol header. This is the same
+bounded-copy principle used by [protocols.cpp](examples/protocols.cpp) and
+[backpressure.cpp](examples/backpressure.cpp); the complete programs check
+creation, append, send, split input, poll and retained Packet lifetime.
+TCP uses consume; unframed RTU uses a whole receive_adu candidate. Its own
+protocol-specific wire envelope does not belong in the transport.
+
+A datagram/radio/USB API needs its own loss and ordering contract. Knowing
+the advertised frame length cannot recover arbitrary silent byte loss.
+NoCrc checks no integrity; CRC is not authentication and is not proof that
+a guessed boundary was correct. Report known gaps at their stream position.
+
+## Error handling and shutdown
+
+| Event | Required decision |
+|---|---|
+| Message creation/append fails | stop building or explicitly drop; do not send incomplete application fields |
+| Send Busy | retain Message until later; avoid immediate spin loops |
+| Send Failed | finalized frame survives; recover transport before deciding whether replay is semantically safe |
+| RX allocation refusal | observe stats; release retained Packets, enlarge pool or apply backpressure |
+| UART gap | deliver notify_gap in stream order; adapters already do this |
+| COBS gap | discard until delimiter; a complete first post-gap frame can be sacrificed |
+| RTU stale/gap | explicit incomplete-candidate recovery; whole-candidate guarantees still matter |
+| TCP invalid MBAP/gap | close/stop the failed stream; reset only at a known new boundary |
+| Task/thread shutdown | end borrows, remove callbacks, release handles, then destroy owners |
+
+`Sent` means local acceptance, not remote delivery. `tx_busy()==false` means
+the transport has stopped borrowing memory, not that an application-level
+operation succeeded. Retries of commands can duplicate side effects.
+
+To stop a static STM32 application cleanly, first stop issuing new messages,
+let/force the real transport finish safely, continue proceed/poll until its
+borrow is released, then unbind the adapter. Remove an installed wake before
+its task/object disappears. Do not free DMA-visible storage on an unconfirmed
+abort. For Qt-specific close/abort/cancellation see [Qt teardown](QT.md#serial-adapter-errors-and-teardown).
+
+## Storage, CRC and build dependencies
+
+`Format<CRC, N>` counts useful data bytes for all protocols. The default RTU
+ADU is 256 bytes; TCP 260; COBS uses 253 payload bytes plus its automatic
+envelope. Pool counts owners, not bytes. Geometry is compile-time information
+for a storage author, not another number a normal user needs to calculate.
+
+[Storage](STORAGE.md) shows the four-operation custom policy and conformance
+rules; [CRC](../src/crc/README.md) shows stateless/stateful calculators,
+NoCrc and class-owned tables. Use [policies.cpp](examples/policies.cpp) to
+see one custom Memory and stateful checksum injected into all three endpoints.
+
+[Build](BUILD.md) lists include roots and source files. [Testing](TESTING.md)
+separates examples from sanitizer/compiler/assembly/hardware regression.

@@ -5,6 +5,33 @@ SPDX-License-Identifier: MIT
 
 # Modbus architecture
 
+[Documentation](../../doc/README.md) · [Почни звідси](../../doc/START_HERE_UK.md) · [Examples](../../doc/EXAMPLES.md)
+
+
+<!-- toc -->
+
+Contents
+
+- [1. Namespace boundary](#1-namespace-boundary)
+- [2. Shared public shape](#2-shared-public-shape)
+- [3. RTU frame and logical payload](#3-rtu-frame-and-logical-payload)
+- [4. Packet ownership](#4-packet-ownership)
+- [5. Message ownership](#5-message-ownership)
+  - [CRC policy](#crc-policy)
+- [6. Storage extension contract](#6-storage-extension-contract)
+- [7. Transport contract](#7-transport-contract)
+- [8. RTU receive boundary](#8-rtu-receive-boundary)
+  - [Optional framing policy](#optional-framing-policy)
+  - [8a. UartAdapter: the integration object](#8a-uartadapter-the-integration-object)
+- [9. UART gaps](#9-uart-gaps)
+- [10. TCP contract](#10-tcp-contract)
+- [11. Execution and lifetime rules](#11-execution-and-lifetime-rules)
+- [12. Deliberate non-goals of the RTU framing layer](#12-deliberate-non-goals-of-the-rtu-framing-layer)
+- [13. Hot-path and size evidence](#13-hot-path-and-size-evidence)
+- [14. Normative references](#14-normative-references)
+
+<!-- /toc -->
+
 This document is the canonical ownership and namespace contract for the
 Modbus library. It records the reviewed decisions that production code
 follows, independently of the original working prompt.

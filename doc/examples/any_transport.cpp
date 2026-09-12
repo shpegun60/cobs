@@ -1,19 +1,25 @@
-// INTEGRATION.md §6 verbatim: any byte transport, no driver, no fake HAL.
+/* Author: shpegun60; SPDX-License-Identifier: MIT */
+// A bounded copying RTU transport, no driver or fake HAL.
 #include "modbus/rtu/Rtu.h"
-#include "Cobs.h"
 #include "Test.h"
 #include <cstdio>
 #include <vector>
+#include <array>
+#include <algorithm>
 
-static std::vector<uint8_t> g_written;
+static std::array<uint8_t, 256> g_written{};
+static std::size_t g_written_size = 0;
 static bool write_all(std::span<const uint8_t> frame) noexcept
 {
-	g_written.assign(frame.begin(), frame.end());
+	if (frame.size() > g_written.size()) { return false; }
+	std::copy(frame.begin(), frame.end(), g_written.begin());
+	g_written_size = frame.size();
 	return true;
 }
 
-// A transport that copies the frame (sockets, QSerialPort::write) may
-// report busy() == false at once; one that borrows the memory (DMA) must
+// This synchronous copy may report busy() == false at once. Real sockets
+// also need partial-write/backpressure handling; see the Qt guide.
+// A transport that borrows the memory (DMA) must
 // report busy until it is done with it. The endpoint releases the frame in
 // poll() either way.
 struct Transport final {
@@ -24,20 +30,16 @@ struct Transport final {
 namespace framing = modbus::rtu::framing;
 using RtuClient = modbus::rtu::Endpoint<wire::Heap, modbus::rtu::Format<>,
                                         framing::Standard<framing::Direction::Response>>;
-using CobsLink = cobs::Endpoint<>;   // wire::Heap, Crc16Bitwise, 253-byte payloads
 
 Transport transport;
 RtuClient client;
-CobsLink cobs_link;
 static unsigned g_responses = 0;
 static void handle(const RtuClient::Packet&) noexcept { ++g_responses; }
 
 bool start() noexcept
 {
 	return client.bind(RtuClient::Sender{tiny::bind<&Transport::send>(transport)},
-	                   RtuClient::BusyQuery{tiny::bind<&Transport::busy>(transport)}) &&
-	       cobs_link.bind(CobsLink::Sender{tiny::bind<&Transport::send>(transport)},
-	                      CobsLink::BusyQuery{tiny::bind<&Transport::busy>(transport)});
+	                   RtuClient::BusyQuery{tiny::bind<&Transport::busy>(transport)});
 }
 
 void on_bytes(std::span<const uint8_t> bytes, uint32_t now_ms) noexcept
@@ -50,14 +52,16 @@ void on_bytes(std::span<const uint8_t> bytes, uint32_t now_ms) noexcept
 bool read_holding(uint8_t unit, uint16_t first, uint16_t count) noexcept
 {
 	auto request = client.make_message(unit, 0x03);
-	return request.append_be(first) && request.append_be(count) &&
+	// One-shot API: false means this request was not sent and is abandoned.
+	// For persistence across Busy use backpressure.cpp's pending Message.
+	return request && request.append_be(first) && request.append_be(count) &&
 	       client.send(request) == modbus::SendResult::Sent;
 }
 
 int main()
 {
 	if (!start()) { std::puts("start failed"); return 1; }
-	const bool sent = read_holding(0x11u, 0x006Bu, 3u) && g_written.size() == 8u &&
+	const bool sent = read_holding(0x11u, 0x006Bu, 3u) && g_written_size == 8u &&
 	                  g_written[0] == 0x11u && g_written[1] == 0x03u;
 	client.poll(1u);
 	const bool released = !client.tx_active();

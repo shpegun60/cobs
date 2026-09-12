@@ -1,5 +1,23 @@
 # COBS / Modbus RTU / Modbus TCP: end-user API parity
 
+[Documentation](README.md) · [Почни звідси](START_HERE_UK.md) · [Examples](EXAMPLES.md)
+
+
+<!-- toc -->
+
+Contents
+
+- [TCP extension (2026-09-12)](#tcp-extension-2026-09-12)
+- [Common application surface](#common-application-surface)
+- [Ownership and failure semantics](#ownership-and-failure-semantics)
+- [Deliberate differences: do not hide these with aliases](#deliberate-differences-do-not-hide-these-with-aliases)
+- [Source migration in this slice](#source-migration-in-this-slice)
+- [Verification](#verification)
+  - [Initial host slice, 2026-09-12](#initial-host-slice-2026-09-12)
+  - [Live follow-up and platform-clock facade, 2026-09-12](#live-follow-up-and-platform-clock-facade-2026-09-12)
+
+<!-- /toc -->
+
 This contract describes the shared application vocabulary, not a common
 protocol implementation. Codecs, framing, packet envelopes and diagnostics
 remain protocol-specific. See [integration](INTEGRATION.md),

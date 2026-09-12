@@ -1,5 +1,6 @@
-// INTEGRATION.md §4 verbatim on the recording FreeRTOS fake; xTaskCreate is
-// stubbed here because the fake models only the notification API.
+/* Author: shpegun60; SPDX-License-Identifier: MIT */
+// The task's own startup attaches wake before enabling UART. The host calls
+// startup/iteration explicitly: the recording fake does not schedule tasks.
 #define UART_ENGINE_IMPLEMENT
 #include "Uart.h"
 #include "modbus/rtu/Rtu.h"
@@ -18,21 +19,13 @@ static Serial serial;
 static Server g_endpoint;
 static modbus::rtu::UartAdapter adapter{serial, g_endpoint};
 
-// --- what the fake FreeRTOS does not model: task creation ---
-using TaskFunction_t = void (*)(void*);
-#define pdPASS 1
+// --- stand-in for the task handle; real task entry obtains its own handle ---
 static tskTaskControlBlock* const kFakeTask = reinterpret_cast<tskTaskControlBlock*>(0x20001000u);
-static BaseType_t xTaskCreate(TaskFunction_t, const char*, uint16_t, void*, UBaseType_t, TaskHandle_t* out)
-{
-	*out = kFakeTask;
-	return pdPASS;
-}
 static unsigned g_served = 0;
 static void serve(const Server::Packet&) noexcept { ++g_served; }
 // ------------------------------------------------------------
 
 static uart::FreeRtosWake wake;                    // takes no task: safe at static-init time
-static TaskHandle_t comm_task = nullptr;
 
 static void comm_task_iteration() noexcept        // one pass of the for(;;) body below
 {
@@ -43,20 +36,9 @@ static void comm_task_iteration() noexcept        // one pass of the for(;;) bod
 	}
 }
 
-void comm_task_body(void*)
+bool start_comm(TaskHandle_t self) noexcept
 {
-	for (;;) {
-		comm_task_iteration();
-	}
-}
-
-bool start_comm() noexcept
-{
-	if (xTaskCreate(comm_task_body, "comm", 512, nullptr, 3, &comm_task) != pdPASS) {
-		return false;
-	}
-	// After the handle exists. A null handle is refused and nothing is installed.
-	return wake.attach(serial, comm_task);
+	return wake.attach(serial, self) && serial.init(&huart3) && adapter.bind();
 }
 
 int main()
@@ -64,7 +46,7 @@ int main()
 	fake::reset();
 	fake_freertos::reset();
 	configure_huart3(115200u);
-	if (!(serial.init(&huart3) && adapter.bind() && start_comm())) { std::puts("start failed"); return 1; }
+	if (!start_comm(kFakeTask)) { std::puts("start failed"); return 1; }
 	const bool null_refused = !uart::FreeRtosWake{}.attach(serial, nullptr);
 	const auto adu = modbus_test::make_adu(0x11u, 0x03u, std::vector<uint8_t>{0x00u, 0x6Bu, 0x00u, 0x03u});
 	fake::rx_bytes(adu.data(), adu.size());

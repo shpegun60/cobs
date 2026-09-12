@@ -5,6 +5,34 @@ SPDX-License-Identifier: MIT
 
 # COBS wire protocol v2
 
+[Documentation](README.md) · [Почни звідси](START_HERE_UK.md) · [Examples](EXAMPLES.md)
+
+
+<!-- toc -->
+
+Contents
+
+- [1. Terms](#1-terms)
+- [2. Grammar and integrity](#2-grammar-and-integrity)
+- [3. Format and limits](#3-format-and-limits)
+  - [Compatibility](#compatibility)
+- [4. Empty payload and delimiter](#4-empty-payload-and-delimiter)
+- [5. Locked vectors](#5-locked-vectors)
+- [6. Size arithmetic](#6-size-arithmetic)
+- [7. Streaming decoder contract](#7-streaming-decoder-contract)
+  - [7.1 States](#71-states)
+  - [7.2 Events](#72-events)
+  - [7.3 Implicit zero](#73-implicit-zero)
+  - [7.4 Structural malformed frame](#74-structural-malformed-frame)
+- [8. Receiver validation and resynchronization](#8-receiver-validation-and-resynchronization)
+- [9. Transport gaps](#9-transport-gaps)
+- [10. In-place TX geometry](#10-in-place-tx-geometry)
+  - [10.1 Overlap invariant](#101-overlap-invariant)
+  - [10.2 Retry identity](#102-retry-identity)
+- [11. Wire-change checklist](#11-wire-change-checklist)
+
+<!-- /toc -->
+
 This is the normative current engine contract, independent of storage and
 transport. The low-level COBS codec itself is unchanged. Version numbers are
 documentation labels: **no version byte, CRC negotiation, autodetection or

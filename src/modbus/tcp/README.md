@@ -1,6 +1,22 @@
 <!-- Author: shpegun60; SPDX-License-Identifier: MIT -->
 # Modbus TCP: a transport-independent C++20 endpoint
 
+[Documentation](../../../doc/README.md) · [Почни звідси](../../../doc/START_HERE_UK.md) · [Examples](../../../doc/EXAMPLES.md)
+
+
+<!-- toc -->
+
+Contents
+
+- [Familiar API, TCP metadata](#familiar-api-tcp-metadata)
+- [MBAP is the only framer](#mbap-is-the-only-framer)
+- [Format, CRC and shared storage](#format-crc-and-shared-storage)
+- [Recovery and ownership](#recovery-and-ownership)
+- [Bind any byte transport](#bind-any-byte-transport)
+- [Build and verification](#build-and-verification)
+
+<!-- /toc -->
+
 Include `modbus/tcp/Tcp.h`. The core knows bytes, MBAP, storage and ownership;
 it knows nothing about sockets, Ethernet, UART, HAL, Qt or an RTOS.
 It is not a transaction manager or register server. A UART can carry the same

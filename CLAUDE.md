@@ -321,13 +321,14 @@ Codegen guards that need the ARM toolchain or an ELF host: `src/crc/tests/check_
 
 ## Architecture
 
-`doc/old/UART_COBS_ARCHITECTURE.md` is the archived original design sketch. It remains
-useful as historical rationale, but its sample API and parts of its UART model
-are not current. The implemented boundaries are:
+The original design sketch is archived in Git at
+`f09494a:doc/old/UART_COBS_ARCHITECTURE.md`; the obsolete checkout was removed
+with user approval. See `doc/LEGACY_REVIEW.md` for recovery. Its sample API is
+not current. The implemented boundaries are:
 
-- **Three layers**: byte transport (UART/TCP/…) → protocol endpoint (framing, integrity, packet lifetime) → application (`Message` / `Packet`). "UART handles bytes. COBS handles packets." Modbus RTU is a sibling endpoint over the same transport contract; its RX boundary is one complete burst candidate (`receive_adu`), COBS's is an arbitrary stream chunk (`consume`).
+- **Three layers**: byte transport (UART/TCP/…) → protocol endpoint (framing, integrity, packet lifetime) → application (`Message` / `Packet`). "UART handles bytes. COBS handles packets." Modbus RTU is a sibling endpoint over the same transport contract; bare RTU requires a whole external candidate (`receive_adu`), framed RTU and COBS accept arbitrary stream chunks (`consume`); TCP always frames its stream by MBAP. UART IDLE/chunk size alone is not an ADU boundary guarantee.
 - The transport is bound as one owning `tiny::delegate` pair for busy state and `send(span)`; it has **no TX queue**, no knowledge of framing, CRC, or packet sizes. TX-busy policy (retry/drop/queue) belongs to layers above.
-- Both endpoints are `Endpoint<Memory, Format>`. `Memory` is a `wire::Storage` specification (`wire::Heap` by default, `wire::Pool<Rx, Tx>` for deterministic storage, or a user type with a nested `template<class Geometry> class For`); the endpoint derives a three-number `Geometry` from its Format and binds `Memory::For<Geometry>`. Storage speaks physical bytes only and never sees a header, a length field or a CRC. Changing memory must not change the application-facing API or wire format.
+- All three endpoints are `Endpoint<Memory, Format>`. `Memory` is a `wire::Storage` specification (`wire::Heap` by default, `wire::Pool<Rx, Tx>` for deterministic storage, or a user type with a nested `template<class Geometry> class For`); the endpoint derives a three-number `Geometry` from its Format and binds `Memory::For<Geometry>`. Storage speaks physical bytes only and never sees a header, a length field or a CRC. Changing memory must not change the application-facing API or wire format.
 - `Format` names the wire contract including the CRC policy from `crc/`: `cobs::Format<Crc = crc::Crc16Bitwise, RxMax = 255 - Crc::wire_size, TxMax = RxMax>`, `modbus::rtu::Format<Crc = crc::Crc16Bitwise, MaxData = 252>` and `modbus::tcp::Format<Crc = crc::NoCrc, MaxData = 252>`. All explicit sizes count useful data. Equal-width Bitwise/Table policies share `Layout`, `Storage`, `Message` and `Packet` types. `Format<crc::NoCrc, 255>` is the byte-identical COBS v1 format.
 - **RX and TX ownership are deliberately asymmetric**: RX packets use the intrusive shared `Packet` handle (refcount inside the protocol's private `RxBlock`, payload immutable once decoded); TX frames use exclusive ownership through one `wire::TxBlock` descriptor (`Message` owns until `send()` succeeds, then the endpoint holds it until DMA completes, then returns the descriptor exactly as granted).
 - RX callbacks deliver arbitrary byte chunks (a frame may span chunks, or one chunk may hold several frames); the span is valid only during the callback. On errors COBS drops bytes until the next `0x00` delimiter to resynchronize.
@@ -342,4 +343,10 @@ portability tests rather than treating the old sketch as an API contract.
 
 ## Reference material
 
-`doc/old/` holds legacy STM32 UART driver code (HAL-based `UartEngine`, RS-485 wrapper, DMA variants) with a README in Ukrainian. It is prior art for the new design, not part of the build — don't extend it; the new architecture intentionally replaces its approach.
+User-facing documentation starts at `doc/START_HERE_UK.md` and `doc/README.md`.
+`doc/EXAMPLES.md`, `doc/QT.md` and `doc/FREERTOS.md` cover runnable compositions
+with and without adapters/wake. Check maintained links, contents and exact
+excerpts with `python -B doc/check_docs.py` (use `--write` to refresh generated
+blocks), then run `sh doc/examples/build.sh` and `sh doc/examples/qt/build.sh`.
+The removed `doc/old/` code remains in Git at `f09494a`; do not resurrect its
+obsolete API as a current integration example.

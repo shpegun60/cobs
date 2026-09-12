@@ -12,6 +12,8 @@ src/uart/tests/port/out/
 stm32_cube_test/
 
 # Host test binaries
+doc/examples/out/
+doc/examples/qt/out/
 src/uart/tests/host/out/
 src/cobs/tests/out/
 src/crc/tests/out/

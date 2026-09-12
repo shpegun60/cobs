@@ -5,9 +5,28 @@ SPDX-License-Identifier: MIT
 
 # Shared storage contract
 
-This is the canonical extension guide for both COBS and Modbus RTU.
-Include `src/wire/Storage.h` to write storage; include `Cobs.h` or
-`src/modbus/rtu/Rtu.h` to use an endpoint. No protocol-specific storage aliases
+[Documentation](README.md) · [Почни звідси](START_HERE_UK.md) · [Examples](EXAMPLES.md)
+
+
+<!-- toc -->
+
+Contents
+
+- [Configuration and ownership](#configuration-and-ownership)
+- [Three compile-time geometry values](#three-compile-time-geometry-values)
+- [Four operations, physical bytes only](#four-operations-physical-bytes-only)
+- [Behavioral obligations](#behavioral-obligations)
+- [Correct slot alignment](#correct-slot-alignment)
+- [Built-in memory specifications](#built-in-memory-specifications)
+- [Complete custom specification example](#complete-custom-specification-example)
+- [Lifetime and execution](#lifetime-and-execution)
+- [Conformance evidence](#conformance-evidence)
+
+<!-- /toc -->
+
+This is the canonical extension guide for COBS, Modbus RTU and Modbus TCP.
+With the `src` include root, include `wire/Storage.h` to write storage and
+`cobs/Cobs.h`, `modbus/rtu/Rtu.h` or `modbus/tcp/Tcp.h` to use an endpoint. No protocol-specific storage aliases
 or forwarding headers are provided.
 
 ## Configuration and ownership
@@ -16,6 +35,7 @@ or forwarding headers are provided.
 using Memory = wire::Pool<8, 2>;
 using Cobs = cobs::Endpoint<Memory, cobs::Format<>>;
 using Rtu = modbus::rtu::Endpoint<Memory, modbus::rtu::Format<>>;
+using Tcp = modbus::tcp::Endpoint<Memory, modbus::tcp::Format<>>;
 ```
 
 The first argument is a **memory specification**, not a pre-sized allocator.
@@ -163,7 +183,9 @@ is aligned, because that number is already rounded. TX protocol alignment is
 one; a DMA transport may impose stronger alignment and placement.
 
 Packet buffers are CPU-owned. UART DMA still writes its own cache-aligned
-chunks; COBS decodes into packet storage and RTU copies a validated candidate.
+chunks; COBS decodes into packet storage and RTU/TCP copy or assemble into
+their own final packet storage. A framed stream can allocate before its
+complete CRC is available; publication happens only after validation.
 A custom packet allocator does not make UART DMA write into those packets.
 TX bytes borrowed directly by DMA must satisfy that transport's requirements.
 
@@ -249,7 +271,7 @@ Cobs cobs_link{std::in_place, cobs_requests};
 Rtu rtu_link{std::in_place, rtu_requests};
 ```
 
-For a custom CRC and runtime memory arguments, both endpoints also accept
+For a custom CRC and runtime memory arguments, all three endpoints also accept
 `Link{MyCrc{handle}, std::in_place, arena_arguments...}`.
 Storage itself need not be copyable or movable.
 

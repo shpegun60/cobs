@@ -3,9 +3,35 @@ Author: shpegun60
 SPDX-License-Identifier: MIT
 -->
 
-# Building and verifying COBS on Windows (MinGW)
+# Build integration and verification
 
-The repository has two qmake targets with different jobs:
+[Documentation](README.md) · [Examples](EXAMPLES.md) · [Qt](QT.md) · [FreeRTOS](FREERTOS.md) · [Testing](TESTING.md)
+
+<!-- toc -->
+
+Contents
+
+- [Embed the libraries in your application](#embed-the-libraries-in-your-application)
+- [Documentation cookbook checks](#documentation-cookbook-checks)
+- [Toolchain](#toolchain)
+- [Qt Creator](#qt-creator)
+- [Command line](#command-line)
+- [Reusable COBS qmake fragment](#reusable-cobs-qmake-fragment)
+- [COBS verification](#cobs-verification)
+- [Shared storage and integrity verification](#shared-storage-and-integrity-verification)
+- [CRC and Modbus RTU verification](#crc-and-modbus-rtu-verification)
+- [Integration examples and evidence regressions](#integration-examples-and-evidence-regressions)
+- [UART regression matrix](#uart-regression-matrix)
+- [COBS + UART hardware integration matrix](#cobs--uart-hardware-integration-matrix)
+- [Modbus TCP core and MCU validation](#modbus-tcp-core-and-mcu-validation)
+- [Running the executable](#running-the-executable)
+- [Adding files to the project](#adding-files-to-the-project)
+- [Cleaning](#cleaning)
+
+<!-- /toc -->
+
+The repository has separate GUI, downstream-consumer and cookbook targets.
+The original two COBS targets have different jobs:
 
 - `COBS.pro` is the Qt Widgets host scaffold and compiles the real non-template
   COBS codec through `src/cobs/cobs.pri`;
@@ -16,7 +42,8 @@ The repository has two qmake targets with different jobs:
 The second target is the stronger public-API integration proof; the GUI does
 not need test logic in `main.cpp` merely to instantiate templates.
 
-Current COBS documentation is split by boundary:
+The complete navigation is [the documentation index](README.md). Current
+reference and historical validation remain separated by boundary:
 
 - `ARCHITECTURE.md` — components, public API, ownership, and lifetimes;
 - `PROTOCOL.md` — normative wire format and framing behavior;
@@ -29,6 +56,69 @@ Current COBS documentation is split by boundary:
   fragment-loss reproduction, USB receive deadline, trace and regression tests.
 - [QT_CLIENT_RECOVERY.md](QT_CLIENT_RECOVERY.md) — desktop RX/TX ordering,
   bounded write failure, cancellation/retry guards and live interop follow-up.
+
+## Embed the libraries in your application
+
+You do not need the repository Qt GUI, tests or hardware harness in firmware.
+All includes below are relative to the `src` root; preserve sibling module
+folders instead of copying a single public header away from its dependencies.
+
+| Component | Include root(s) | Sources to compile |
+|---|---|---|
+| COBS | `src`, `libs/delegate` | `src/cobs/Encoder.cpp`, `src/cobs/Decoder.cpp`, once each |
+| RTU / TCP | `src`, `libs/delegate` | header-only |
+| wire / CRC | `src` | header-only |
+| STM32 UART | `src`, `libs/delegate`, `libs/spsc`, `libs/spsc/src`, your HAL/CMSIS/main.h | one TU with UART callback implementation, or the documented alternate callback mode |
+| Qt serial adapters | protocol roots plus Qt Core/SerialPort | header-only adapter; link Qt modules |
+| FreeRTOS wake | UART plus the real kernel/port and FreeRTOSConfig.h | header-only wake; application links its configured kernel normally |
+
+CMake integration fragment (replace `/path/to/cobs` with your checkout):
+
+```cmake
+set(COMM_ROOT /path/to/cobs)
+target_compile_features(app PRIVATE cxx_std_20)
+target_include_directories(app PRIVATE
+    ${COMM_ROOT}/src
+    ${COMM_ROOT}/libs/delegate)
+# Only if COBS is used:
+target_sources(app PRIVATE
+    ${COMM_ROOT}/src/cobs/Encoder.cpp
+    ${COMM_ROOT}/src/cobs/Decoder.cpp)
+# Only if the STM32 UART is used; HAL/CMSIS/board includes come from your target:
+target_include_directories(app PRIVATE
+    ${COMM_ROOT}/libs/spsc
+    ${COMM_ROOT}/libs/spsc/src)
+# For a Qt serial app (use Network instead for QTcpSocket):
+find_package(Qt6 REQUIRED COMPONENTS Core SerialPort)
+target_link_libraries(app PRIVATE Qt6::Core Qt6::SerialPort)
+```
+
+Remove the optional sections your application does not use. Public includes
+then read `#include "cobs/Cobs.h"`, `"modbus/rtu/Rtu.h"`,
+`"modbus/tcp/Tcp.h"` and `"uart/Uart.h"`. CRC/storage dependencies of a
+protocol are included by its public headers, not manually copied into it.
+
+For qmake use `src/cobs/cobs.pri`, `src/modbus/rtu/rtu.pri`,
+`src/modbus/tcp/tcp.pri`, and `src/adapters/qt/qt.pri` only as applicable.
+These fragments add their sibling includes and dependencies. The examples
+under `doc/examples/qt` have complete downstream `.pro` files.
+
+## Documentation cookbook checks
+
+```sh
+python -B doc/check_docs.py
+sh doc/examples/build.sh
+sh doc/examples/qt/build.sh
+# Optional, with the recorded H7RS HAL/Cube/FreeRTOS checkout and ARM compiler:
+sh doc/examples/check_freertos_arm.sh
+```
+
+The last command compiles both task-entry variants against real FreeRTOS/HAL
+headers, without DOC_HOST. It does not link, flash, or execute firmware. Set
+`ARM_TOOLS`, `FREERTOS_SOURCE` and `H7S_CUBE_PROJECT` for other local locations.
+The host runner supports `CXX`; Qt supports `QMAKE`, `MAKE` and its kit variables.
+See [Examples](EXAMPLES.md) for every program/mode and [Testing](TESTING.md)
+for full regression and live evidence rather than example-only checks.
 
 ## Toolchain
 

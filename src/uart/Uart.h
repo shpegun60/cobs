@@ -8,7 +8,7 @@
  *
  * Current contract: this header, doc/UART_PARANOID_AUDIT.md, and the
  * uart/tests/host + uart/tests/port verification matrices.
- * Historical rationale only: doc/old/UART_COBS_ARCHITECTURE.md, §3–§8.
+ * Historical rationale: Git f09494a:doc/old/UART_COBS_ARCHITECTURE.md, §3–§8.
  *  - One mode only: DMA normal (non-circular) via HAL_UARTEx_ReceiveToIdle_DMA.
  *  - RX: spsc::cache_aligned_chunk_fifo — DMA writes directly into a claimed
  *    chunk slot; the ISR only commits the size, publishes the chunk and

@@ -5,6 +5,38 @@ SPDX-License-Identifier: MIT
 
 # COBS architecture
 
+[Documentation](README.md) · [Почни звідси](START_HERE_UK.md) · [Examples](EXAMPLES.md)
+
+
+<!-- toc -->
+
+Contents
+
+- [1. Scope](#1-scope)
+- [2. Public surfaces](#2-public-surfaces)
+  - [2.1 Application surface](#21-application-surface)
+  - [2.2 Storage extension surface](#22-storage-extension-surface)
+  - [2.3 Codec surface](#23-codec-surface)
+  - [2.4 Detail surface](#24-detail-surface)
+- [3. Dependency direction and files](#3-dependency-direction-and-files)
+- [4. Endpoint composition](#4-endpoint-composition)
+- [5. RX data and ownership flow](#5-rx-data-and-ownership-flow)
+  - [5.1 Streaming](#51-streaming)
+  - [5.2 Two-stage zero-copy receive](#52-two-stage-zero-copy-receive)
+  - [5.3 Ready queue](#53-ready-queue)
+  - [5.4 Packet ownership](#54-packet-ownership)
+- [6. TX data and ownership flow](#6-tx-data-and-ownership-flow)
+  - [6.1 Message construction](#61-message-construction)
+  - [6.2 Send outcomes](#62-send-outcomes)
+  - [6.3 Active transport borrow](#63-active-transport-borrow)
+- [7. Transport binding and delegate lifetime](#7-transport-binding-and-delegate-lifetime)
+- [8. Lifetime and execution-domain contract](#8-lifetime-and-execution-domain-contract)
+- [9. Observability](#9-observability)
+- [10. Architectural invariants](#10-architectural-invariants)
+- [11. Reading order](#11-reading-order)
+
+<!-- /toc -->
+
 This is the canonical entry point for the current COBS implementation.
 It describes component boundaries, the supported API, ownership, lifetimes,
 and the dependency direction. The exact wire contract is in `PROTOCOL.md`;
@@ -118,7 +150,7 @@ COBS and Modbus Messages share four writer names: `append_native`, `append_be`,
 `append_le`, and `append_bytes`, with scalar and span overloads. Their receive
 APIs likewise share `read_native`, `read_be`, `read_le`, and `read_bytes`.
 `SendResult` is also one actual type from `wire/SendResult.h`, exported by
-both protocol namespaces. The common success counter is `rx.frames_received`.
+all three protocol namespaces. The common success counter is `rx.frames_received`.
 The complete application contract, UART adapters and migration note are in
 [`API_PARITY.md`](API_PARITY.md).
 `src/wire/Read.h` implements the readers once and each protocol namespace re-exports

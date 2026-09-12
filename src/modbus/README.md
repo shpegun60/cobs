@@ -5,6 +5,27 @@ SPDX-License-Identifier: MIT
 
 # Modbus C++20 library
 
+[Documentation](../../doc/README.md) · [Почни звідси](../../doc/START_HERE_UK.md) · [Examples](../../doc/EXAMPLES.md)
+
+
+<!-- toc -->
+
+Contents
+
+- [Quick start](#quick-start)
+- [Receive packets](#receive-packets)
+- [Build and send a request](#build-and-send-a-request)
+- [CRC policy and compile-time RTU format](#crc-policy-and-compile-time-rtu-format)
+- [Read function data](#read-function-data)
+- [Storage choices](#storage-choices)
+- [Diagnostics](#diagnostics)
+- [RTU framing: burst candidates by default, a framing policy on request](#rtu-framing-burst-candidates-by-default-a-framing-policy-on-request)
+- [qmake](#qmake)
+- [Verification](#verification)
+- [Lifetime and concurrency](#lifetime-and-concurrency)
+
+<!-- /toc -->
+
 `modbus::rtu` is a deterministic Modbus RTU
 framing endpoint with COBS-style ownership, heap or fixed-pool storage, CRC,
 explicit metadata, and direct integration with the repository's STM32 DMA
@@ -27,14 +48,16 @@ in [`doc/INTEGRATION.md`](../../doc/INTEGRATION.md).
 ```cpp
 #include "modbus/rtu/Rtu.h"
 #include "adapters/rtu/UartAdapter.h"
-#include "Uart.h"
+#include "uart/Uart.h"
 
 using Serial = Uart<256, 4>;
-using Link = modbus::rtu::Endpoint<wire::Pool<8, 2>>;
+namespace framing = modbus::rtu::framing;
+using Link = modbus::rtu::Endpoint<wire::Pool<8, 2>, modbus::rtu::Format<>,
+    framing::Standard<framing::Direction::Response>>; // client receives responses
 
 static Serial serial;
-static Link link;
-static modbus::rtu::UartAdapter adapter{serial, link};   // takes no configuration: safe before main()
+static Link g_endpoint;
+static modbus::rtu::UartAdapter adapter{serial, g_endpoint};   // takes no configuration: safe before main()
 ```
 
 The adapter is the whole integration: UART RX and ordered loss notification
@@ -45,24 +68,28 @@ first and the adapter bound after (a CubeMX `huart3` carries no rate until
 construction):
 
 ```cpp
-serial.init(&huart3);
-adapter.bind();     // false if the driver is not initialized or a transmission is still active; then nothing changed
+if (!serial.init(&huart3) || !adapter.bind()) {
+    // Stop this attempt and report initialization/binding failure.
+}
+// In the owning loop/task: adapter.proceed(); then pop packets.
 ```
 
-Without the adapter the same wiring is three explicit bindings — RX to
-`receive_adu()`, gap to `notify_gap()`, `Sender`/`BusyQuery` to the driver's
-`send()`/`tx_busy()` — and, with a framing policy, the stale-frame deadline
-below; the adapter exists so that none of it lives in application code.
+Without the adapter the same wiring is RX to `consume()` for framed RTU,
+gap to `notify_gap()`, and Sender/BusyQuery to the driver's send/tx_busy.
+The application must additionally own stale-candidate recovery and poll TX.
+For a server select `Direction::Request`; the example above is a client.
 
-`receive_adu()` deliberately means one complete physical UART receive burst,
-not arbitrary stream chunking. For the default format use `Uart<256, N>` so filling a DMA chunk does not
-split a legal maximum ADU. Other ceilings require a suitably sized transport
-or a complete-candidate adapter; CRC cannot substitute for framing.
+Bare `Endpoint<>` remains available with no framer: `receive_adu()` then
+requires one whole candidate supplied by an external boundary guarantee.
+It does not mean that every physical UART burst is a valid candidate. IDLE
+can split an ADU and a DMA chunk can contain several; `Uart<256, N>` does not
+fix this. CRC cannot substitute for framing. See [the complete integration
+matrix](../../doc/INTEGRATION.md) and [Qt recipes](../../doc/QT.md).
 
 ## Receive packets
 
 ```cpp
-while (auto packet = link.pop_packet()) {
+while (auto packet = g_endpoint.pop_packet()) {
     const uint8_t address = packet.address();
     const uint8_t function = packet.function();
 
@@ -84,7 +111,7 @@ that application payload excludes framing metadata.
 ## Build and send a request
 
 ```cpp
-auto message = link.make_message(
+auto message = g_endpoint.make_message(
     1u,    // RTU address
     0x03u, // function
     4u);   // optional function-data capacity hint
@@ -95,7 +122,7 @@ if (!message ||
     return;
 }
 
-switch (link.send(message)) {
+switch (g_endpoint.send(message)) {
 case modbus::SendResult::Sent:
     // Endpoint owns the ADU until UART releases the borrow.
     break;
@@ -153,7 +180,7 @@ and `capacity()` continue to count function-data bytes only.
 The default is Heap with standard CRC-16/MODBUS and a 256-byte physical ADU:
 
 ```cpp
-modbus::rtu::Endpoint<> link;
+modbus::rtu::Endpoint<> g_endpoint;
 using Memory = wire::Pool<8, 2>;
 using SmallFlash = modbus::rtu::Endpoint<
     Memory, modbus::rtu::Format<crc::Crc16Bitwise>>;
@@ -320,8 +347,8 @@ standard Modbus RTU and both peers must select the same private format.
 One service call from the main loop (or one communication task):
 
 ```cpp
-adapter.proceed();   // platform clock, uart.proceed → stale-frame check → link.poll
-while (auto packet = link.pop_packet()) { handle(packet); }
+adapter.proceed();   // platform clock, uart.proceed → stale-frame check → g_endpoint.poll
+while (auto packet = g_endpoint.pop_packet()) { handle(packet); }
 ```
 
 ## Read function data
@@ -389,7 +416,7 @@ consistent across translation units.
 ## Diagnostics
 
 ```cpp
-const modbus::rtu::Stats stats = link.stats();
+const modbus::rtu::Stats stats = g_endpoint.stats();
 
 // stats.rx.candidates
 // stats.rx.frames_received
@@ -407,10 +434,10 @@ const modbus::rtu::Stats stats = link.stats();
 For Pool storage:
 
 ```cpp
-link.storage().rx_available();
-link.storage().tx_available();
-link.storage().rx_stats();
-link.storage().tx_stats();
+g_endpoint.storage().rx_available();
+g_endpoint.storage().tx_available();
+g_endpoint.storage().rx_stats();
+g_endpoint.storage().tx_stats();
 ```
 
 ## RTU framing: burst candidates by default, a framing policy on request
@@ -446,10 +473,11 @@ void loop_step() noexcept { adapter.proceed(); }
 // The builder knows the same table: a response to 0x03 is a byte count plus
 // data, and a count that disagrees with the data is refused before the wire.
 auto reply = server.make_message(0x11, 0x03);
-reply.append_be<uint8_t>(4);
-reply.append_be<uint16_t>(0x022B);
-reply.append_be<uint16_t>(0x0064);
-server.send(reply);
+if (!reply || !reply.append_be<uint8_t>(4) ||
+    !reply.append_be<uint16_t>(0x022B) || !reply.append_be<uint16_t>(0x0064)) {
+    return; // do not send incomplete application fields
+}
+const auto result = server.send(reply); // retain reply elsewhere across Busy
 ```
 
 `framing::Standard<Direction>` covers the standard functions whose length
@@ -474,8 +502,8 @@ struct MyFramer : framing::Standard<framing::Direction::Request> {
 using Device = modbus::rtu::Endpoint<wire::Pool<8, 2>, modbus::rtu::Format<>, MyFramer>;
 
 auto frame = device.make_message(0x11, 0x41); // size() == 2: the prefix is reserved
-frame.append_bytes(body);                      // the application appends only the body
-device.send(frame);                            // N = body.size() is written before the CRC
+if (!frame || !frame.append_bytes(body)) { return; } // only the body, check failure
+const auto result = device.send(frame); // N is filled before CRC; retain on Busy
 ```
 
 The peer's `packet.data()` is `[N][body]`; nothing is hidden. Forgetting or
@@ -511,9 +539,10 @@ chunk, not merely the old non-zero counter. An empty framed `on_rx({})`
 does not change the deadline. The full-chunk rule assumes a continuously transmitting peer or
 bridge; a strict RTU sender that paused below t1.5 after every byte could
 stretch a chunk beyond it. A task that sleeps between `proceed()` calls
-bounds its sleep by `adapter.deadline_in_ms(now)`. With
+bounds its sleep through `uart::FreeRtosWake::wait(adapter)`; the normal
+caller computes neither a deadline nor a timestamp. With
 `framing::None` (the default) nothing described in this section is compiled
-in, and the endpoint is the one documented everywhere else in this file.
+in; use `receive_adu()` only with an externally guaranteed complete candidate.
 
 Measured on the NUCLEO-H7S3L8 through the ST-Link bridge, which splits
 frames from 3 Mbaud up: the framed endpoint echoed every single, split and

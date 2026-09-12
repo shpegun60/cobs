@@ -1,6 +1,20 @@
 <!-- Author: shpegun60; SPDX-License-Identifier: MIT -->
 # One size convention: useful data bytes
 
+[Documentation](README.md) · [Почни звідси](START_HERE_UK.md) · [Examples](EXAMPLES.md)
+
+
+<!-- toc -->
+
+Contents
+
+- [Standard defaults](#standard-defaults)
+- [What the library derives](#what-the-library-derives)
+- [Migrating earlier explicit Modbus limits](#migrating-earlier-explicit-modbus-limits)
+- [Verification and historical evidence](#verification-and-historical-evidence)
+
+<!-- /toc -->
+
 The 2026-09-12 API update gives every protocol Format the same size unit:
 **the bytes visible through `Packet::data()` and counted by Message::size()**.
 Applications do not subtract headers or CRC to size ordinary payload buffers.

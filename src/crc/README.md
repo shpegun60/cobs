@@ -5,6 +5,19 @@ SPDX-License-Identifier: MIT
 
 # CRC policy library
 
+[Documentation](../../doc/README.md) · [Почни звідси](../../doc/START_HERE_UK.md) · [Examples](../../doc/EXAMPLES.md)
+
+
+<!-- toc -->
+
+Contents
+
+- [Built-in policies](#built-in-policies)
+- [Policy contract](#policy-contract)
+- [Build and verification](#build-and-verification)
+
+<!-- /toc -->
+
 `src/crc/Crc.h` is a protocol-independent, header-only C++20 library. It separates
 the check-value algorithm from its wire representation so a protocol can use a
 CRC8, CRC16, CRC32, CRC64, hardware engine, private checksum, or no trailer at
