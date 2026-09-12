@@ -23,6 +23,7 @@
 #include "Uart.h"
 
 #include "Cobs.h"
+#include "adapters/cobs/UartAdapter.h"
 #include "uart_bench.h"
 #include "usart.h"
 
@@ -108,6 +109,7 @@ enum class PendingAction : uint8_t { None, ResetMetrics, HoldPackets, StallLoop 
 
 Serial s_uart;
 Link s_link;
+cobs::UartAdapter s_adapter{s_uart, s_link};
 
 BenchCounter s_cobs_consume;
 BenchCounter s_cobs_tx_release;
@@ -345,7 +347,7 @@ std::array<uint8_t, 272u> s_statsSnapshot{};
 		delta(uartStats.rx_errors, s_uart0.rx_errors),
 		delta(uartStats.tx_errors, s_uart0.tx_errors),
 		delta(uartStats.restarts, s_uart0.restarts),
-		delta(cobsStats.rx.frames_delivered, s_cobs0.rx.frames_delivered),
+		delta(cobsStats.rx.frames_received, s_cobs0.rx.frames_received),
 		delta(cobsStats.rx.frames_lost, s_cobs0.rx.frames_lost),
 		delta(cobsStats.rx.allocation_failure, s_cobs0.rx.allocation_failure),
 		delta(cobsStats.rx.malformed, s_cobs0.rx.malformed),
@@ -535,21 +537,10 @@ void applyPendingAction(const uint32_t now) noexcept
 	}
 }
 
-struct Transport final {
-	bool send(const std::span<const uint8_t> frame) noexcept
-	{
-		return s_uart.send(frame);
-	}
-
-	[[nodiscard]] bool busy() const noexcept { return s_uart.tx_busy(); }
-};
-
-Transport s_transport;
-
 void onRx(const std::span<const uint8_t> bytes) noexcept
 {
 	const uint32_t started = DWT->CYCCNT;
-	s_link.consume(bytes);
+	s_adapter.on_rx(bytes);
 	bench_counter_add(&s_cobs_consume, DWT->CYCCNT - started);
 }
 
@@ -571,17 +562,12 @@ extern "C" void bench_init(void)
 		Error_Handler();
 	}
 
-	s_uart.setRxHandler([](const std::span<const uint8_t> bytes) noexcept {
-		onRx(bytes);
-	});
-	s_uart.setRxGapHandler([]() noexcept { s_link.notify_gap(); });
-
-	if (!s_link.bind(
-			Link::Sender{tiny::bind<&Transport::send>(s_transport)},
-			Link::BusyQuery{tiny::bind<&Transport::busy>(s_transport)}) ||
-			!s_uart.init(&huart3)) {
+	if (!s_uart.init(&huart3) || !s_adapter.bind()) {
 		Error_Handler();
 	}
+	// Keep the RX timing scope, but pass its span through the production
+	// adapter. TX and gap delegates are the adapter's own bindings.
+	s_uart.setRxHandler([](const std::span<const uint8_t> bytes) noexcept { onRx(bytes); });
 	resetMetrics();
 }
 
@@ -595,6 +581,9 @@ extern "C" void bench_loop(void)
 		s_stallActive = false;
 	}
 
+	// The same two service steps as adapter.proceed(now), separated only so
+	// the existing benchmark can count UART work and actual TX reclamation.
+	// The dedicated RTOS/lifecycle image exercises proceed() directly.
 	s_uart.proceed(now);
 	pollLink();
 	applyPendingAction(now);

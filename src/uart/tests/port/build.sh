@@ -99,7 +99,7 @@ echo "=== H7RS (STM32H7S3xx, Cortex-M7, D-cache, GPDMA) ==="
   "$HERE/test_instantiate.cpp" -o "$OUT/test_h7rs.o"
 echo "OK"
 
-echo "=== RTU adapter integration (real F1/G4/H7RS headers, compile-only) ==="
+echo "=== COBS/RTU adapter integration (real F1/G4/H7RS headers, compile-only) ==="
 ADAPTER_SOURCE="$SRC/adapters/tests/arm_uart_adapter.cpp"
 "$GCC" $COMMON_FLAGS -I"$SRC" -mcpu=cortex-m3 -mfloat-abi=soft -DSTM32F103xE \
   -I"$HERE/f1" -isystem "$LIBS/stm32f1xx-hal-driver/Inc" \
@@ -110,7 +110,7 @@ ADAPTER_SOURCE="$SRC/adapters/tests/arm_uart_adapter.cpp"
   -I"$HERE/h7rs" -isystem "$H7RS_FW/Drivers/STM32H7RSxx_HAL_Driver/Inc" \
   -isystem "$H7RS_FW/Drivers/CMSIS/Device/ST/STM32H7RSxx/Include" \
   "$ADAPTER_SOURCE" -o "$OUT/adapter_h7rs.o"
-echo "OK (adapter 32 B, UART layout unchanged)"
+echo "OK (COBS adapter 12 B, RTU adapter 32 B, UART layout unchanged)"
 
 # sed strips the objdump header naming the input file.
 disasm() { "$OBJDUMP" -d -C "$1" | sed '1,3d'; }

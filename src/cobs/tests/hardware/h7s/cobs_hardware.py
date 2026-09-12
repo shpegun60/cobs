@@ -780,6 +780,7 @@ def append_result(path: str | None, baud: int, result: dict) -> None:
         sources.extend((src / directory).glob("*.h"))
         sources.extend((src / directory / "detail").glob("*.h"))
     sources.extend((src / "cobs").glob("*.cpp"))
+    sources.append(src / "adapters/cobs/UartAdapter.h")
     elf = repo / "stm32_cube_test/h7s_cobs_test/out/cobs-hardware/cobs_hardware_bench.elf"
     record = {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),

@@ -96,7 +96,7 @@ template<class Engine>
 	endpoint.poll(0u);
 	const cobs::Stats snapshot = endpoint.stats();
 	return !endpoint.tx_active() && endpoint.unbind() &&
-	       snapshot.rx.frames_delivered == 1 && snapshot.tx.frames_sent == 1;
+	       snapshot.rx.frames_received == 1 && snapshot.tx.frames_sent == 1;
 }
 
 } // namespace

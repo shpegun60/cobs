@@ -18,6 +18,7 @@ isEmpty(WIRE_PRI_INCLUDED) {
     HEADERS += \
         $$WIRE_DIR/Scalar.h \
         $$WIRE_DIR/Read.h \
+        $$WIRE_DIR/SendResult.h \
         $$WIRE_DIR/Storage.h \
         $$WIRE_DIR/detail/BlockPool.h
 }

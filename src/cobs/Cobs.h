@@ -57,6 +57,7 @@
 #include "Format.h"
 #include "Read.h"
 #include "Stats.h"
+#include "../wire/SendResult.h"
 #include "../wire/Storage.h"
 #include "detail/Message.h"
 #include "detail/Packet.h"
@@ -74,17 +75,12 @@
 
 namespace cobs {
 
-enum class SendResult : uint8_t {
-	Sent,     // the transport accepted the frame; Endpoint now holds the block
-	Busy,     // a transfer is already in flight; the message is untouched
-	Unbound,  // no sender / busy-query delegate pair has been bound
-	Failed,   // the transport refused to start; the message stays Encoded
-	Invalid,  // the message owns no block, or belongs to another engine
-};
+using wire::SendResult;
 
 template<class MemoryT = wire::Heap, class FormatT = cobs::Format<>>
 class Endpoint final {
 public:
+	using SendResult = wire::SendResult;
 	using Memory = MemoryT;
 	using Format = FormatT;
 	using Crc = typename Format::Crc;

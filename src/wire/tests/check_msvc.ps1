@@ -12,6 +12,7 @@ $cases = @(
     @{name='crc'; sources=@('crc/tests/test_crc.cpp')},
     @{name='storage'; sources=@('wire/tests/test_storage.cpp')},
     @{name='parity'; sources=@('wire/tests/test_api_parity.cpp')},
+    @{name='endpoint_parity'; sources=@('wire/tests/test_endpoint_parity.cpp', 'cobs/Decoder.cpp', 'cobs/Encoder.cpp')},
     @{name='custom_memory'; sources=@('wire/tests/test_protocol_storage.cpp', 'cobs/Decoder.cpp', 'cobs/Encoder.cpp')},
     @{name='cobs_crc'; sources=@('cobs/tests/test_crc.cpp', 'cobs/Decoder.cpp', 'cobs/Encoder.cpp')},
     @{name='cobs_layout'; sources=@('cobs/tests/test_layout.cpp')},

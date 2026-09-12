@@ -313,7 +313,7 @@ trailer through explicit `store/load` operations. The default CRC16 policy is
 low-byte-first. COBS code bytes and Modbus address/function are single-byte
 fields. Payload append calls cannot reorder any library-owned field.
 
-Call `poll(now_ms)` regularly with the application's millisecond tick (`HAL_GetTick()` on STM32; COBS does not use the time yet, RTU's framing policy does). It returns the active TX block to storage after the
+Call `poll(now_ms)` regularly with the application's millisecond tick (`HAL_GetTick()` on STM32; neither endpoint uses the time yet). RTU stale-frame timing belongs to its transport adapter, not to `Endpoint::poll()`. The endpoint returns the active TX block to storage after the
 transport's busy query becomes false:
 
 ```cpp
@@ -386,7 +386,7 @@ transmitter state:
 const cobs::Stats counters = endpoint.stats();
 
 // RX outcome counters:
-// counters.rx.frames_delivered
+// counters.rx.frames_received
 // counters.rx.frames_lost
 // counters.rx.allocation_failure
 // counters.rx.malformed
@@ -428,7 +428,7 @@ it should remain zero in a correct integration.
 | `read_native` / `read_be` / `read_le` / `read_bytes` | parse packet data with an application-owned cursor and a strong failure guarantee |
 | `make_message(hint)` | create an empty exclusive TX message and optionally reserve payload capacity |
 | `send(message)` | start a frame or return an explicit retry/error result |
-| `tx_active()` / `poll(now_ms)` | observe and reclaim the one transport-borrowed TX block; the tick feeds slow-path supervision (RTU stale frames) |
+| `tx_active()` / `poll(now_ms)` | observe and reclaim the one transport-borrowed TX block; RTU stale-frame supervision runs in its adapter |
 | `stats()` / `storage()` | read protocol counters and storage-specific diagnostics |
 
 ## Modbus RTU quick start
@@ -649,7 +649,7 @@ void communicationTask(void*)
 {
     for (;;) {
         const uint32_t now = HAL_GetTick();
-        uart::FreeRtosWake::wait(std::min(50u, adapter.deadline_in_ms(now)));
+        (void)uart::FreeRtosWake::wait(adapter, now);
         adapter.proceed(HAL_GetTick());          // uart.proceed -> endpoint (see src/modbus/README.md)
         while (auto packet = link.pop_packet()) { handle(packet); }
     }
@@ -752,7 +752,7 @@ remain intentionally cheap plain increments.
 
 This is the intended embedded arrangement. UART stays a byte transport; COBS
 receives byte chunks and ordered gap notifications. The other arrangements —
-RTU through `UartAdapter`, FreeRTOS on top, RTU without the adapter, a
+RTU through its matching `UartAdapter`, FreeRTOS on top, either protocol without an adapter, a
 desktop or TCP transport — are enumerated in
 [`doc/INTEGRATION.md`](doc/INTEGRATION.md).
 
@@ -760,6 +760,7 @@ desktop or TCP transport — are enumerated in
 #define UART_ENGINE_IMPLEMENT
 #include "Uart.h"
 #include "Cobs.h"
+#include "adapters/cobs/UartAdapter.h"
 
 class SerialStack final {
 public:
@@ -770,18 +771,7 @@ public:
 
     bool init(UART_HandleTypeDef* huart) noexcept
     {
-        uart_.setRxHandler(Serial::RxHandler{
-            tiny::bind<&SerialStack::on_rx>(*this)});
-        uart_.setRxGapHandler(Serial::GapHandler{
-            tiny::bind<&SerialStack::on_gap>(*this)});
-
-        if (!uart_.init(huart)) {
-            return false;
-        }
-
-        return link_.bind(
-            Link::Sender{tiny::bind<&Serial::send>(uart_)},
-            Link::BusyQuery{tiny::bind<&Serial::tx_busy>(uart_)});
+        return uart_.init(huart) && adapter_.bind();
     }
 
     bool queue(std::span<const uint8_t> payload) noexcept
@@ -801,8 +791,7 @@ public:
 
     void proceed(uint32_t now_ms) noexcept
     {
-        uart_.proceed(now_ms); // invokes on_rx/on_gap in stream order
-        link_.poll(HAL_GetTick()); // releases a completed UART TX block
+        adapter_.proceed(now_ms); // drains UART RX/gaps, then reclaims completed TX
 
         while (auto packet = link_.pop_packet()) {
             handle_packet(packet.data());
@@ -822,20 +811,11 @@ public:
     [[nodiscard]] const Serial& uart() const noexcept { return uart_; }
 
 private:
-    void on_rx(std::span<const uint8_t> bytes) noexcept
-    {
-        link_.consume(bytes);
-    }
-
-    void on_gap() noexcept
-    {
-        link_.notify_gap();
-    }
-
     static void handle_packet(std::span<const uint8_t> payload) noexcept;
 
     Serial uart_{};
     Link link_{};
+    cobs::UartAdapter<Serial, Link> adapter_{uart_, link_};
     Link::Message pending_{};
 };
 
@@ -846,6 +826,12 @@ static SerialStack serial_stack;
 Production code normally adds application-specific error/terminal callbacks,
 message scheduling, and packet dispatch. It should not add another framing
 buffer between these layers.
+
+COBS and RTU share the builder, readers, ownership result and basic adapter
+lifecycle. See [the end-user API parity contract](doc/API_PARITY.md) for the
+side-by-side API, migration notes and the deliberate protocol differences.
+The same `uart::FreeRtosWake` works with either adapter when a FreeRTOS task
+sleeps between events; it is unnecessary in a bare-metal polling loop.
 
 The exact implementation used for real-silicon testing is
 [`src/cobs/tests/hardware/h7s/cobs_bench.cpp`](src/cobs/tests/hardware/h7s/cobs_bench.cpp).

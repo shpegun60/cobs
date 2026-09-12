@@ -67,8 +67,15 @@ or file boundaries.
 
 The stable documentation is split by boundary:
 
+- `doc/API_PARITY.md` fixes the shared end-user contract: one `wire::SendResult`,
+  `read_*` exports in both protocol namespaces, `rx.frames_received`, matching
+  COBS/RTU UART adapter lifecycles and one protocol-independent FreeRTOS wake.
+  COBS's old `frames_delivered` field was renamed, not duplicated; saved
+  hardware JSON labels remain historical. Wire formats, Format limit units
+  and RTU owned-prefix `data()` semantics are unchanged;
+
 - `doc/INTEGRATION.md` — the usage guide: every supported composition (RTU
-  through `UartAdapter`, COBS on the driver directly, FreeRTOS on top, RTU
+  through `UartAdapter`, COBS through its adapter or on the driver directly, FreeRTOS on top, RTU
   without the adapter, any other byte transport); its snippets are the
   translation units in `doc/examples/`, compiled and run by
   `sh doc/examples/build.sh` against the real headers and the host fakes;
@@ -83,7 +90,7 @@ The stable documentation is split by boundary:
 
 Repository layout: `src/` holds the stack itself (`wire/`, `crc/`, `cobs/`,
 `modbus/`, `uart/`) and `src/adapters/`, the glue that knows both a transport
-and an endpoint while neither knows it (`rtu/UartAdapter.h`,
+and an endpoint while neither knows it (`cobs/UartAdapter.h`, `rtu/UartAdapter.h`,
 `freertos/FreeRtosWake.h`, `qt/SerialAdapter.h` with the QModbus-shaped
 `qt/RtuClient.h` on top); `uart/` is only the driver, its
 tests and the probe header, and `modbus/` names no transport; `libs/` at the

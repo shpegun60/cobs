@@ -326,13 +326,18 @@ std::size_t offset = 0;
 uint16_t start = 0;
 uint16_t count = 0;
 
-if (!modbus::read_be(packet.data(), offset, start) ||
-    !modbus::read_be(packet.data(), offset, count)) {
+if (!modbus::rtu::read_be(packet.data(), offset, start) ||
+    !modbus::rtu::read_be(packet.data(), offset, count)) {
     // malformed function data
 }
 ```
 
 `read_native`, `read_be`, `read_le` and `read_bytes` mirror the writer names.
+The `modbus::rtu`, parent `modbus`, `cobs` and neutral `wire` reader names
+refer to the same functions. Likewise all protocol `SendResult` names refer
+to one `wire::SendResult` type. See the shared
+[end-user API contract](../../doc/API_PARITY.md), including the same
+`UartAdapter` lifecycle and the protocol-independent `uart::FreeRtosWake`.
 They are bounds checked and leave both cursor and output unchanged on failure.
 COBS exposes the identical calls as `cobs::read_*`. Both namespaces re-export
 one implementation from `src/wire/Read.h`, so interface parity adds neither a

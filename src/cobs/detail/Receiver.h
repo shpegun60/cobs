@@ -332,7 +332,7 @@ private:
 		m_building->size = static_cast<uint16_t>(body);
 		enqueueReady(m_building);
 		m_building = nullptr;
-		++m_stats.frames_delivered;
+		++m_stats.frames_received;
 		endFrame(false);
 	}
 

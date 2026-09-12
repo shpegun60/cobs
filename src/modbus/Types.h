@@ -6,6 +6,8 @@
 #ifndef MODBUS_TYPES_H_
 #define MODBUS_TYPES_H_
 
+#include "../wire/SendResult.h"
+
 #include <cstddef>
 #include <cstdint>
 
@@ -19,15 +21,8 @@ namespace modbus {
 inline constexpr std::size_t max_pdu_size = 253u;
 inline constexpr std::size_t max_data_size = max_pdu_size - 1u;
 
-// The transport handshake is intentionally identical to cobs::SendResult.
-// Protocol-specific metadata changes the frame, not ownership semantics.
-enum class SendResult : uint8_t {
-	Sent,
-	Busy,
-	Unbound,
-	Failed,
-	Invalid,
-};
+// Protocol metadata changes the frame, not the transport/ownership result.
+using wire::SendResult;
 
 } // namespace modbus
 

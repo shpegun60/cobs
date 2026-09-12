@@ -26,7 +26,7 @@ namespace cobs {
 
 struct Stats final {
 	struct Rx final {
-		uint32_t frames_delivered   = 0;
+		uint32_t frames_received   = 0;
 		uint32_t frames_lost        = 0; // every frame that did not reach the queue
 		uint32_t allocation_failure = 0;
 		uint32_t malformed          = 0; // structural COBS error

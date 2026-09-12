@@ -32,6 +32,23 @@ static_assert(sizeof(CobsEndpoint) == sizeof(CobsTableEndpoint));
 using RtuEndpoint = modbus::rtu::Endpoint<wire::Pool<2u, 2u>>;
 using RtuTableEndpoint = modbus::rtu::Endpoint<wire::Pool<2u, 2u>, modbus::rtu::Format<::crc::Crc16Table>>;
 using RtuNoCrcEndpoint = modbus::rtu::Endpoint<wire::Pool<2u, 2u>, modbus::rtu::Format<::crc::NoCrc>>;
+using RequestEndpoint = modbus::rtu::Endpoint<wire::Pool<2u, 2u>, modbus::rtu::Format<>,
+	modbus::rtu::framing::Standard<modbus::rtu::framing::Direction::Request>>;
+using ResponseEndpoint = modbus::rtu::Endpoint<wire::Pool<2u, 2u>, modbus::rtu::Format<>,
+	modbus::rtu::framing::Standard<modbus::rtu::framing::Direction::Response>>;
+
+static_assert(std::same_as<cobs::SendResult, wire::SendResult>);
+static_assert(std::same_as<modbus::SendResult, wire::SendResult>);
+static_assert(std::same_as<modbus::rtu::SendResult, wire::SendResult>);
+static_assert(std::same_as<CobsEndpoint::SendResult, RtuEndpoint::SendResult>);
+static_assert(std::same_as<CobsEndpoint::Sender, RtuEndpoint::Sender>);
+static_assert(std::same_as<CobsEndpoint::BusyQuery, RtuEndpoint::BusyQuery>);
+static_assert(sizeof(wire::SendResult) == sizeof(uint8_t));
+static_assert(sizeof(cobs::Stats::Rx) == 8u * sizeof(uint32_t));
+static_assert(sizeof(modbus::rtu::Stats::Rx) == 7u * sizeof(uint32_t));
+static_assert(std::same_as<RequestEndpoint::Packet, RtuEndpoint::Packet>);
+static_assert(std::same_as<RequestEndpoint::Message, RtuEndpoint::Message>);
+static_assert(std::same_as<RequestEndpoint::Storage, RtuEndpoint::Storage>);
 
 template<class Packet>
 concept SharedPacket =
@@ -72,7 +89,7 @@ concept SharedMessage =
 	};
 
 template<class Result>
-concept SharedSendResult = std::is_enum_v<Result> && requires {
+concept SharedSendResult = std::same_as<Result, wire::SendResult> && requires {
 	Result::Sent;
 	Result::Busy;
 	Result::Unbound;
@@ -91,11 +108,17 @@ concept SharedEndpoint =
 		{ endpoint.notify_gap() } -> std::same_as<void>;
 		{ endpoint.has_packet() } -> std::same_as<bool>;
 		{ endpoint.pop_packet() } -> std::same_as<typename Endpoint::Packet>;
-		endpoint.send(message);
+		{ endpoint.send(message) } noexcept -> std::same_as<wire::SendResult>;
 		requires SharedSendResult<decltype(endpoint.send(message))>;
 		{ endpoint.tx_active() } -> std::same_as<bool>;
 		{ endpoint.poll(uint32_t{}) } -> std::same_as<void>;
-		endpoint.stats();
+		{ endpoint.stats().rx.frames_received } -> std::same_as<uint32_t&&>;
+		{ endpoint.stats().rx.crc_errors } -> std::same_as<uint32_t&&>;
+		{ endpoint.stats().rx.oversize } -> std::same_as<uint32_t&&>;
+		{ endpoint.stats().rx.allocation_failure } -> std::same_as<uint32_t&&>;
+		{ endpoint.stats().tx.frames_sent } -> std::same_as<uint32_t&&>;
+		{ endpoint.stats().tx.send_refused_busy } -> std::same_as<uint32_t&&>;
+		{ endpoint.stats().tx.send_failed } -> std::same_as<uint32_t&&>;
 		endpoint.storage();
 	};
 
@@ -132,6 +155,9 @@ static_assert(SharedEndpoint<CobsTableEndpoint>);
 static_assert(SharedEndpoint<RtuEndpoint>);
 static_assert(SharedEndpoint<RtuTableEndpoint>);
 static_assert(SharedEndpoint<RtuNoCrcEndpoint>);
+static_assert(SharedEndpoint<RequestEndpoint> && SharedEndpoint<ResponseEndpoint>);
+static_assert(SharedPacket<RequestEndpoint::Packet> && SharedMessage<RequestEndpoint::Message>);
+static_assert(SharedPacket<ResponseEndpoint::Packet> && SharedMessage<ResponseEndpoint::Message>);
 static_assert(std::same_as<RtuEndpoint::Message, RtuTableEndpoint::Message>);
 static_assert(std::same_as<RtuEndpoint::Packet, RtuTableEndpoint::Packet>);
 static_assert(std::same_as<RtuEndpoint::Layout, RtuTableEndpoint::Layout>);
@@ -150,6 +176,8 @@ static_assert(!HasRtuMetadata<typename CobsEndpoint::Packet>);
 static_assert(HasRtuMetadata<typename RtuEndpoint::Packet>);
 static_assert(HasStreamConsume<CobsEndpoint> && !HasAduReceive<CobsEndpoint>);
 static_assert(!HasStreamConsume<RtuEndpoint> && HasAduReceive<RtuEndpoint>);
+static_assert(HasStreamConsume<RequestEndpoint> && HasAduReceive<RequestEndpoint>);
+static_assert(HasStreamConsume<ResponseEndpoint> && HasAduReceive<ResponseEndpoint>);
 
 using U16Reader = bool (*)(
 	std::span<const uint8_t>, std::size_t&, uint16_t&) noexcept;
@@ -169,6 +197,10 @@ static_assert(cobs_native == modbus_native);
 static_assert(cobs_be == modbus_be);
 static_assert(cobs_le == modbus_le);
 static_assert(cobs_bytes == modbus_bytes);
+static_assert(cobs_native == static_cast<U16Reader>(&modbus::rtu::read_native<uint16_t>));
+static_assert(cobs_be == static_cast<U16Reader>(&modbus::rtu::read_be<uint16_t>));
+static_assert(cobs_le == static_cast<U16Reader>(&modbus::rtu::read_le<uint16_t>));
+static_assert(cobs_bytes == &modbus::rtu::read_bytes);
 
 } // namespace
 

@@ -116,9 +116,9 @@ void runEngine(const char* name)
 		cobs.consume(std::span<const uint8_t>{wire});
 
 		auto stats = cobs.stats();
-		check(stats.rx.frames_delivered == 2, "two frames arrive through the engine");
-		stats.rx.frames_delivered = 99;
-		check(cobs.stats().rx.frames_delivered == 2,
+		check(stats.rx.frames_received == 2, "two frames arrive through the engine");
+		stats.rx.frames_received = 99;
+		check(cobs.stats().rx.frames_received == 2,
 		      "the Stats value is a snapshot, not mutable engine state");
 		const auto r1 = cobs.pop_packet();
 		const auto r2 = cobs.pop_packet();
@@ -316,7 +316,7 @@ void runEngine(const char* name)
 		t.finish();
 		cobs.poll(0u);
 		const auto stats = cobs.stats();
-		check(!cobs.tx_active() && stats.rx.frames_delivered == 1 &&
+		check(!cobs.tx_active() && stats.rx.frames_received == 1 &&
 		          stats.tx.frames_sent == 1,
 		      "and one snapshot reports both directions settled independently");
 	}

@@ -37,7 +37,7 @@ static TaskHandle_t comm_task = nullptr;
 static void comm_task_iteration() noexcept        // one pass of the for(;;) body below
 {
 	const uint32_t now = HAL_GetTick();
-	(void)uart::FreeRtosWake::wait(std::min(50u, adapter.deadline_in_ms(now)));
+	(void)uart::FreeRtosWake::wait(adapter, now);
 	adapter.proceed(HAL_GetTick());
 	while (auto request = g_endpoint.pop_packet()) {
 		serve(request);

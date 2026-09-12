@@ -52,6 +52,8 @@ build test_storage    "$HERE/test_storage.cpp"
 build test_api_parity "$HERE/test_api_parity.cpp"
 build test_protocol_storage "$HERE/test_protocol_storage.cpp" \
 	"$SRC/cobs/Encoder.cpp" "$SRC/cobs/Decoder.cpp"
+build test_endpoint_parity "$HERE/test_endpoint_parity.cpp" \
+	"$SRC/cobs/Encoder.cpp" "$SRC/cobs/Decoder.cpp"
 
 # The release build is a DIFFERENT build, so it is tested as one: the pool's
 # double-free and foreign-pointer rejection must survive -DNDEBUG, because a
@@ -64,6 +66,7 @@ build test_storage_ndebug    -DNDEBUG "$HERE/test_storage.cpp"
 "$OUT/test_storage.exe"
 "$OUT/test_api_parity.exe"
 "$OUT/test_protocol_storage.exe"
+"$OUT/test_endpoint_parity.exe"
 
 echo "=== the same pool guarantees, built with -DNDEBUG ==="
 "$OUT/test_block_pool_ndebug.exe"
@@ -74,5 +77,12 @@ echo "=== the same pool guarantees, built with -DNDEBUG ==="
 "$CXX" -std=gnu++20 -O3 -DNDEBUG -flto $WARN \
 	-I"$SRC" "$HERE/test_scalar.cpp" -o "$OUT/test_scalar_o3_lto.exe"
 "$OUT/test_scalar_o3_lto.exe"
+
+# Public ownership/retry and framing contracts must survive the shipped build.
+# shellcheck disable=SC2086
+"$CXX" -std=gnu++20 -O3 -DNDEBUG -flto $WARN \
+	-I"$SRC" -I"$LIBS/delegate" "$HERE/test_endpoint_parity.cpp" \
+	"$SRC/cobs/Encoder.cpp" "$SRC/cobs/Decoder.cpp" -o "$OUT/test_endpoint_parity_o3_lto.exe"
+"$OUT/test_endpoint_parity_o3_lto.exe"
 
 echo "wire scalar, storage, block-pool and API-parity suites passed"

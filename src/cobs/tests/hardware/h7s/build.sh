@@ -43,7 +43,7 @@ HAL_INC="-isystem $PROJECT/Drivers/STM32H7RSxx_HAL_Driver/Inc \
   -isystem $PROJECT/Drivers/STM32H7RSxx_HAL_Driver/Inc/Legacy \
   -isystem $PROJECT/Drivers/CMSIS/Device/ST/STM32H7RSxx/Include \
   -isystem $PROJECT/Drivers/CMSIS/Include"
-LIB_INC="-I$SRC/uart -I$SRC/cobs \
+LIB_INC="-I$SRC -I$SRC/uart -I$SRC/cobs \
   -isystem $LIBS/spsc -isystem $LIBS/spsc/src \
   -isystem $LIBS/delegate"
 CFLAGS="$MCU -std=gnu11 -DUSE_HAL_DRIVER -DSTM32H7S3xx -c \

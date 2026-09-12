@@ -55,6 +55,13 @@ namespace modbus::rtu {
 
 using SendResult = modbus::SendResult;
 
+// Same reader vocabulary as cobs::read_*. The parent modbus names remain
+// available too; all names refer directly to the shared wire functions.
+using modbus::read_native;
+using modbus::read_be;
+using modbus::read_le;
+using modbus::read_bytes;
+
 template<class MemoryT = wire::Heap,
          class FormatT = modbus::rtu::Format<>,
          class FramerT = framing::None>
@@ -63,6 +70,7 @@ class Endpoint final {
 		"Endpoint framer must be framing::None or satisfy framing::Policy");
 
 public:
+	using SendResult = wire::SendResult;
 	using Memory = MemoryT;
 	using Format = FormatT;
 	using Framer = FramerT;

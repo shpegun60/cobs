@@ -117,6 +117,10 @@ bool queue_command(cobs::Endpoint<>& engine,
 COBS and Modbus Messages share four writer names: `append_native`, `append_be`,
 `append_le`, and `append_bytes`, with scalar and span overloads. Their receive
 APIs likewise share `read_native`, `read_be`, `read_le`, and `read_bytes`.
+`SendResult` is also one actual type from `wire/SendResult.h`, exported by
+both protocol namespaces. The common success counter is `rx.frames_received`.
+The complete application contract, UART adapters and migration note are in
+[`API_PARITY.md`](API_PARITY.md).
 `src/wire/Read.h` implements the readers once and each protocol namespace re-exports
 the same functions, so the symmetry adds no forwarding call or runtime state.
 Native I/O uses the target object representation; BE/LE select an explicit byte

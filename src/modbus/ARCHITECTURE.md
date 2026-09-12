@@ -47,17 +47,23 @@ The API deliberately follows the established COBS ownership vocabulary:
 | known byte loss | `notify_gap` | `notify_gap` |
 | receive boundary | `consume(arbitrary_stream_chunk)` | `receive_adu(one_complete_candidate)`; `consume(chunk)` only with a framing policy (§8) |
 | message factory | `make_message(hint)` | `make_message(address, function, hint)` |
-| transmit | `send` returning `cobs::SendResult` | `send` returning `modbus::SendResult` with the same outcomes |
+| transmit | `send` returning `wire::SendResult` (`cobs::SendResult`) | the exact same type (`modbus::rtu::SendResult`) |
 | scalar writing | `append_native` / `append_be` / `append_le` | same |
 | raw bytes | `append_bytes` | `append_bytes` |
-| scalar reading | `cobs::read_native/read_be/read_le` | `modbus::read_native/read_be/read_le` |
-| byte reading | `cobs::read_bytes` | `modbus::read_bytes` |
+| scalar reading | `cobs::read_native/read_be/read_le` | `modbus::rtu::read_native/read_be/read_le` |
+| byte reading | `cobs::read_bytes` | `modbus::rtu::read_bytes` |
 | completion | `tx_active` / `poll(now_ms)` | `tx_active` / `poll(now_ms)` |
 | observation | `stats` / `storage` | `stats` / `storage` |
+| successful RX | `stats().rx.frames_received` | same |
+| STM32 composition | `cobs::UartAdapter` | `modbus::rtu::UartAdapter`, same bind/proceed lifecycle |
+| FreeRTOS wake | `uart::FreeRtosWake` attached to UART | same class, same task wait loop |
 | protocol metadata/views | none in the application payload | `address` / `function` / `pdu` / `adu` |
 
 Modbus-specific metadata is explicit rather than serialized by the
 application.
+
+The common contract and deliberately different payload/ADU limits and owned
+prefix views are recorded in [API_PARITY.md](../../doc/API_PARITY.md).
 
 The differing receive boundary, message-factory metadata, and RTU Packet views
 are protocol facts, not naming drift. Making those calls artificially identical

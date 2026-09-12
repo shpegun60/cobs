@@ -143,6 +143,13 @@ enables strict alignment, aliasing, bounds, null and format diagnostics and
 also proves protocol bytes under `-fshort-enums -funsigned-char`. Both commands
 compile the COBS/Modbus API parity contract, including identical reader
 function identity and the deliberately different COBS-stream/RTU-ADU boundary.
+`run.sh` additionally executes `test_endpoint_parity`: one public ownership,
+failure/retry, storage-exhaustion and read/write lifecycle for COBS, burst RTU
+and both framed RTU directions, plus a regression lock for owned RTU prefixes.
+It runs in the sanitized build and separately under `-O3 -DNDEBUG -flto`.
+`src/adapters/tests/run.sh` adds the equivalent UART lifecycle through both
+adapters and the same FreeRTOS wake, on host HAL/kernel fakes. See
+[`API_PARITY.md`](API_PARITY.md) for the exact common contract.
 
 ## Shared storage and integrity verification
 

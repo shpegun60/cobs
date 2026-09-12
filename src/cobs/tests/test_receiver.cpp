@@ -120,7 +120,7 @@ void testRoundTripThroughTheWholeStack()
 		}
 		feed(rx, wire);
 
-		check(rx.stats().frames_delivered == 3, "three frames decoded through the stack");
+		check(rx.stats().frames_received == 3, "three frames decoded through the stack");
 		check(pool.rx_available() == kBlocks - 3, "and each holds a pool block");
 
 		Packet r1 = rx.pop_packet();
@@ -200,7 +200,7 @@ void testProtocolLimitIsEnforced()
 	rx.consume(no_crc, std::span<const uint8_t>{wire});
 
 	check(rx.stats().oversize == 1, "a frame one byte over rx_max_size is rejected");
-	check(rx.stats().frames_delivered == 1, "and only the legal frame is delivered");
+	check(rx.stats().frames_received == 1, "and only the legal frame is delivered");
 	const Packet r = rx.pop_packet();
 	check(r.size() == fine.size(), "which is the one that fits");
 	check(pool.rx_available() == kBlocks - 1,
@@ -221,7 +221,7 @@ void testMalformedAndRecovery()
 	rx.consume(no_crc, std::span<const uint8_t>{wire});
 
 	check(rx.stats().malformed == 1, "the truncated frame is reported malformed");
-	check(rx.stats().frames_delivered == 1, "and the next frame still arrives");
+	check(rx.stats().frames_received == 1, "and the next frame still arrives");
 	check(rx.stats().resyncs == 0,
 	      "no resync was needed: the delimiter that exposed it already synchronized us");
 	const Packet r = rx.pop_packet();
@@ -242,7 +242,7 @@ void testExhaustionDropsFramesAndRecovers()
 	}
 	rx.consume(no_crc, std::span<const uint8_t>{wire});
 
-	check(rx.stats().frames_delivered == kBlocks, "the pool's worth of frames is delivered");
+	check(rx.stats().frames_received == kBlocks, "the pool's worth of frames is delivered");
 	check(rx.stats().allocation_failure == 2, "the rest fail to allocate");
 	check(rx.stats().frames_lost == 2, "and are counted as lost");
 	check(pool.rx_available() == 0, "the pool is fully committed to the queued packets");
@@ -275,7 +275,7 @@ void testGapDropsOnlyTheFrameInFlight()
 	const auto partial = engine_frame(payload(0xB0, 5));
 	for (std::size_t i = 0; i + 1 < partial.size(); ++i) { head.push_back(partial[i]); }
 	rx.consume(no_crc, std::span<const uint8_t>{head});
-	check(rx.stats().frames_delivered == 1, "the complete frame is queued");
+	check(rx.stats().frames_received == 1, "the complete frame is queued");
 
 	rx.gap(); // the transport lost bytes here
 	check(rx.stats().frames_lost == 1, "the gap costs the frame that was in flight");
@@ -288,7 +288,7 @@ void testGapDropsOnlyTheFrameInFlight()
 	rx.consume(no_crc, std::span<const uint8_t>{bogus.data() + 1, bogus.size() - 1});
 	rx.consume(no_crc, std::span<const uint8_t>{engine_frame(later)});
 
-	check(rx.stats().frames_delivered == 2, "exactly one further frame is delivered");
+	check(rx.stats().frames_received == 2, "exactly one further frame is delivered");
 	const Packet a = rx.pop_packet();
 	const Packet b = rx.pop_packet();
 	check(matches(a, first), "the packet from before the gap is intact");
@@ -464,7 +464,7 @@ void testMalformedLengths()
 		RecordingHeap pool;
 		RecRx rx(pool);
 		rx.consume(no_crc, std::span<const uint8_t>{cobs_test::frame_of_decoded({})});
-		check(counts(rx).length_mismatch == 1 && counts(rx).frames_delivered == 0,
+		check(counts(rx).length_mismatch == 1 && counts(rx).frames_received == 0,
 		      "a frame with no length field at all is a length mismatch");
 		check(pool.requests.empty(), "and allocates nothing");
 		check(counts(rx).resyncs == 0,
@@ -476,7 +476,7 @@ void testMalformedLengths()
 		HeapRx<WideFmt> rx(pool);
 		static_assert(HeapRx<WideFmt>::length_size == 2);
 		rx.consume(no_crc, std::span<const uint8_t>{cobs_test::frame_of_decoded({0x05})});
-		check(rx.stats().length_mismatch == 1 && rx.stats().frames_delivered == 0,
+		check(rx.stats().length_mismatch == 1 && rx.stats().frames_received == 0,
 		      "half a two-byte header is a length mismatch");
 	}
 	{	// Declared zero, then body bytes anyway.
@@ -494,7 +494,7 @@ void testMalformedLengths()
 		rx.consume(no_crc, std::span<const uint8_t>{
 			cobs_test::frame_declaring(RecFormat::max_receive_size + 1,
 			                           payload(0x60, 40), RecRx::length_size)});
-		check(rx.stats().oversize == 1 && rx.stats().frames_delivered == 0,
+		check(rx.stats().oversize == 1 && rx.stats().frames_received == 0,
 		      "a declared length above rx_max_size is oversize");
 		check(pool.requests.empty(), "and never reaches storage");
 		check(rx.stats().resyncs == 1, "the remaining bytes are discarded to the delimiter");
@@ -504,7 +504,7 @@ void testMalformedLengths()
 		RecRx rx(pool);
 		rx.consume(no_crc, std::span<const uint8_t>{
 			cobs_test::frame_declaring(10, payload(0x70, 4), RecRx::length_size)});
-		check(rx.stats().length_mismatch == 1 && rx.stats().frames_delivered == 0,
+		check(rx.stats().length_mismatch == 1 && rx.stats().frames_received == 0,
 		      "a body shorter than declared is a length mismatch");
 		check(pool.requests == std::vector<std::size_t>{kHeader + 10} && pool.frees == 1,
 		      "the packet it allocated is returned");
@@ -515,7 +515,7 @@ void testMalformedLengths()
 		RecRx rx(pool);
 		rx.consume(no_crc, std::span<const uint8_t>{
 			cobs_test::frame_declaring(4, payload(0x80, 12), RecRx::length_size)});
-		check(rx.stats().length_mismatch == 1 && rx.stats().frames_delivered == 0,
+		check(rx.stats().length_mismatch == 1 && rx.stats().frames_received == 0,
 		      "a body longer than declared is a length mismatch");
 		check(pool.requests == std::vector<std::size_t>{kHeader + 4} && pool.frees == 1,
 		      "the packet is returned");
@@ -527,13 +527,13 @@ void testMalformedLengths()
 		pool.refuse = true;
 		rx.consume(no_crc, std::span<const uint8_t>{
 			cobs_test::frame(payload(0x90, 20), RecRx::length_size)});
-		check(rx.stats().allocation_failure == 1 && rx.stats().frames_delivered == 0,
+		check(rx.stats().allocation_failure == 1 && rx.stats().frames_received == 0,
 		      "an allocation failure after a valid header is counted as such");
 		check(rx.stats().length_mismatch == 0, "and not blamed on the length");
 		pool.refuse = false;
 		rx.consume(no_crc, std::span<const uint8_t>{
 			cobs_test::frame(payload(0xA0, 6), RecRx::length_size)});
-		check(rx.stats().frames_delivered == 1, "and the next frame still arrives");
+		check(rx.stats().frames_received == 1, "and the next frame still arrives");
 	}
 	{	// A gap in the middle of the header, and one in the middle of a body.
 		// After either, the decoder must hunt for a delimiter before it can
@@ -551,7 +551,7 @@ void testMalformedLengths()
 		rx.gap();
 		rx.consume(no_crc, std::span<const uint8_t>{next});   // eaten by the resync
 		rx.consume(no_crc, std::span<const uint8_t>{after});
-		check(rx.stats().frames_delivered == 1,
+		check(rx.stats().frames_received == 1,
 		      "a gap during the header costs that frame and the resync's");
 		check(matches(rx.pop_packet(), payload(0xE0, 3)),
 		      "and the first frame after the resync is intact");
@@ -560,7 +560,7 @@ void testMalformedLengths()
 		rx.gap();
 		rx.consume(no_crc, std::span<const uint8_t>{next});   // eaten by the resync
 		rx.consume(no_crc, std::span<const uint8_t>{after});
-		check(rx.stats().frames_delivered == 2, "and a gap during the body behaves the same");
+		check(rx.stats().frames_received == 2, "and a gap during the body behaves the same");
 		check(matches(rx.pop_packet(), payload(0xE0, 3)),
 		      "with the recovered frame byte-for-byte correct");
 		check(pool.frees >= 1, "and the half-built packet was returned to the policy");
@@ -624,7 +624,7 @@ void testRxLengthSweep()
 	}
 	check(all_ok, std::to_string(cases) + " RX lengths x patterns across every "
 	              "COBS boundary, header included, arrive byte for byte");
-	check(rx.stats().frames_delivered == cases && rx.stats().frames_lost == 0,
+	check(rx.stats().frames_received == cases && rx.stats().frames_lost == 0,
 	      "with nothing lost along the way");
 
 	{	// One byte past the limit is refused from the header alone.
@@ -674,7 +674,7 @@ void testEmptyPacketAllocationFailure()
 
 	rx.consume(no_crc, std::span<const uint8_t>{
 		cobs_test::frame({}, RefuseRx::length_size)});
-	check(rx.stats().allocation_failure == 1 && rx.stats().frames_delivered == 0,
+	check(rx.stats().allocation_failure == 1 && rx.stats().frames_received == 0,
 	      "a refused empty packet is an allocation failure");
 	check(rx.stats().frames_lost == 1, "and costs the frame");
 	check(rx.stats().resyncs == 0,
@@ -686,7 +686,7 @@ void testEmptyPacketAllocationFailure()
 	const auto body = payload(0x21, 5);
 	rx.consume(no_crc, std::span<const uint8_t>{
 		cobs_test::frame(body, RefuseRx::length_size)});
-	check(rx.stats().frames_delivered == 1, "and the next frame arrives immediately");
+	check(rx.stats().frames_received == 1, "and the next frame arrives immediately");
 	check(matches(rx.pop_packet(), body), "with its bytes intact");
 }
 
@@ -723,7 +723,7 @@ void testOversizeWithNoBody()
 	// No resync means the very next frame arrives without a delimiter first.
 	const auto body = payload(0x31, 6);
 	rx.consume(no_crc, std::span<const uint8_t>{cobs_test::frame(body, RecRx::length_size)});
-	check(rx.stats().frames_delivered == 1, "and the next frame arrives immediately");
+	check(rx.stats().frames_received == 1, "and the next frame arrives immediately");
 	check(matches(rx.pop_packet(), body), "intact");
 
 	{	// The same header WITH a body must land on the same counter, by the
@@ -824,7 +824,7 @@ void testContractIsSelfSufficient()
 	const auto body = payload(0x51, 3);
 	rx.consume(no_crc, std::span<const uint8_t>{
 		cobs_test::frame(body, MinimalRx::length_size)});
-	check(rx.stats().frames_delivered == 1,
+	check(rx.stats().frames_received == 1,
 	      "a policy that is only the four contract functions receives a frame");
 	check(pool.live == 1, "holding one packet");
 
@@ -881,7 +881,7 @@ void checkWidestFrame(const char* name)
 	check(ok, std::string(name) + ": a body of " + std::to_string(Max) +
 	          " bytes round-trips whole (decoded frame " +
 	          std::to_string(Max + HeapRx<WideFmt>::length_size) + ")");
-	check(rx.stats().frames_delivered == 1 && rx.stats().frames_lost == 0,
+	check(rx.stats().frames_received == 1 && rx.stats().frames_lost == 0,
 	      std::string(name) + ": with nothing lost");
 }
 

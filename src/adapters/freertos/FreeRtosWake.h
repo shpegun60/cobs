@@ -7,6 +7,9 @@
  * uart::FreeRtosWake — the driver's WakeHandler turned into a FreeRTOS task
  * notification, so one communication task can sleep until the UART has work
  * instead of polling proceed() on a timer.
+ * This is protocol-independent: the SAME object serves COBS and Modbus RTU.
+ * Choose cobs::UartAdapter or modbus::rtu::UartAdapter for the protocol; wake
+ * still attaches only to serial. Without a sleeping FreeRTOS task, omit it.
  *
  *     static Uart<256, 4> serial;
  *     static uart::FreeRtosWake wake;              // no task yet: safe at static-init time
@@ -18,7 +21,7 @@
  *     {
  *         for (;;) {
  *             const uint32_t now = HAL_GetTick();
- *             uart::FreeRtosWake::wait(std::min(50u, adapter.deadline_in_ms(now)));
+ *             (void)uart::FreeRtosWake::wait(adapter, now);
  *             adapter.proceed(HAL_GetTick());      // uart.proceed -> endpoint
  *             while (auto packet = link.pop_packet()) { handle(packet); }
  *         }
@@ -38,12 +41,15 @@
  * The wait is bounded by two things. The fallback timeout is not polling:
  * it is the slow path for what no UART event announces — the driver's own
  * health audit, a client's request timeout. The transport adapter's
- * deadline_in_ms(now) is the other bound, and it is not optional: a frame
+ * deadline_in_ms(now) is the other bound for framed RTU: a frame
  * whose remainder never comes must be expired when its deadline falls due,
  * not when the next unrelated frame wakes the task (that frame's bytes would
  * be glued onto the orphan first). deadline_in_ms() is no_deadline while
- * nothing is in flight and 0 when due, so std::min() with the fallback is
- * the whole computation.
+ * nothing is in flight and 0 when due. wait(adapter, now_ms, fallback_ms)
+ * chooses the shorter bound internally; its default fallback is 50 ms.
+ * cobs::UartAdapter always returns no_deadline, so
+ * that same loop uses just the fallback timeout with COBS; there is no COBS
+ * timer and no protocol parsing in this ISR wake handler.
  *
  * The wait is as fine as the kernel tick. pdMS_TO_TICKS() truncates to
  * whole ticks, so with a tick coarser than the deadline (configTICK_RATE_HZ
@@ -91,6 +97,7 @@ namespace uart {
 
 class FreeRtosWake final {
 public:
+	static constexpr uint32_t default_fallback_ms = 50u;
 	// Takes no task: safe to construct before the scheduler or the task exist.
 	FreeRtosWake() noexcept = default;
 
@@ -124,12 +131,26 @@ public:
 
 	// Task side, called by the attached task only: blocks until a
 	// notification arrives or fallback_ms pass; returns the number of
-	// notifications taken (0 on the timeout). Bound fallback_ms by the
-	// transport adapter's deadline_in_ms(now), see above.
+	// notifications taken (0 on the timeout). Raw-duration form for callers
+	// that already own the whole wait budget; normally use the adapter form.
 	[[nodiscard]] static uint32_t wait(const uint32_t fallback_ms) noexcept
 	{
 		return static_cast<uint32_t>(
 			ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(fallback_ms)));
+	}
+
+	// Protocol-independent adapter form: preserve its clock domain by passing
+	// the caller's current monotonic milliseconds. No HAL dependency, timer
+	// state, allocation or callback wrapper. COBS's constant no_deadline folds
+	// to the fallback at compile time. Read time again after waiting, before
+	// adapter.proceed(): the old pre-wait timestamp must not stamp fresh RX.
+	template<class Adapter>
+	[[nodiscard]] static uint32_t wait(
+			const Adapter& adapter, const uint32_t now_ms,
+			const uint32_t fallback_ms = default_fallback_ms) noexcept
+	{
+		const uint32_t remaining = adapter.deadline_in_ms(now_ms);
+		return wait(remaining < fallback_ms ? remaining : fallback_ms);
 	}
 
 	// The attached task; null until attach() succeeded.

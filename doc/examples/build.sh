@@ -36,7 +36,9 @@ FAKE_HAL="$SRC/uart/tests/host/fake_hal.cpp"
 COBS_CORE="$SRC/cobs/Decoder.cpp $SRC/cobs/Encoder.cpp"
 run rtu_adapter   "$HERE/rtu_adapter.cpp"   "$FAKE_HAL"
 run cobs_direct   "$HERE/cobs_direct.cpp"   "$FAKE_HAL" $COBS_CORE
+run cobs_adapter  "$HERE/cobs_adapter.cpp"  "$FAKE_HAL" $COBS_CORE
 run freertos_wake "$HERE/freertos_wake.cpp" "$FAKE_HAL"
+run cobs_freertos "$HERE/cobs_freertos.cpp" "$FAKE_HAL" $COBS_CORE
 run rtu_direct    "$HERE/rtu_direct.cpp"    "$FAKE_HAL"
 run any_transport "$HERE/any_transport.cpp" $COBS_CORE
 if [ $status -eq 0 ]; then echo "=== all INTEGRATION.md examples compiled and ran ==="; else echo "=== INTEGRATION.md example FAILURES ==="; fi

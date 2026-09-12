@@ -2,7 +2,7 @@
 
 This is the usage guide. It enumerates every supported way to put the
 libraries in this repository together — the STM32 UART driver, the two
-protocol endpoints (COBS and Modbus RTU), the RTU transport adapter and the
+protocol endpoints (COBS and Modbus RTU), their UART adapters and the
 FreeRTOS wake glue — and says for each one what the application owns, what
 it must call from where, and where the pattern is verified. The reference
 documents stay where they are: `ARCHITECTURE.md` and `PROTOCOL.md` for COBS,
@@ -34,6 +34,11 @@ Uart / TCP / QSerialPort  cobs::Endpoint, modbus::rtu::Endpoint   Message / Pack
 ```
 
 The two endpoints are deliberately the same shape (`src/wire/tests/test_api_parity`):
+
+The common types, source migration and intentional differences are fixed in
+[`API_PARITY.md`](API_PARITY.md). In particular, `SendResult` is one shared
+type, both protocol namespaces expose `read_*`, and `stats().rx.frames_received`
+counts successfully queued packets in either endpoint.
 
 | Call | Meaning | Context |
 |---|---|---|
@@ -67,7 +72,7 @@ Choosing a pattern:
 |---|---|---|
 | STM32 with `src/uart/Uart.h`, bare-metal loop | RTU | §2, `UartAdapter` |
 | STM32 with `src/uart/Uart.h`, FreeRTOS | RTU or COBS | §4, `FreeRtosWake` on top of §2 or §3 |
-| STM32 with `src/uart/Uart.h` | COBS | §3, the driver wired directly — COBS needs no adapter |
+| STM32 with `src/uart/Uart.h` | COBS | §3, `cobs::UartAdapter` or optional direct wiring |
 | STM32 with another driver, or a stale-frame rule of your own | RTU | §5, the endpoint wired directly |
 | desktop with Qt | either | §6, `adapters/qt/SerialAdapter.h`, plus `RtuClient.h` for a master |
 | TCP, a test double, a radio | either | §7, any byte transport |
@@ -151,9 +156,9 @@ the fake HAL through the adapter: lifecycle, baud changes, the stale rule at
 9600 and 115200, the DMA-progress case, tick wrap) and on the H7S by
 `src/modbus/rtu/tests/hardware/h7s/modbus_bench.cpp` with its records.
 
-## 3. COBS on STM32: the driver wired directly
+## 3. COBS on STM32 through `UartAdapter`, or directly
 
-COBS needs no adapter. Frames end with a `0x00` delimiter, `consume()` takes
+COBS needs no timing adapter. Frames end with a `0x00` delimiter, `consume()` takes
 any cut of the stream, and there is no stale-frame rule to run: a sender
 that dies mid-frame leaves a frame open, the next frame's bytes join it and
 the delimiter that ends that next frame exposes the damage — the unfinished
@@ -161,6 +166,43 @@ frame and the first complete frame after it are lost together, counted, and
 the stream is synchronized again at that same delimiter with nothing to
 hunt for (`PROTOCOL.md` §8). The RX block the open frame held is returned
 then. A gap the driver reports is handed on with `notify_gap()`.
+
+For the same setup and loop shape as RTU, use the thin
+`src/adapters/cobs/UartAdapter.h` composition. No timer state is added:
+
+```cpp
+#define UART_ENGINE_IMPLEMENT
+#include "Uart.h"
+#include "cobs/Cobs.h"
+#include "adapters/cobs/UartAdapter.h"
+
+using Serial = Uart<256, 4>;
+using Link = cobs::Endpoint<wire::Pool<8, 2>, cobs::Format<crc::Crc16Bitwise, 1024>>;
+static Serial serial; // place in DMA-reachable RAM on the target
+static Link g_endpoint;
+static cobs::UartAdapter adapter{serial, g_endpoint};
+
+bool start() noexcept { return serial.init(&huart3) && adapter.bind(); }
+void loop_step() noexcept { adapter.proceed(HAL_GetTick()); }
+```
+
+The application drains `g_endpoint.pop_packet()` after that step. The compiled
+round-trip example is [`examples/cobs_adapter.cpp`](examples/cobs_adapter.cpp).
+As with RTU, bind/unbind are transactional; the driver and endpoint outlive a
+bound adapter. Detaching COBS announces `notify_gap()`: queued packets survive,
+an incomplete frame is released, and input through the next delimiter is
+discarded (and counted as a gap). The first new frame after a rebind can be
+that discarded synchronization frame. This follows COBS recovery, not RTU's
+frame-start assumption. Destruction detaches RX while leaving any TX borrow
+with the live driver/endpoint; drain it before destroying either of them.
+
+`deadline_in_ms(now)` always returns `no_deadline` for COBS. Therefore the same
+FreeRTOS loop in §4 works without a special case.
+
+### 3.1 Optional direct wiring
+
+The earlier manual composition remains supported and is still compiled as
+[`examples/cobs_direct.cpp`](examples/cobs_direct.cpp):
 
 ```cpp
 #define UART_ENGINE_IMPLEMENT
@@ -212,6 +254,13 @@ after the driver's state is final; `src/adapters/freertos/FreeRtosWake.h` turns 
 task notification. The driver knows no scheduler and the glue knows no
 protocol.
 
+Use the **same** `uart::FreeRtosWake` with COBS and RTU. It attaches to UART,
+not to the endpoint; ISR notifications do not parse either protocol. With
+`cobs::UartAdapter`, the exact wait/proceed loop below uses the fallback alone
+because COBS has no deadline. This composition is compiled and run in
+[`examples/cobs_freertos.cpp`](examples/cobs_freertos.cpp), as well as in the
+shared adapter lifecycle tests. A bare-metal loop needs no FreeRTOS wake.
+
 ```cpp
 #include "adapters/freertos/FreeRtosWake.h"
 #include <algorithm>
@@ -225,9 +274,9 @@ void comm_task_body(void*)
         const uint32_t now = HAL_GetTick();
         // The adapter's deadline bounds the sleep: a frame whose remainder
         // never comes must be expired when it falls due, not when the next
-        // unrelated frame wakes the task. For a COBS g_endpoint (no adapter) the
-        // fallback alone is the bound.
-        (void)uart::FreeRtosWake::wait(std::min(50u, adapter.deadline_in_ms(now)));
+        // unrelated frame wakes the task. wait() chooses the earlier of its
+        // default 50 ms fallback and the adapter deadline. COBS has none.
+        (void)uart::FreeRtosWake::wait(adapter, now);
         adapter.proceed(HAL_GetTick());
         while (auto request = g_endpoint.pop_packet()) {
             serve(request);
