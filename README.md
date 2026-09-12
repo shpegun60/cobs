@@ -648,9 +648,8 @@ wake.attach(serial, communicationTaskHandle);      // false for a null handle, t
 void communicationTask(void*)
 {
     for (;;) {
-        const uint32_t now = HAL_GetTick();
-        (void)uart::FreeRtosWake::wait(adapter, now);
-        adapter.proceed(HAL_GetTick());          // uart.proceed -> endpoint (see src/modbus/README.md)
+        (void)uart::FreeRtosWake::wait(adapter);
+        adapter.proceed();                      // fresh platform tick, uart -> endpoint
         while (auto packet = link.pop_packet()) { handle(packet); }
     }
 }
@@ -658,12 +657,13 @@ void communicationTask(void*)
 
 Several interrupts before the task runs coalesce into one wake. The wait has
 two bounds. The fallback is not polling: it serves what no UART event
-announces (the driver's health audit, a request timeout). The adapter's
-`deadline_in_ms(now)` is mandatory when a framed endpoint is used: a frame
-whose remainder never comes must be expired when its deadline falls due, not
-when the next unrelated frame wakes the task, whose bytes would otherwise be
-glued onto the orphan first; it is `no_deadline` while nothing is in flight
-and 0 when due, so `std::min` is the whole computation; the kernel tick must
+announces (the driver's health audit, a request timeout). `wait(adapter)`
+automatically respects an incomplete RTU frame's deadline and caps the sleep
+at 50 ms; `wait(adapter, 20u)` selects a shorter application fallback. COBS
+has no incomplete-frame timer. No caller timestamp or deadline calculation
+is needed: the STM32 adapter owns its HAL clock, and `proceed()` reads it
+again after waking. Explicit `proceed(now_ms)` and `deadline_in_ms(now_ms)`
+remain available for custom schedulers and deterministic tests. The kernel tick must
 be at least as fine as those deadlines (`pdMS_TO_TICKS()` truncates, and a
 10 ms tick turns a 5 ms wait into a non-blocking service loop until the
 deadline passes, correct but busy). `wait()` acts on the
@@ -789,9 +789,9 @@ public:
         return true;
     }
 
-    void proceed(uint32_t now_ms) noexcept
+    void proceed() noexcept
     {
-        adapter_.proceed(now_ms); // drains UART RX/gaps, then reclaims completed TX
+        adapter_.proceed(); // platform clock, drains UART RX/gaps, reclaims TX
 
         while (auto packet = link_.pop_packet()) {
             handle_packet(packet.data());
@@ -832,6 +832,8 @@ lifecycle. See [the end-user API parity contract](doc/API_PARITY.md) for the
 side-by-side API, migration notes and the deliberate protocol differences.
 The same `uart::FreeRtosWake` works with either adapter when a FreeRTOS task
 sleeps between events; it is unnecessary in a bare-metal polling loop.
+The [live API/task follow-up](doc/HARDWARE_API_PARITY_2026-09-12.md) records
+the full protocol regression and the two-line loop on a real FreeRTOS kernel.
 
 The exact implementation used for real-silicon testing is
 [`src/cobs/tests/hardware/h7s/cobs_bench.cpp`](src/cobs/tests/hardware/h7s/cobs_bench.cpp).

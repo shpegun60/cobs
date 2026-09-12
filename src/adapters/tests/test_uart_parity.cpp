@@ -120,10 +120,10 @@ template<class E, template<class, class> class A> void exercise(const char* labe
 		fake::rx_bytes(frame.data(), frame.size());
 		fake::rx_idle();
 		check(!endpoint.has_packet() && fake_freertos::model().last_notified == task &&
-		      uart::FreeRtosWake::wait(adapter, 0u) == 1u &&
+		      uart::FreeRtosWake::wait(adapter) == 1u &&
 		      fake_freertos::model().last_take_timeout == 50u,
 		      "RX ISR only wakes the task; common wait/proceed loop parses later");
-		adapter.proceed(0u);
+		adapter.proceed();
 		check(endpoint.has_packet() && sentinel.chunks == 1u, "failed second bind/destructor preserves first adapter");
 		fake::tx_done();
 		check(uart::FreeRtosWake::wait(50u) == 1u, "TX completion wakes either protocol's task");

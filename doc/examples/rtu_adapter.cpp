@@ -35,7 +35,7 @@ static unsigned g_replies = 0;
 
 void loop_step() noexcept
 {
-	adapter.proceed(HAL_GetTick());   // uart.proceed -> frame verdict -> g_endpoint.poll
+	adapter.proceed();   // uart.proceed -> frame verdict -> g_endpoint.poll
 	while (auto request = g_endpoint.pop_packet()) {
 		auto reply = g_endpoint.make_message(request.address(), request.function());
 		if (!build_reply(reply, request)) {

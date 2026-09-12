@@ -21,7 +21,7 @@
  *     adapter.bind();
  *
  *     // main loop, or one communication task
- *     adapter.proceed(HAL_GetTick());
+ *     adapter.proceed();
  *     while (auto packet = link.pop_packet()) { handle(packet); }
  *
  * The adapter owns everything that used to be application glue: the RX and
@@ -99,18 +99,20 @@
  *
  * A task that sleeps between calls must not sleep past the deadline:
  * deadline_in_ms(now) bounds the wait (no_deadline when nothing is in
- * flight, 0 when due), see adapters/freertos/FreeRtosWake.h.
+ * flight, 0 when due). FreeRtosWake::wait(adapter) handles this internally.
  *
  * The adapter does not include Uart.h: it needs only the driver's type
  * shape and the members every driver instantiation has (setRxHandler,
  * setRxGapHandler, send, tx_busy, proceed, instance, rx_progress), so it
  * compiles against the host fake HAL in the test suite exactly as against
- * the silicon driver.
+ * the silicon driver. main.h supplies the platform clock for the convenient
+ * proceed()/deadline_in_ms() forms; explicit-time forms remain available.
  */
 
 #ifndef MODBUS_RTU_UART_ADAPTER_H_
 #define MODBUS_RTU_UART_ADAPTER_H_
 
+#include "main.h" // configured STM32 HAL, including HAL_GetTick()
 #include "tiny_delegate.hpp"
 
 #include <concepts>
@@ -257,7 +259,7 @@ public:
 	 * the application's monotonic millisecond tick; on_rx() stamps deadlines
 	 * with it.
 	 */
-	void proceed(const uint32_t now_ms) noexcept
+	void proceed(const uint32_t now_ms = HAL_GetTick()) noexcept
 	{
 		prepare(now_ms);
 		m_uart.proceed(now_ms);
@@ -345,6 +347,11 @@ public:
 
 	// Milliseconds until the frame in flight is declared dead: 0 when due,
 	// no_deadline when nothing is in flight. A scheduler can sleep this long.
+	[[nodiscard]] uint32_t deadline_in_ms() const noexcept
+	{
+		return m_deadline_active ? deadline_in_ms(HAL_GetTick()) : no_deadline;
+	}
+
 	[[nodiscard]] uint32_t deadline_in_ms(const uint32_t now_ms) const noexcept
 	{
 		if (!m_deadline_active) {

@@ -46,6 +46,8 @@ extern "C" bool uart_adapter_port_test(UART_HandleTypeDef* handle,
 	adapter.on_gap();
 	(void)adapter.deadline_in_ms(now);
 	adapter.proceed(now);
+	adapter.proceed();
+	(void)adapter.deadline_in_ms();
 	return adapter.unbind();
 }
 
@@ -60,5 +62,7 @@ extern "C" bool cobs_uart_adapter_port_test(UART_HandleTypeDef* handle,
 	cobs_adapter.on_gap();
 	(void)cobs_adapter.deadline_in_ms(now);
 	cobs_adapter.proceed(now);
+	cobs_adapter.proceed();
+	(void)cobs_adapter.deadline_in_ms();
 	return cobs_adapter.unbind();
 }

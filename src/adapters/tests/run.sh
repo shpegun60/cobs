@@ -38,19 +38,20 @@ else
 fi
 
 echo "=== self-contained adapter headers ==="
-# The RTU adapter forward-declares the driver and needs only the delegate;
+# The STM32 adapters forward-declare/use the driver shape and include main.h
+# for their HAL clock; they do not include the driver implementation.
 # the FreeRTOS glue needs the two kernel headers, here the recording fake.
 printf '#include "adapters/rtu/UartAdapter.h"\n' |
-	"$CXX" -std=gnu++20 $WARN -I"$SRC" -isystem "$LIBS/delegate" -fsyntax-only -x c++ -
+	"$CXX" -std=gnu++20 $WARN -I"$SRC" -I"$UART_HOST" -isystem "$LIBS/delegate" -fsyntax-only -x c++ -
 printf '#include "adapters/cobs/UartAdapter.h"\n' |
-	"$CXX" -std=gnu++20 $WARN -I"$SRC" -isystem "$LIBS/delegate" -fsyntax-only -x c++ -
+	"$CXX" -std=gnu++20 $WARN -I"$SRC" -I"$UART_HOST" -isystem "$LIBS/delegate" -fsyntax-only -x c++ -
 printf '#include "adapters/freertos/FreeRtosWake.h"\n' |
 	"$CXX" -std=gnu++20 $WARN -I"$SRC" -I"$HERE/fake_freertos" -isystem "$LIBS/delegate" -fsyntax-only -x c++ -
 echo "  ok    all adapter headers compile on their own"
 
 echo "=== expected compile failures ==="
 # The RTU adapter refuses anything that is not a modbus::rtu::Endpoint.
-if "$CXX" -std=gnu++20 -fsyntax-only -I"$SRC" -isystem "$LIBS/delegate" \
+if "$CXX" -std=gnu++20 -fsyntax-only -I"$SRC" -I"$UART_HOST" -isystem "$LIBS/delegate" \
 		"$HERE/compile_fail/adapter_needs_rtu_endpoint.cpp" >"$OUT/adapter_needs_rtu_endpoint.log" 2>&1; then
 	echo "FAIL  adapter_needs_rtu_endpoint compiled"; exit 1
 fi
@@ -58,7 +59,7 @@ grep -q "UartAdapter serves a modbus::rtu::Endpoint" "$OUT/adapter_needs_rtu_end
 	{ echo "FAIL  adapter_needs_rtu_endpoint rejected for the wrong reason:"; cat "$OUT/adapter_needs_rtu_endpoint.log"; exit 1; }
 echo "  ok    adapter_needs_rtu_endpoint rejected at the intended boundary"
 
-if "$CXX" -std=gnu++20 -fsyntax-only -I"$SRC" -isystem "$LIBS/delegate" \
+if "$CXX" -std=gnu++20 -fsyntax-only -I"$SRC" -I"$UART_HOST" -isystem "$LIBS/delegate" \
 		"$HERE/compile_fail/cobs_adapter_rejects_rtu.cpp" >"$OUT/cobs_adapter_rejects_rtu.log" 2>&1; then
 	echo "FAIL  cobs_adapter_rejects_rtu compiled"; exit 1
 fi

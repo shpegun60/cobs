@@ -22,7 +22,7 @@ static Link g_endpoint;
 static cobs::UartAdapter adapter{serial, g_endpoint};
 
 bool start() noexcept { return serial.init(&huart3) && adapter.bind(); }
-void loop_step() noexcept { adapter.proceed(HAL_GetTick()); }
+void loop_step() noexcept { adapter.proceed(); }
 
 int main()
 {

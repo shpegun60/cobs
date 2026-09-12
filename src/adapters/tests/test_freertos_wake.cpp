@@ -96,24 +96,26 @@ int main()
 
 	struct Deadline {
 		uint32_t remaining = UINT32_MAX;
-		mutable uint32_t observed_now = 0u;
-		uint32_t deadline_in_ms(uint32_t now) const noexcept { observed_now = now; return remaining; }
+		mutable unsigned queries = 0u;
+		uint32_t deadline_in_ms() const noexcept { ++queries; return remaining; }
 	} deadline;
-	check(uart::FreeRtosWake::wait(deadline, 123u) == 0u && rtos.last_take_timeout == 50u &&
-	      deadline.observed_now == 123u, "adapter wait uses default fallback and forwards the caller's clock");
+	check(uart::FreeRtosWake::wait(deadline) == 0u && rtos.last_take_timeout == 50u &&
+	      deadline.queries == 1u, "adapter owns its clock; wait queries it once and uses default fallback");
 	deadline.remaining = 7u;
-	check(uart::FreeRtosWake::wait(deadline, UINT32_MAX) == 0u && rtos.last_take_timeout == 7u &&
-	      deadline.observed_now == UINT32_MAX, "nearer deadline wins, including a wrapping caller timestamp");
+	check(uart::FreeRtosWake::wait(deadline) == 0u && rtos.last_take_timeout == 7u &&
+	      deadline.queries == 2u, "nearer deadline wins without caller clock arithmetic");
 	deadline.remaining = 0u;
-	check(uart::FreeRtosWake::wait(deadline, 0u) == 0u && rtos.last_take_timeout == 0u,
+	check(uart::FreeRtosWake::wait(deadline) == 0u && rtos.last_take_timeout == 0u,
 	      "an expired deadline never blocks the communication task");
 	deadline.remaining = 100u;
-	check(uart::FreeRtosWake::wait(deadline, 0u) == 0u && rtos.last_take_timeout == 50u,
+	check(uart::FreeRtosWake::wait(deadline) == 0u && rtos.last_take_timeout == 50u,
 	      "fallback still bounds a later protocol deadline");
-	check(uart::FreeRtosWake::wait(deadline, 0u, 3u) == 0u && rtos.last_take_timeout == 3u,
+	check(uart::FreeRtosWake::wait(deadline, 3u) == 0u && rtos.last_take_timeout == 3u,
 	      "an explicit smaller application fallback is honoured");
-	check(uart::FreeRtosWake::wait(deadline, 0u, 0u) == 0u && rtos.last_take_timeout == 0u,
+	check(uart::FreeRtosWake::wait(deadline, 0u) == 0u && rtos.last_take_timeout == 0u,
 	      "zero application fallback is nonblocking");
+	check(uart::FreeRtosWake::wait(17) == 0u && rtos.last_take_timeout == 17u,
+	      "integer duration still selects the raw wait, not the constrained adapter overload");
 
 	std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;

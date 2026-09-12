@@ -6,6 +6,7 @@
 #ifndef COBS_UART_ADAPTER_H_
 #define COBS_UART_ADAPTER_H_
 
+#include "main.h" // configured STM32 HAL, including HAL_GetTick()
 #include "tiny_delegate.hpp"
 
 #include <concepts>
@@ -17,7 +18,8 @@ namespace cobs {
 /*
  * The STM32 UART composition, with the same application-facing lifecycle as
  * modbus::rtu::UartAdapter: construct(serial, endpoint), initialize the driver,
- * bind(), then proceed(now_ms) from one loop/task. No clock, CRC, framing table
+ * bind(), then proceed() from one loop/task (or proceed(now_ms) with an explicit
+ * monotonic millisecond tick). No clock state, CRC, framing table
  * or DMA ownership is added here: consume() already understands every cut of
  * a COBS stream. There is no incomplete-frame deadline; a delimiter restores
  * synchronization. The core and the driver do not depend on this adapter.
@@ -96,7 +98,9 @@ public:
 		return true;
 	}
 
-	void proceed(const uint32_t now_ms) noexcept
+	// One fresh HAL tick per call, after any task wait. Explicit time remains
+	// available for deterministic tests and instrumented service loops.
+	void proceed(const uint32_t now_ms = HAL_GetTick()) noexcept
 	{
 		m_uart.proceed(now_ms);
 		m_endpoint.poll(now_ms);
@@ -106,6 +110,8 @@ public:
 	void on_gap() noexcept { m_endpoint.notify_gap(); }
 
 	// Same scheduler vocabulary as the RTU adapter, without timer state.
+	// The clockless query does not read HAL_GetTick(): COBS has no deadline.
+	[[nodiscard]] constexpr uint32_t deadline_in_ms() const noexcept { return no_deadline; }
 	[[nodiscard]] constexpr uint32_t deadline_in_ms(uint32_t) const noexcept { return no_deadline; }
 	[[nodiscard]] constexpr bool deadline_armed() const noexcept { return false; }
 

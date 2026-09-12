@@ -682,5 +682,26 @@ int main()
 		check(fake::model().violations.empty(), "stale-frame recovery never touches DMA-owned data");
 	}
 
+	group("PlatformClockFacade");
+	{
+		fake::reset();
+		Fixture<FramedLink> f;
+		check(f.start(115200u), "clock-owning STM32 adapter starts");
+		fake::model().tick = UINT32_MAX - 2u;
+		const auto adu = wide_frame(40u, 8u);
+		feed(std::span<const uint8_t>{adu}.first(12u), false);
+		f.adapter.proceed();
+		check(f.link.assembling() && f.adapter.deadline_in_ms() == 5u,
+		      "parameterless proceed stamps partial RX using the current HAL tick");
+		fake::advance_tick(4u);
+		check(f.adapter.deadline_in_ms() == 1u, "platform-clock deadline remains correct across tick wrap");
+		fake::advance_tick(1u);
+		check(f.adapter.deadline_in_ms() == 0u, "fresh platform time observes the due deadline");
+		f.adapter.proceed();
+		check(!f.link.assembling() && f.link.framing_stats().stale_frames == 1u &&
+		      f.adapter.deadline_in_ms() == Fixture<FramedLink>::Adapter::no_deadline,
+		      "parameterless proceed expires the orphan without a caller timestamp");
+	}
+
 	return finish();
 }

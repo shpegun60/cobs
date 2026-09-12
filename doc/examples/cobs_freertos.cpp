@@ -26,9 +26,8 @@ static cobs::UartAdapter adapter{serial, g_endpoint};
 
 static void task_iteration() noexcept
 {
-	const uint32_t now = HAL_GetTick();
-	(void)uart::FreeRtosWake::wait(adapter, now);
-	adapter.proceed(HAL_GetTick());
+	(void)uart::FreeRtosWake::wait(adapter);
+	adapter.proceed();
 }
 
 int main()

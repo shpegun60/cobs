@@ -20,9 +20,8 @@
  *     void communicationTask(void*)
  *     {
  *         for (;;) {
- *             const uint32_t now = HAL_GetTick();
- *             (void)uart::FreeRtosWake::wait(adapter, now);
- *             adapter.proceed(HAL_GetTick());      // uart.proceed -> endpoint
+ *             (void)uart::FreeRtosWake::wait(adapter);
+ *             adapter.proceed();                   // fresh tick, uart -> endpoint
  *             while (auto packet = link.pop_packet()) { handle(packet); }
  *         }
  *     }
@@ -45,7 +44,7 @@
  * whose remainder never comes must be expired when its deadline falls due,
  * not when the next unrelated frame wakes the task (that frame's bytes would
  * be glued onto the orphan first). deadline_in_ms() is no_deadline while
- * nothing is in flight and 0 when due. wait(adapter, now_ms, fallback_ms)
+ * nothing is in flight and 0 when due. wait(adapter, fallback_ms)
  * chooses the shorter bound internally; its default fallback is 50 ms.
  * cobs::UartAdapter always returns no_deadline, so
  * that same loop uses just the fallback timeout with COBS; there is no COBS
@@ -79,8 +78,8 @@
  *
  * This header is not part of the driver; the driver knows no scheduler. It is
  * compiled in the host suite against a recording fake of the two FreeRTOS
- * headers it includes (src/adapters/tests/fake_freertos), never against a real
- * kernel here.
+ * headers it includes (src/adapters/tests/fake_freertos). The separate live
+ * harness in src/adapters/tests/hardware/h7s/parity uses a real FreeRTOS kernel.
  */
 
 #ifndef UART_FREERTOS_WAKE_H_
@@ -92,6 +91,7 @@
 #include "tiny_delegate.hpp"
 
 #include <cstdint>
+#include <concepts>
 
 namespace uart {
 
@@ -139,17 +139,19 @@ public:
 			ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(fallback_ms)));
 	}
 
-	// Protocol-independent adapter form: preserve its clock domain by passing
-	// the caller's current monotonic milliseconds. No HAL dependency, timer
-	// state, allocation or callback wrapper. COBS's constant no_deadline folds
-	// to the fallback at compile time. Read time again after waiting, before
-	// adapter.proceed(): the old pre-wait timestamp must not stamp fresh RX.
+	// The platform adapter owns its clock. This wake layer needs no HAL,
+	// clock policy, timer state, allocation or callback wrapper. COBS's constant
+	// no_deadline folds to the fallback at compile time. adapter.proceed()
+	// subsequently reads a fresh tick: no pre-wait timestamp can stamp fresh RX.
 	template<class Adapter>
+		requires requires(const Adapter& adapter) {
+			{ adapter.deadline_in_ms() } noexcept -> std::same_as<uint32_t>;
+		}
 	[[nodiscard]] static uint32_t wait(
-			const Adapter& adapter, const uint32_t now_ms,
+			const Adapter& adapter,
 			const uint32_t fallback_ms = default_fallback_ms) noexcept
 	{
-		const uint32_t remaining = adapter.deadline_in_ms(now_ms);
+		const uint32_t remaining = adapter.deadline_in_ms();
 		return wait(remaining < fallback_ms ? remaining : fallback_ms);
 	}
 

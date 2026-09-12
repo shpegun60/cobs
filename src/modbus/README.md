@@ -313,7 +313,7 @@ standard Modbus RTU and both peers must select the same private format.
 One service call from the main loop (or one communication task):
 
 ```cpp
-adapter.proceed(HAL_GetTick());   // uart.proceed → stale-frame check → link.poll
+adapter.proceed();   // platform clock, uart.proceed → stale-frame check → link.poll
 while (auto packet = link.pop_packet()) { handle(packet); }
 ```
 
@@ -430,7 +430,7 @@ Server server;
 // mid-frame (adapters/rtu/UartAdapter.h explains the rule and why it needs the chunk
 // geometry and the baud).
 modbus::rtu::UartAdapter adapter{serial, server};
-void loop_step() noexcept { adapter.proceed(HAL_GetTick()); }
+void loop_step() noexcept { adapter.proceed(); }
 
 // The builder knows the same table: a response to 0x03 is a byte count plus
 // data, and a count that disagrees with the data is refused before the wire.

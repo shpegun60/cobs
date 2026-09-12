@@ -248,6 +248,13 @@ tests, so also run `verify_comparison.py <record> --check-doc
 doc/PROTOCOL_COMPARISON.md` to verify real source identities and published
 rows. Neither command opens a serial port or flashes the board.
 
+The [real-FreeRTOS H7S harness](../src/adapters/tests/hardware/h7s/parity/README.md)
+additionally validates the ordinary `wait(adapter); adapter.proceed();` loop
+with the installed STM32Cube kernel, not fake headers. Its guarded runner
+requires exclusive board/COM access and a new output directory. See the
+[API parity hardware report](HARDWARE_API_PARITY_2026-09-12.md) for exact
+recorded sources, restoration receipts, scope and offline verification commands.
+
 ## UART regression matrix
 
 The current UART ownership, callback, recovery, and performance contracts are

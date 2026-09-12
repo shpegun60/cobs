@@ -21,8 +21,8 @@ remain protocol-specific. See [integration](INTEGRATION.md),
 | Send result | one `wire::SendResult`, also exported by both namespaces and `Endpoint::SendResult` |
 | Service | `poll(now_ms)`, `tx_active`, `notify_gap`, `has_packet/pop_packet` |
 | Common statistics | RX `frames_received/crc_errors/oversize/allocation_failure`; TX `frames_sent/send_refused_busy/send_failed` |
-| STM32 composition | `cobs::UartAdapter` / `modbus::rtu::UartAdapter`: construct, `bind/unbind/bound`, `proceed(now_ms)` |
-| Sleeping FreeRTOS task | the same `uart::FreeRtosWake`, attached to the driver, not the protocol |
+| STM32 composition | `cobs::UartAdapter` / `modbus::rtu::UartAdapter`: construct, `bind/unbind/bound`, `proceed()` |
+| Sleeping FreeRTOS task | the same `uart::FreeRtosWake::wait(adapter)`, wake attached to the driver, not the protocol |
 
 Both endpoints must outlive every Packet and Message they issued. All these
 objects belong to one execution context; shared packet references are not
@@ -54,6 +54,27 @@ Neither endpoint currently uses `now_ms` internally. RTU's incomplete-frame
 deadline belongs to its transport adapter; `Endpoint::poll()` alone does not
 expire RTU fragments. The COBS adapter has no timer state and always returns
 `no_deadline` from `deadline_in_ms()`, so both use the same FreeRTOS wait loop.
+
+The ordinary application loop needs neither a timestamp nor a deadline query:
+
+```cpp
+(void)uart::FreeRtosWake::wait(adapter);
+adapter.proceed();
+while (auto packet = endpoint.pop_packet()) { handle(packet); }
+```
+
+The STM32 adapter includes the configured `main.h` for its HAL clock. It
+reads a fresh `HAL_GetTick()` when `proceed()` is called, after waking;
+the FreeRTOS wake layer itself has no HAL dependency. `wait(adapter)` chooses
+the shorter of the adapter's current deadline and its default 50 ms fallback.
+`wait(adapter, 20u)` selects a custom fallback. COBS's constant no-deadline
+query compiles to the fallback without a HAL clock read.
+
+For custom schedulers or deterministic tests, `proceed(now_ms)` and
+`deadline_in_ms(now_ms)` remain available. Use a single monotonic millisecond
+clock domain consistently; do not mix a synthetic timestamp with automatic
+HAL-time calls. The raw `FreeRtosWake::wait(milliseconds)` also remains valid.
+These conveniences add no object state, virtual dispatch, or allocation.
 
 ## Deliberate differences: do not hide these with aliases
 
@@ -110,7 +131,7 @@ expire RTU fragments. The COBS adapter has no timer state and always returns
   or real-FreeRTOS runtime measurements. Earlier board evidence remains tied
   to the exact recorded source revisions.
 
-### Slice validation, 2026-09-12
+### Initial host slice, 2026-09-12
 
 Executed on the updated working tree (not attributed to an earlier commit):
 
@@ -127,4 +148,19 @@ Executed on the updated working tree (not attributed to an earlier commit):
 
 The MSVC run used the Visual Studio Installer directory on the process PATH
 so `VsDevCmd` can find `vswhere.exe`; it changed no machine-wide settings.
-The live board and saved JSON/JSONL evidence were not modified.
+At that initial host checkpoint the board and previous JSON/JSONL evidence
+were not modified. The subsequent live follow-up is recorded separately below.
+
+### Live follow-up and platform-clock facade, 2026-09-12
+
+See [the hardware report](HARDWARE_API_PARITY_2026-09-12.md) and its exact
+source/image receipts. It includes the 33-image protocol regression, targeted
+UART faults, high-baud framing, and **14 real FreeRTOS V10.6.2 images** running
+the two-line loop above on the H7S. The latter passed 704 exchanges, 560 exact
+echoes and 280 MCU-local ownership checks; no fake kernel runs on that board.
+
+The updated host adapter suite passes 105 RTU checks (including implicit HAL
+time and wraparound), 24 wake checks and 170 common adapter checks. All seven
+examples and the real F1/G4/H7RS compile/layout matrix also pass. Historical
+evidence and earlier-stage counts above remain stage-specific, not claims
+that an old binary contained the latest facade.

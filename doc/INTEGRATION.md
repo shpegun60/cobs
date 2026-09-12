@@ -115,7 +115,7 @@ bool start() noexcept
 
 void loop_step() noexcept
 {
-    adapter.proceed(HAL_GetTick());   // uart.proceed -> frame verdict -> g_endpoint.poll
+    adapter.proceed();   // uart.proceed -> frame verdict -> g_endpoint.poll
     while (auto request = g_endpoint.pop_packet()) {
         auto reply = g_endpoint.make_message(request.address(), request.function());
         if (!build_reply(reply, request)) {
@@ -144,8 +144,8 @@ What the adapter does, so the application does not:
   snapshot is taken before the driver is drained and the verdict after, so a
   continuation already queued is never outrun by its own deadline. Detaching
   discards a frame in flight uncounted (`discard_incomplete()`).
-- `deadline_in_ms(now)` says how long a scheduler may sleep: `no_deadline`
-  while nothing is in flight, 0 when due (§4).
+- Custom schedulers can query `deadline_in_ms()` (or pass an explicit tick).
+  Normal FreeRTOS code uses `wait(adapter)` and does not calculate a deadline (§4).
 - A loop that must keep its own timing scopes around the driver composes the
   same steps itself, in this order and with one tick:
   `adapter.prepare(now); serial.proceed(now); adapter.finish(now); g_endpoint.poll(now);`
@@ -183,7 +183,7 @@ static Link g_endpoint;
 static cobs::UartAdapter adapter{serial, g_endpoint};
 
 bool start() noexcept { return serial.init(&huart3) && adapter.bind(); }
-void loop_step() noexcept { adapter.proceed(HAL_GetTick()); }
+void loop_step() noexcept { adapter.proceed(); }
 ```
 
 The application drains `g_endpoint.pop_packet()` after that step. The compiled
@@ -271,13 +271,12 @@ static TaskHandle_t comm_task = nullptr;
 void comm_task_body(void*)
 {
     for (;;) {
-        const uint32_t now = HAL_GetTick();
         // The adapter's deadline bounds the sleep: a frame whose remainder
         // never comes must be expired when it falls due, not when the next
         // unrelated frame wakes the task. wait() chooses the earlier of its
         // default 50 ms fallback and the adapter deadline. COBS has none.
-        (void)uart::FreeRtosWake::wait(adapter, now);
-        adapter.proceed(HAL_GetTick());
+        (void)uart::FreeRtosWake::wait(adapter);
+        adapter.proceed(); // fresh platform clock after waking
         while (auto request = g_endpoint.pop_packet()) {
             serve(request);
         }
