@@ -1,0 +1,32 @@
+PASS independent PC integrity/ADU oracle
+HELLO {"baud": 10000000, "core_clock": 600000000, "crc_policy": 0, "framer": 0, "max_frame": 256, "max_receive": 252, "max_send": 252, "rx_blocks": 8, "tx_blocks": 2, "uart_chunk_count": 4, "uart_chunk_size": 256, "version": 4}
+FAIL {"error": "vector 8 failed: data_size=31 pattern=alternating address=0xf7 function=0x64: response timeout: received 0/35 bytes", "stats": {"control_frames": 1, "counters": {"packet_process": {"avg": 1650, "calls": 8, "max": 2802, "total": 13201}, "rtu_receive": {"avg": 716, "calls": 11, "max": 2086, "total": 7877}, "rtu_tx_release": {"avg": 111, "calls": 8, "max": 354, "total": 892}, "rx_dma_irq": {"avg": 0, "calls": 0, "max": 0, "total": 0}, "tx_dma_irq": {"avg": 281, "calls": 8, "max": 281, "total": 2248}, "uart_slow": {"avg": 324, "calls": 52, "max": 2312, "total": 16861}, "usart_irq": {"avg": 692, "calls": 19, "max": 1032, "total": 13160}}, "echo_data_bytes": 40, "echo_frames": 8, "response_failures": 0, "rtu_allocation_failure": 0, "rtu_candidates": 11, "rtu_crc_errors": 2, "rtu_frames_received": 9, "rtu_frames_sent": 8, "rtu_oversize": 0, "rtu_send_failed": 0, "rtu_send_refused_busy": 0, "rtu_stream_gaps": 0, "rtu_too_short": 0, "rx_available": 7, "rx_exhausted": 0, "rx_high_water": 1, "rx_in_use": 1, "rx_rejected": 0, "selftest_failures": 0, "tx_available": 2, "tx_exhausted": 0, "tx_high_water": 1, "tx_in_use": 0, "tx_rejected": 0, "uart_restarts": 0, "uart_rx_errors": 0, "uart_rx_overrun": 0, "uart_tx_errors": 0, "version": 4, "window_ms": 8096}, "status": "failed", "suite": "vectors"}
+Traceback (most recent call last):
+  File "C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\modbus_hardware.py", line 684, in suite_vectors
+    link.echo(address, function, data, timeout=8.0)
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\modbus_hardware.py", line 325, in echo
+    self.policy, self.read_exact(len(request), timeout)
+                 ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\modbus_hardware.py", line 303, in read_exact
+    raise AssertionError(
+        f"response timeout: received {len(received)}/{size} bytes"
+    )
+AssertionError: response timeout: received 0/35 bytes
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\modbus_hardware.py", line 1168, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\modbus_hardware.py", line 1149, in main
+    result = suites[name]()
+  File "C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\modbus_hardware.py", line 1133, in <lambda>
+    "vectors": lambda: suite_vectors(link),
+                       ~~~~~~~~~~~~~^^^^^^
+  File "C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\modbus_hardware.py", line 686, in suite_vectors
+    raise AssertionError(
+    ...<3 lines>...
+    ) from error
+AssertionError: vector 8 failed: data_size=31 pattern=alternating address=0xf7 function=0x64: response timeout: received 0/35 bytes

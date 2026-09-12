@@ -8,6 +8,7 @@
 #include "adapters/rtu/UartAdapter.h"
 #include "adapters/freertos/FreeRtosWake.h"
 #include "wire/tests/contract_checks.h"
+#include "wire/tests/extension_checks.h"
 #include "uart_bench.h"
 #include "usart.h"
 
@@ -223,6 +224,7 @@ void local_contract()
 	check(link.storage().rx_available() == 4u);
 	contract_checks::readers(check);
 	contract_checks::policies<wire::Pool<2u, 2u>>(check);
+	extension_checks::run<wire::Pool<2u, 2u>>(check);
 	wait_contract();
 	local_checks = checks - before_checks; local_failed = failed - before_failed;
 }
@@ -236,7 +238,7 @@ void status(uint8_t command)
 	// Stable 24-word telemetry. Values are a thread-context snapshot, not a CPU benchmark.
 	const auto uart = serial.stats();
 	const std::array<uint32_t, 24u> words{
-		2u, PARITY_PROTOCOL, PARITY_CRC, SystemCoreClock, PARITY_BAUD,
+		3u, PARITY_PROTOCOL, PARITY_CRC, SystemCoreClock, PARITY_BAUD,
 		10000u * tskKERNEL_VERSION_MAJOR + 100u * tskKERNEL_VERSION_MINOR + tskKERNEL_VERSION_BUILD,
 		checks, failed, local_checks, local_failed, g_parity_assertions,
 		g_parity_isr_notifies, g_parity_bad_notify_context, notified, timed_out,

@@ -1,0 +1,32 @@
+PASS independent PC integrity/ADU oracle
+HELLO {"baud": 6000000, "core_clock": 600000000, "crc_policy": 0, "framer": 0, "max_frame": 256, "max_receive": 252, "max_send": 252, "rx_blocks": 8, "tx_blocks": 2, "uart_chunk_count": 4, "uart_chunk_size": 256, "version": 4}
+FAIL {"error": "response timeout: received 0/21 bytes", "stats_error": "response timeout: received 0/249 bytes", "status": "failed", "suite": "vectors"}
+Traceback (most recent call last):
+  File "C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\modbus_hardware.py", line 1168, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\modbus_hardware.py", line 1149, in main
+    result = suites[name]()
+  File "C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\modbus_hardware.py", line 1133, in <lambda>
+    "vectors": lambda: suite_vectors(link),
+                       ~~~~~~~~~~~~~^^^^^^
+  File "C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\modbus_hardware.py", line 662, in suite_vectors
+    link.reset_metrics()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\modbus_hardware.py", line 416, in reset_metrics
+    status, _ = self.ack(CMD_RESET)
+                ~~~~~~~~^^^^^^^^^^^
+  File "C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\modbus_hardware.py", line 412, in ack
+    payload = self.control(command, 8, arguments, timeout)
+  File "C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\modbus_hardware.py", line 357, in control
+    self.read_exact(
+    ~~~~~~~~~~~~~~~^
+        expected_data_size + FRAME_PREFIX + 2 + self.policy.wire_size, timeout
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ),
+    ^
+  File "C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\modbus_hardware.py", line 303, in read_exact
+    raise AssertionError(
+        f"response timeout: received {len(received)}/{size} bytes"
+    )
+AssertionError: response timeout: received 0/21 bytes

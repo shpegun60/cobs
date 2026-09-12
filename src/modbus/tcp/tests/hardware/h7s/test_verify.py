@@ -15,9 +15,18 @@ class ReceiptTests(unittest.TestCase):
     def test_complete_and_corrupted_receipts(self):
         self.check_receipt(verify.HERE / "results_2026-09-12/session.json")
         self.check_receipt(verify.HERE / "results_payload_limits_2026-09-12/session.json")
+        self.check_receipt(verify.HERE / "results_payload_limits_2026-09-12/session.json", schema3=True)
 
-    def check_receipt(self, receipt):
+    def check_receipt(self, receipt, schema3=False):
         original = json.loads(receipt.read_text())
+        if schema3:
+            # Synthetic positive shape only; never represented as a board run.
+            original["schema"] = 3
+            for row in original["images"]:
+                row["hello"] = row["hello"].replace("TCP,2,", "TCP,3,", 1)
+                row["self_test"] += ",2560991,0"
+                for negative in row["negative"]:
+                    negative["boot_after"] = row["hello"]
         mutations = [
             lambda r: r.update(completed=False),
             lambda r: r.update(restored_and_verified=False),
@@ -36,12 +45,18 @@ class ReceiptTests(unittest.TestCase):
             lambda r: r["images"][0].update(binary_bytes=65537),
             lambda r: r["images"][0]["artifacts"].pop("elf"),
         ]
-        if original["schema"] == 2:
+        if original["schema"] >= 2:
             mutations += [
                 lambda r: r.update(limit_kind="ADU bytes"),
                 lambda r: r.update(max_data_size=1023),
                 lambda r: r["images"][0].update(hello="TCP,2,600000000,0,0,1024,196608,1024"),
                 lambda r: r["images"][0].update(self_test="SELF,4094,0,2,0,53,1"),
+            ]
+        if original["schema"] == 3:
+            mutations += [
+                lambda r: r["images"][0].update(self_test="SELF,4094,0,2,0,53,0"),
+                lambda r: r["images"][0].update(self_test="SELF,4094,0,2,0,53,0,2560990,0"),
+                lambda r: r["images"][0].update(self_test="SELF,4094,0,2,0,53,0,2560991,1"),
             ]
         with tempfile.TemporaryDirectory(prefix="tcp-receipt-") as folder:
             path = Path(folder) / "record.json"

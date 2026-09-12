@@ -6,6 +6,7 @@
 #include "usart.h"
 #include "modbus/tcp/tests/core_cases.h"
 #include "modbus/rtu/Rtu.h"
+#include "wire/tests/length_checks.h"
 #include <cstdio>
 #include <cstdlib>
 
@@ -184,7 +185,7 @@ extern "C" void bench_loop()
 	if (HAL_UART_Receive(&huart3, &command, 1u, 1u) != HAL_OK) { return; }
 	if (command == 'H') {
 		char line[128];
-		(void)std::snprintf(line, sizeof(line), "TCP,2,%lu,%u,%u,1024,%lu,%u\n",
+		(void)std::snprintf(line, sizeof(line), "TCP,3,%lu,%u,%u,1024,%lu,%u\n",
 			static_cast<unsigned long>(SystemCoreClock), TCP_HW_HEAP, TCP_HW_CRC,
 			static_cast<unsigned long>(SCB->CCR), static_cast<unsigned>(Link::max_frame_size));
 		emit(line);
@@ -192,9 +193,14 @@ extern "C" void bench_loop()
 		const auto core = tcp_test::core_cases<Memory, Integrity>();
 		const auto oom = oom_cases();
 		const auto rtu = rtu_data_cases();
+		unsigned length_checks_run = 0u, length_checks_failed = 0u;
+		length_checks::run([&](bool okay) noexcept {
+			++length_checks_run;
+			if (!okay) { ++length_checks_failed; }
+		});
 		char line[128];
-		(void)std::snprintf(line, sizeof(line), "SELF,%u,%u,%u,%u,%u,%u\n", core.checks, core.failed_line,
-			oom.checks, oom.failed_line, rtu.checks, rtu.failed_line);
+		(void)std::snprintf(line, sizeof(line), "SELF,%u,%u,%u,%u,%u,%u,%u,%u\n", core.checks, core.failed_line,
+			oom.checks, oom.failed_line, rtu.checks, rtu.failed_line, length_checks_run, length_checks_failed);
 		emit(line);
 	} else if (command == 'E') { start_echo(); }
 }

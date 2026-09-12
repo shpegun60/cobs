@@ -2,7 +2,14 @@
 
 Author: shpegun60. License: [MIT](../../../../../LICENSE).
 
-Latest schema 2 [receipt](results_dma_audit_2026-09-12/session.json) and
+Latest extension-contract repeat: [receipt](results_extensions_2026-09-12/session.json)
+and [raw trials](results_extensions_2026-09-12/results.jsonl). All **186 trials
+and 2,037 MCU assertions** passed again over Os/O2/O3; all 15 verifier mutation
+controls passed. Every image programmed on attempt one and the fresh boot
+backup was restored and read back. See the
+[full repeat report](../../../../../doc/HARDWARE_EXTENSIONS_2026-09-12.md).
+
+Earlier schema 2 [receipt](results_dma_audit_2026-09-12/session.json) and
 [raw trials](results_dma_audit_2026-09-12/results.jsonl): **186 live trials,
 2,037 MCU assertions, three images**, all passed, including I/J/K in three
 rounds for each optimization. Original boot firmware restored and read back.

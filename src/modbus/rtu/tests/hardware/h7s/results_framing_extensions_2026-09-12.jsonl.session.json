@@ -1,0 +1,236 @@
+{
+  "backup_bytes": 65536,
+  "backup_sha256": "a5903024dba85fab5121150ca8ad13482f97384aa450aab67413881991fb9456",
+  "bauds": [
+    1000000,
+    3000000,
+    6000000,
+    10000000
+  ],
+  "completed": true,
+  "images": [
+    {
+      "baud": 1000000,
+      "binary_sha256": "8bd6dd7a2b5fe617b6d73119a8d42f6d7dbf89a6d535492d32a693feeac495af",
+      "elf_sha256": "056af3bfc545fbbc69ff5a91754c2dcca73697d1119a9a54e4ff09072bf721ae",
+      "flash_attempts": 1,
+      "mode": 0,
+      "tag": "rtu-bitwise-1000000-framer0"
+    },
+    {
+      "baud": 3000000,
+      "binary_sha256": "8eae6c126887c166ce888e89ba5fc9054936315ba5c994eec9838bf009fe63ec",
+      "elf_sha256": "d82d955682de9fc2411bb0ec45c25c8515513bdbc6f629a5f11f634ab56527e3",
+      "flash_attempts": 1,
+      "mode": 0,
+      "tag": "rtu-bitwise-3000000-framer0"
+    },
+    {
+      "baud": 6000000,
+      "binary_sha256": "d0cf0a8d1bcf54227a2b4af5f1f0b484398812926ec01aae2c258732baf88120",
+      "elf_sha256": "a6cdaa1a07d6354b1b8fa69dd65ee173d7498a421bd2412790972a822269b73c",
+      "flash_attempts": 1,
+      "mode": 0,
+      "tag": "rtu-bitwise-6000000-framer0"
+    },
+    {
+      "baud": 10000000,
+      "binary_sha256": "ab4bdb4cfaa511591320d5905bde67dccaaba8fd9846d22470a4a02b0365d392",
+      "elf_sha256": "5f4b44a0f53ebd4a39d86f0992e176bfd606a18c4b2081f56cb6ea39773d1eb6",
+      "flash_attempts": 1,
+      "mode": 0,
+      "tag": "rtu-bitwise-10000000-framer0"
+    },
+    {
+      "baud": 1000000,
+      "binary_sha256": "7309ef359b776bd59fe9545146e777d46ff88c6d865af139e09e29d0862c8fda",
+      "elf_sha256": "6968573722b0db9f7a748756470d3581af441fea64f770b7a6f5c734dac2bfa7",
+      "flash_attempts": 1,
+      "mode": 1,
+      "tag": "rtu-bitwise-1000000-framer1"
+    },
+    {
+      "baud": 3000000,
+      "binary_sha256": "2c72b733c5a9eea6949010d41772b6662692382d64c64aa394e367a658d57d02",
+      "elf_sha256": "f9f99cc9ebd72590a50160baae89e04b10e79760019d79f2afa6608cdf27594d",
+      "flash_attempts": 1,
+      "mode": 1,
+      "tag": "rtu-bitwise-3000000-framer1"
+    },
+    {
+      "baud": 6000000,
+      "binary_sha256": "65fcf0124fb62fa33f93d19f921d01723ad938a26e33dbe74eb8a9b7c6726cb5",
+      "elf_sha256": "6a3d4e867ac14e5b74cd76b3f1fcdd91b333cf332c0a61ad6be61b9d7e8ab8e7",
+      "flash_attempts": 1,
+      "mode": 1,
+      "tag": "rtu-bitwise-6000000-framer1"
+    },
+    {
+      "baud": 10000000,
+      "binary_sha256": "241d41068564306942e59a07ff4e2d882d360b611b7e0da8d7e9f80b16c2a2d9",
+      "elf_sha256": "a3895208cbde786b97d850da4bac23aba1bd9a30f1297b7e6c168f10dc9261fb",
+      "flash_attempts": 1,
+      "mode": 1,
+      "tag": "rtu-bitwise-10000000-framer1"
+    }
+  ],
+  "modes": [
+    0,
+    1
+  ],
+  "policy": "bitwise",
+  "port": "COM6",
+  "restored_and_verified": true,
+  "results_sha256": "2c9c196ad88378c42e907a348ec8c0ec4673688e343e9a1f0998750cf088c9ce",
+  "schema": 1,
+  "serial": "002A001F3033510135393935",
+  "session": "C:\\Users\\admin\\Documents\\my_workspace\\Qt\\COBS\\stm32_cube_test\\h7s_cobs_test\\out\\rtu-framing-20260912T195921Z",
+  "source_base_commit": "3d177cf3b47c22715803c9bec26f621d69d60cb7",
+  "started": "20260912T195921Z",
+  "suites": [
+    {
+      "baud": 1000000,
+      "exit_code": 0,
+      "mode": 0,
+      "suite": "smoke"
+    },
+    {
+      "baud": 1000000,
+      "exit_code": 0,
+      "mode": 0,
+      "suite": "framing"
+    },
+    {
+      "baud": 1000000,
+      "exit_code": 0,
+      "mode": 0,
+      "suite": "vectors"
+    },
+    {
+      "baud": 3000000,
+      "exit_code": 0,
+      "mode": 0,
+      "suite": "smoke"
+    },
+    {
+      "baud": 3000000,
+      "exit_code": 0,
+      "mode": 0,
+      "suite": "framing"
+    },
+    {
+      "baud": 3000000,
+      "exit_code": 0,
+      "mode": 0,
+      "suite": "vectors"
+    },
+    {
+      "baud": 6000000,
+      "exit_code": 1,
+      "mode": 0,
+      "suite": "smoke"
+    },
+    {
+      "baud": 6000000,
+      "exit_code": 0,
+      "mode": 0,
+      "suite": "framing"
+    },
+    {
+      "baud": 6000000,
+      "exit_code": 1,
+      "mode": 0,
+      "suite": "vectors"
+    },
+    {
+      "baud": 10000000,
+      "exit_code": 0,
+      "mode": 0,
+      "suite": "smoke"
+    },
+    {
+      "baud": 10000000,
+      "exit_code": 0,
+      "mode": 0,
+      "suite": "framing"
+    },
+    {
+      "baud": 10000000,
+      "exit_code": 1,
+      "mode": 0,
+      "suite": "vectors"
+    },
+    {
+      "baud": 1000000,
+      "exit_code": 0,
+      "mode": 1,
+      "suite": "smoke"
+    },
+    {
+      "baud": 1000000,
+      "exit_code": 0,
+      "mode": 1,
+      "suite": "framing"
+    },
+    {
+      "baud": 1000000,
+      "exit_code": 0,
+      "mode": 1,
+      "suite": "vectors"
+    },
+    {
+      "baud": 3000000,
+      "exit_code": 0,
+      "mode": 1,
+      "suite": "smoke"
+    },
+    {
+      "baud": 3000000,
+      "exit_code": 0,
+      "mode": 1,
+      "suite": "framing"
+    },
+    {
+      "baud": 3000000,
+      "exit_code": 0,
+      "mode": 1,
+      "suite": "vectors"
+    },
+    {
+      "baud": 6000000,
+      "exit_code": 0,
+      "mode": 1,
+      "suite": "smoke"
+    },
+    {
+      "baud": 6000000,
+      "exit_code": 0,
+      "mode": 1,
+      "suite": "framing"
+    },
+    {
+      "baud": 6000000,
+      "exit_code": 0,
+      "mode": 1,
+      "suite": "vectors"
+    },
+    {
+      "baud": 10000000,
+      "exit_code": 0,
+      "mode": 1,
+      "suite": "smoke"
+    },
+    {
+      "baud": 10000000,
+      "exit_code": 0,
+      "mode": 1,
+      "suite": "framing"
+    },
+    {
+      "baud": 10000000,
+      "exit_code": 0,
+      "mode": 1,
+      "suite": "vectors"
+    }
+  ]
+}

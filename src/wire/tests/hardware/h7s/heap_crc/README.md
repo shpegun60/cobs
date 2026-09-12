@@ -1,6 +1,14 @@
 <!-- Author: shpegun60; SPDX-License-Identifier: MIT -->
 # Heap / Pool and STM32 CRC comparison
 
+Latest malloc-backed Heap regression: [new receipt](results_extensions_2026-09-12/session.json)
+and [full repeat report](../../../../../../doc/HARDWARE_EXTENSIONS_2026-09-12.md).
+All eight COBS/RTU NoCrc/Bitwise/Table/peripheral images passed their oracles
+and lifetime checks, plus 96 UART windows with 178,312 byte-exact echoes.
+Each peripheral image passed 8,200 checksum vectors. Original flash was
+restored and read back. These new raw timing samples do not replace the
+earlier published performance tables below.
+
 Paired measurements on NUCLEO-H7S3L8, GNU Arm 14.3.1, `-Os`, no LTO.
 Production COBS, framed RTU, storage and UART are used unchanged. This is a
 bare-metal benchmark using newlib-nano allocation, not FreeRTOS `heap_4`.

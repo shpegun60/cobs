@@ -20,6 +20,7 @@ $cases = @(
     @{name='storage'; sources=@('wire/tests/test_storage.cpp')},
     @{name='parity'; sources=@('wire/tests/test_api_parity.cpp')},
     @{name='contracts'; sources=@('wire/tests/test_contracts.cpp', 'cobs/Decoder.cpp', 'cobs/Encoder.cpp')},
+    @{name='length_domains'; sources=@('wire/tests/test_length_domains.cpp')},
     @{name='endpoint_parity'; sources=@('wire/tests/test_endpoint_parity.cpp', 'cobs/Decoder.cpp', 'cobs/Encoder.cpp')},
     @{name='payload_limits'; sources=@('wire/tests/test_payload_limits.cpp', 'cobs/Decoder.cpp', 'cobs/Encoder.cpp')},
     @{name='custom_memory'; sources=@('wire/tests/test_protocol_storage.cpp', 'cobs/Decoder.cpp', 'cobs/Encoder.cpp')},

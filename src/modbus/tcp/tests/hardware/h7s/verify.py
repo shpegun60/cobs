@@ -37,7 +37,7 @@ def frame(policy, transaction, unit, function, data):
 
 def positive_cases(policy, schema=1):
     cases = []
-    maximum = 1024 if schema == 2 else 1016 - width(policy)
+    maximum = 1024 if schema >= 2 else 1016 - width(policy)
     lengths = (0, 1, 2, 4, 31, 32, 63, 64, 127, 128, 249, 250, 251, 252, 253, 254, 255, 256, 257, 511, maximum)
     for length in lengths:
         for pattern in range(3):
@@ -61,7 +61,7 @@ def negative_cases(policy, schema=1):
              ("length-zero", b"\x00\x01\x00\x00\x00\x00"),
              ("length-one", b"\x00\x01\x00\x00\x00\x01"),
              ("oversize", b"\x00\x01\x00\x00\xff\xff")]
-    if schema == 2:
+    if schema >= 2:
         cases.append(("data-limit-plus-one", struct.pack(">HHH", 1, 0, 1025 + 2 + width(policy))))
     if policy:
         corrupt = bytearray(valid)
@@ -77,8 +77,8 @@ def negative_cases(policy, schema=1):
 def verify(path, local=False):
     record = json.loads(Path(path).read_text())
     schema = record["schema"]
-    assert schema in (1, 2) and record["completed"]
-    if schema == 2:
+    assert schema in (1, 2, 3) and record["completed"]
+    if schema >= 2:
         assert record["limit_kind"] == "function-data bytes" and record["max_data_size"] == 1024
     assert record["transport"] == "UART byte transport; no TCP/IP stack"
     assert record["restored_and_verified"] and record["backup_bytes"] == 65536
@@ -90,13 +90,15 @@ def verify(path, local=False):
         hello = row["hello"].split(",")
         assert hello[:6] == ["TCP", str(schema), "600000000", str(heap), str(policy), "1024"]
         assert int(hello[6]) & 0x30000 == 0x30000  # D/I-cache enabled
-        if schema == 2:
+        if schema >= 2:
             assert len(hello) == 8 and int(hello[7]) == 1032 + width(policy)
         self_test = row["self_test"].split(",")
         assert self_test[0] == "SELF" and int(self_test[1]) >= 4000 and self_test[2] == "0"
         assert int(self_test[3]) >= (14 if heap else 2) and self_test[4] == "0"
-        if schema == 2:
-            assert len(self_test) == 7 and int(self_test[5]) == 53 and self_test[6] == "0"
+        if schema >= 2:
+            assert len(self_test) == (9 if schema == 3 else 7) and int(self_test[5]) == 53 and self_test[6] == "0"
+        if schema == 3:
+            assert self_test[7:] == ["2560991", "0"], "exhaustive length-domain checks missing/failed"
         plan = positive_cases(policy, schema)
         assert len(row["positive"]) == len(plan)
         for actual, (name, chunks, expected) in zip(row["positive"], plan):

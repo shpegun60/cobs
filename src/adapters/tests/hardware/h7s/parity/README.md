@@ -1,7 +1,17 @@
 <!-- Author: shpegun60; SPDX-License-Identifier: MIT -->
 # COBS / RTU API parity on the H7S with real FreeRTOS
 
-Latest contract-fix repeat: [final optimized receipt](results_contracts_final_2026-09-12/session.json)
+Latest extension-contract repeat: [schema 3 receipt](results_extensions_2026-09-12/session.json)
+and [raw exchanges](results_extensions_2026-09-12/results.jsonl): **14 images,
+704 exchanges, 560 exact echoes and 2,100 MCU-local checks**, all passed.
+Each image adds 36 shared const-reference storage and legal overloaded-framer
+checks over Pool, bringing the exact local count to 150. Rejected extension
+types are checked while compiling the actual firmware. No allocator is linked.
+Original flash was restored and read back. One pre-test ST-Link download
+failure is retained in the [full repeat report](../../../../../../doc/HARDWARE_EXTENSIONS_2026-09-12.md);
+the same ELF verified on its second attempt, with no runtime retry.
+
+Earlier contract-fix repeat: [final optimized receipt](results_contracts_final_2026-09-12/session.json)
 and [raw exchanges](results_contracts_final_2026-09-12/results.jsonl), **14 images,
 704 exchanges, 560 exact echoes, 1,596 MCU-local checks**, all passed. Schema 2
 adds CRC overload selection and enum-reader checks for COBS/RTU/TCP plus

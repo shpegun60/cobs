@@ -1,0 +1,109 @@
+08003270 <_exit>:
+ 8003270:	b508      	push	{r3, lr}
+ 8003272:	f003 fdb1 	bl	8006dd8 <__errno>
+ 8003276:	2316      	movs	r3, #22
+ 8003278:	6003      	str	r3, [r0, #0]
+ 800327a:	e7fe      	b.n	800327a <_exit+0xa>
+
+0800372c <wire::Heap::For<wire::BlockGeometry<128u, 128u, 8u> >::acquire_tx(unsigned int) [clone .part.0]>:
+ 800372c:	2901      	cmp	r1, #1
+ 800372e:	b538      	push	{r3, r4, r5, lr}
+ 8003730:	4605      	mov	r5, r0
+ 8003732:	4608      	mov	r0, r1
+ 8003734:	bf38      	it	cc
+ 8003736:	2001      	movcc	r0, #1
+ 8003738:	460c      	mov	r4, r1
+ 800373a:	f003 f9ff 	bl	8006b3c <malloc>
+ 800373e:	2800      	cmp	r0, #0
+ 8003740:	bf08      	it	eq
+ 8003742:	2400      	moveq	r4, #0
+ 8003744:	e9c5 0400 	strd	r0, r4, [r5]
+ 8003748:	4628      	mov	r0, r5
+ 800374a:	bd38      	pop	{r3, r4, r5, pc}
+
+08003d88 <__wrap_abort>:
+ 8003d88:	2100      	movs	r1, #0
+ 8003d8a:	4803      	ldr	r0, [pc, #12]	@ (8003d98 <__wrap_abort+0x10>)
+ 8003d8c:	b508      	push	{r3, lr}
+ 8003d8e:	f7ff fbad 	bl	80034ec <(anonymous namespace)::report(char const*, unsigned long)>
+ 8003d92:	f002 fecc 	bl	8006b2e <abort>
+ 8003d96:	bf00      	nop
+ 8003d98:	0800700c 	.word	0x0800700c
+
+08003d9c <__wrap__exit>:
+ 8003d9c:	4604      	mov	r4, r0
+ 8003d9e:	4601      	mov	r1, r0
+ 8003da0:	4803      	ldr	r0, [pc, #12]	@ (8003db0 <__wrap__exit+0x14>)
+ 8003da2:	b508      	push	{r3, lr}
+ 8003da4:	f7ff fba2 	bl	80034ec <(anonymous namespace)::report(char const*, unsigned long)>
+ 8003da8:	4620      	mov	r0, r4
+ 8003daa:	f7ff fa61 	bl	8003270 <_exit>
+ 8003dae:	bf00      	nop
+ 8003db0:	08007012 	.word	0x08007012
+
+08003db4 <heap_rx_probe>:
+ 8003db4:	2880      	cmp	r0, #128	@ 0x80
+ 8003db6:	d804      	bhi.n	8003dc2 <heap_rx_probe+0xe>
+ 8003db8:	2808      	cmp	r0, #8
+ 8003dba:	bf38      	it	cc
+ 8003dbc:	2008      	movcc	r0, #8
+ 8003dbe:	f002 bebd 	b.w	8006b3c <malloc>
+ 8003dc2:	2000      	movs	r0, #0
+ 8003dc4:	4770      	bx	lr
+
+08003dc6 <heap_tx_probe>:
+ 8003dc6:	2980      	cmp	r1, #128	@ 0x80
+ 8003dc8:	b510      	push	{r4, lr}
+ 8003dca:	4604      	mov	r4, r0
+ 8003dcc:	d904      	bls.n	8003dd8 <heap_tx_probe+0x12>
+ 8003dce:	2300      	movs	r3, #0
+ 8003dd0:	e9c0 3300 	strd	r3, r3, [r0]
+ 8003dd4:	4620      	mov	r0, r4
+ 8003dd6:	bd10      	pop	{r4, pc}
+ 8003dd8:	f7ff fca8 	bl	800372c <wire::Heap::For<wire::BlockGeometry<128u, 128u, 8u> >::acquire_tx(unsigned int) [clone .part.0]>
+ 8003ddc:	e7fa      	b.n	8003dd4 <heap_tx_probe+0xe>
+
+08003dde <heap_rx_release_probe>:
+ 8003dde:	f002 beb5 	b.w	8006b4c <free>
+
+08003de2 <heap_tx_release_probe>:
+ 8003de2:	b082      	sub	sp, #8
+ 8003de4:	ab02      	add	r3, sp, #8
+ 8003de6:	e903 0003 	stmdb	r3, {r0, r1}
+ 8003dea:	b002      	add	sp, #8
+ 8003dec:	f002 beae 	b.w	8006b4c <free>
+
+08006af8 <std::get_new_handler()>:
+ 8006af8:	4b02      	ldr	r3, [pc, #8]	@ (8006b04 <std::get_new_handler()+0xc>)
+ 8006afa:	6818      	ldr	r0, [r3, #0]
+ 8006afc:	f3bf 8f5b 	dmb	ish
+ 8006b00:	4770      	bx	lr
+ 8006b02:	bf00      	nop
+ 8006b04:	24021280 	.word	0x24021280
+
+08006b08 <operator new(unsigned int, std::nothrow_t const&)>:
+ 8006b08:	f000 b800 	b.w	8006b0c <operator new(unsigned int)>
+
+08006b0c <operator new(unsigned int)>:
+ 8006b0c:	2801      	cmp	r0, #1
+ 8006b0e:	bf38      	it	cc
+ 8006b10:	2001      	movcc	r0, #1
+ 8006b12:	b510      	push	{r4, lr}
+ 8006b14:	4604      	mov	r4, r0
+ 8006b16:	4620      	mov	r0, r4
+ 8006b18:	f000 f810 	bl	8006b3c <malloc>
+ 8006b1c:	b100      	cbz	r0, 8006b20 <operator new(unsigned int)+0x14>
+ 8006b1e:	bd10      	pop	{r4, pc}
+ 8006b20:	f7ff ffea 	bl	8006af8 <std::get_new_handler()>
+ 8006b24:	b908      	cbnz	r0, 8006b2a <operator new(unsigned int)+0x1e>
+ 8006b26:	f7fd f92f 	bl	8003d88 <__wrap_abort>
+ 8006b2a:	4780      	blx	r0
+ 8006b2c:	e7f3      	b.n	8006b16 <operator new(unsigned int)+0xa>
+
+08006b2e <abort>:
+ 8006b2e:	b508      	push	{r3, lr}
+ 8006b30:	2006      	movs	r0, #6
+ 8006b32:	f000 f925 	bl	8006d80 <raise>
+ 8006b36:	2001      	movs	r0, #1
+ 8006b38:	f7fd f930 	bl	8003d9c <__wrap__exit>
+

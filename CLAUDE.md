@@ -80,6 +80,20 @@ per image. No COBS timer, CRC-semantic validation or new UART ISR work was
 added. A verbose ST flash-loader Write rejection remains a pre-test
 programming failure, not a runtime library failure or a proved vendor fix.
 
+The subsequent explicit fix/audit slice is in `doc/EXTENSION_CONTRACT_AUDIT.md`:
+`wire::ByteStorage` checks const/mutable/temporary call forms; RTU's
+`framing::Policy` checks actual RX/TX overloads and qualified opposite-direction
+conversion. Runtime code and object fields are untouched. The extended
+contract and exhaustive 16-bit length-domain tests are part of the wire and
+MSVC runners; ARM compilation/object comparisons are not new board runs.
+The subsequent explicit live repeat is in `doc/HARDWARE_EXTENSIONS_2026-09-12.md`:
+eight guarded sessions / 81 image configurations, with all supported-mode
+acceptance gates passed and original flash restored/read back in every session.
+Schema 3 RTOS firmware executes 150 local checks per image; schema 3 TCP
+executes the shared 2,560,991-check exhaustive length body per image.
+Keep the out-of-contract burst controls and pre-test ST-Link failures visible;
+this is not Ethernet coverage, execution on every ARM, or a vendor-loader fix.
+
 `modbus::tcp` was added as a separate transport-independent MBAP core on
 2026-09-12. See `doc/MODBUS_TCP_PLAN.md`, `src/modbus/tcp/README.md` and
 `src/modbus/tcp/tests/hardware/h7s/README.md`. Its spelling is

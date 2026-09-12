@@ -127,7 +127,13 @@ A concept checks syntax, not these runtime guarantees:
 - a strategy claiming invalid-release checking rejects foreign/double release
   before touching the free list or unrelated memory.
 
-`wire::ByteStorage<S>` checks the four exact signatures.
+`wire::ByteStorage<S>` checks the four call signatures and their exception
+contract for const lvalues, mutable lvalues and temporary argument values.
+Implementations taking values or `const&` are supported. If overloads exist,
+each selected overload must return the documented type and be `noexcept`:
+checking only a const-reference overload cannot make an RX size expression
+or a mutable TX descriptor safe. This is compile-time admission, not a
+runtime wrapper or exception handler.
 `wire::Storage<Memory, G>` checks Geometry and the bound `Memory::For<G>`.
 
 Endpoint constructors have conditional noexcept based on Storage/CRC
@@ -282,3 +288,7 @@ undersized grants at construction and growth, strong failure, payload moves,
 retained packet references, transport borrowing and exact descriptor return.
 Adapt the generic contract body in `src/wire/tests/test_storage.cpp` to your
 storage and run it with each required Endpoint::Geometry.
+
+The [extension-contract follow-up](EXTENSION_CONTRACT_AUDIT.md) records the
+overload-admission regressions, positive const-reference implementations and
+exhaustive allocation/skip boundary checks shared with Modbus TCP.

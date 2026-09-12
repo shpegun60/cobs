@@ -1,7 +1,18 @@
 <!-- Author: shpegun60; SPDX-License-Identifier: MIT -->
 # Modbus TCP core on NUCLEO-H7S3L8, carried over UART
 
-**Latest source-tree evidence:** see [cross-stack audit repeat](#cross-stack-audit-repeat).
+**Latest source-tree evidence:** [extension-contract receipt](results_extensions_2026-09-12/session.json)
+and [full H7S repeat report](../../../../../../doc/HARDWARE_EXTENSIONS_2026-09-12.md).
+All six images passed: 24,850 core checks, 36 real OOM checks, 318 local RTU
+checks, 1,974 exact UART exchanges and 38 fail-closed trials. Schema 3 adds
+**2,560,991 exhaustive length-domain checks in each image**, using the same
+[body as the host](../../../../../wire/tests/length_checks.h): every 16-bit
+MBAP Length, every nonzero Protocol ID and every private BE16 RTU count over
+the selected CRC/data limits. These are MCU-local declaration/skip checks,
+not million-frame UART or CRC-arithmetic tests. All flashes verified on
+attempt one, and the original boot image was restored and read back.
+
+Earlier evidence: see [cross-stack audit repeat](#cross-stack-audit-repeat).
 The [payload-limit API repeat](#payload-limit-api-repeat) records the preceding
 API migration before the subsequent UART ownership correction.
 The first session below used the earlier ADU-limit parameter and is preserved

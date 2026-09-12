@@ -1,6 +1,13 @@
 # The Modbus RTU stack against QtSerialBus, on the NUCLEO-H7S3L8
 
-Latest repeat after the UART/Qt cross-stack fixes: [12 September audit record](results_qmodbus_audit_2026-09-12.json)
+Latest extension-contract repeat: [raw record](results_qmodbus_extensions_2026-09-12.json)
+and [receipt](results_qmodbus_extensions_2026-09-12.json.session.json). All eight
+role/baud/framer runs passed: 652 ok and eight expected step-19 timeouts among
+660 verdicts, zero retries and no unexpected outcomes. All images programmed
+on attempt one and original flash was restored/read back. See the
+[full H7S repeat](../../../../../../doc/HARDWARE_EXTENSIONS_2026-09-12.md).
+
+Earlier repeat after the UART/Qt cross-stack fixes: [12 September audit record](results_qmodbus_audit_2026-09-12.json)
 and [image/restore receipt](results_qmodbus_audit_2026-09-12.json.session.json).
 All **8 role/baud/framer runs**, **660 reference-model verdicts** matched
 the expected outcomes, with zero retries and no unexpected timeouts. The

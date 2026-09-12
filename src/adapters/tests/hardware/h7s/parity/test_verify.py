@@ -52,6 +52,9 @@ def main():
                          (16, 1), (19, 2), (20, 0), (23, 2)):
         reject(lambda rows, i=index, v=value: status(rows, "hello", i, v))
     reject(lambda rows: status(rows, "after-idle", 17, 39))
+    if receipt["schema"] >= 3:
+        reject(lambda rows: status(rows, "hello", 8, 114))
+        reject(lambda rows: status(rows, "hello", 0, 2))
     reject(lambda rows: status(rows, "after-idle", 18, 1))
     reject(lambda rows: status(rows, "after-idle", 14, 0))
     reject(lambda rows: status(rows, "busy-check", 6, 25))

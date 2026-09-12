@@ -22,3 +22,4 @@ src/wire/tests/hardware/h7s/heap_crc/recovery/results_*/allocator_path.dis -text
 src/wire/tests/hardware/h7s/results_faults_2026-09-12/rtu-crc32-table-115200.log -text -whitespace
 src/wire/tests/hardware/h7s/results_audit_2026-09-12/cobs-none-1024-115200.log -text -whitespace
 src/wire/tests/hardware/h7s/results_contracts_2026-09-12/cobs-bitwise-253-10000000.log -text -whitespace
+src/**/results_extensions_2026-09-12/*.log -text -whitespace

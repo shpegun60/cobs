@@ -1,0 +1,21 @@
+PASS independent PC integrity/ADU oracle
+Traceback (most recent call last):
+  File "C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\modbus_hardware.py", line 1168, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\modbus_hardware.py", line 1128, in main
+    hello = link.hello()
+  File "C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\modbus_hardware.py", line 375, in hello
+    payload = self.control(CMD_HELLO, 48)
+  File "C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\modbus_hardware.py", line 357, in control
+    self.read_exact(
+    ~~~~~~~~~~~~~~~^
+        expected_data_size + FRAME_PREFIX + 2 + self.policy.wire_size, timeout
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ),
+    ^
+  File "C:\Users\admin\Documents\my_workspace\Qt\COBS\src\modbus\rtu\tests\hardware\h7s\modbus_hardware.py", line 303, in read_exact
+    raise AssertionError(
+        f"response timeout: received {len(received)}/{size} bytes"
+    )
+AssertionError: response timeout: received 0/61 bytes

@@ -1004,6 +1004,7 @@ cross-target code generation, benchmarks, and real hardware evidence.
 
 Raw current hardware evidence:
 
+- [2026-09-12 extension-contract full H7S repeat: 81 images, COBS/RTU/TCP, DMA, FreeRTOS, Heap/OOM and peripheral CRC](doc/HARDWARE_EXTENSIONS_2026-09-12.md);
 - [2026-09-12 full-stack repeat and targeted live UART/RTU recovery](doc/HARDWARE_REGRESSION_2026-09-12.md);
 - [baseline audited H7S matrix](src/cobs/tests/hardware/h7s/results_audited_2026-09-01.jsonl);
 - [concise Format/Pool API H7S matrix](src/cobs/tests/hardware/h7s/results_format_api_2026-09-01.jsonl);

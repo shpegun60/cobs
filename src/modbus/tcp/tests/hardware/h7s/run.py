@@ -58,7 +58,7 @@ def main():
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     session = PROJECT / "out" / ("tcp-live-" + stamp)
     session.mkdir()
-    record = dict(schema=2, limit_kind="function-data bytes", max_data_size=1024,
+    record = dict(schema=3, limit_kind="function-data bytes", max_data_size=1024,
                   started=stamp, session=str(session), port=args.port, serial=args.serial,
                   transport="UART byte transport; no TCP/IP stack", completed=False, restored_and_verified=False,
                   images=[], log_sha256={}, source_base_commit=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
@@ -129,7 +129,8 @@ def main():
                 port.write(b"S"); port.flush()
                 row["self_test"] = line(port); save()
                 fields = row["self_test"].split(",")
-                assert len(fields) == 7 and fields[0] == "SELF" and fields[2] == "0" and fields[4] == "0" and fields[6] == "0", row["self_test"]
+                assert len(fields) == 9 and fields[0] == "SELF" and all(fields[i] == "0" for i in (2, 4, 6, 8)), row["self_test"]
+                assert int(fields[7]) == 2560991, "missing exhaustive length-domain execution"
                 print(f"{config}: {row['self_test']}", flush=True)
                 start_echo(port)
                 policy = int(config[-1])

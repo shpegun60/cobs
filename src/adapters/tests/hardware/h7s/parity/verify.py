@@ -139,9 +139,9 @@ def check_rows(rows, images):
             assert answer[4] == (ord("d") if kind == "partial" else body[4])
             w = struct.unpack("<24I", answer[5:])
             version = image.get("firmware_version", 1)
-            assert version in (1, 2), "unknown firmware contract"
+            assert version in (1, 2, 3), "unknown firmware contract"
             assert w[:6] == (version, p, c, 600000000, baud, 100602), "wrong firmware/platform/kernel"
-            expected_checks = 114 if version == 2 else 20
+            expected_checks = {1: 20, 2: 114, 3: 150}[version]
             assert w[8] == expected_checks and w[7] == w[9] == w[10] == w[12] == w[16] == 0, "device failure"
             # Uart::init() itself calls receiveRestart(): exactly one startup
             # start, with no additional error-recovery restart during traffic.
@@ -163,7 +163,7 @@ def verify(directory, local_images=False):
     receipt = json.loads((directory / "session.json").read_text())
     results = directory / "results.jsonl"
     rows = [json.loads(line) for line in results.read_text().splitlines()]
-    assert receipt["schema"] in (1, 2) and receipt["completed"] and receipt["restored_and_verified"]
+    assert receipt["schema"] in (1, 2, 3) and receipt["completed"] and receipt["restored_and_verified"]
     assert all(i.get("firmware_version", 1) == receipt["schema"] for i in receipt["images"])
     assert receipt["backup_bytes"] == 65536 and receipt["readback_sha256"] == receipt["backup_sha256"]
     assert digest(results) == receipt["results_sha256"]
@@ -212,7 +212,7 @@ def verify(directory, local_images=False):
         assert digest(log) == receipt["restore_flash"]["log_sha256"] and "Download verified successfully" in log.read_text()
     else:
         print("CAVEAT local ELF/flash/backup/kernel bytes not re-read; use --local-images on the measuring machine")
-    local_checks = sum(114 if i.get("firmware_version", 1) == 2 else 20 for i in receipt["images"])
+    local_checks = sum({1: 20, 2: 114, 3: 150}[i.get("firmware_version", 1)] for i in receipt["images"])
     print(f"PASS {len(receipt['images'])} real FreeRTOS images; {len(rows)} exchanges; "
           f"{40 * len(receipt['images'])} exact echoes; {local_checks} MCU-local contract checks; restored")
 

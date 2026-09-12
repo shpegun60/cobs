@@ -1,0 +1,95 @@
+{
+  "backup_sha256": "a5903024dba85fab5121150ca8ad13482f97384aa450aab67413881991fb9456",
+  "bauds": [
+    115200,
+    1000000
+  ],
+  "completed": true,
+  "framers": [
+    0,
+    1
+  ],
+  "images": [
+    {
+      "baud": 115200,
+      "binary_sha256": "0e5de9ca1e59f7a546aff122c300a9f68ea57089208b0af1f47048f2a26437b6",
+      "elf_sha256": "79fd4f7eac7e697d6154c4a7546bda7f1afb4f14bd491b24fb5866f7e71929cb",
+      "flash_attempts": 1,
+      "framer": 0,
+      "role": 1,
+      "tag": "server-bitwise-115200-framer0"
+    },
+    {
+      "baud": 115200,
+      "binary_sha256": "48448e3d4498932c46efa5825d75ea9188b2a25df2904208cefc2500114c6aaa",
+      "elf_sha256": "889207eadaadb5cf1cb9a274e9b3aeaae9b47a630c521b7041d7dcdf8d4ac7c6",
+      "flash_attempts": 1,
+      "framer": 0,
+      "role": 2,
+      "tag": "client-bitwise-115200-framer0"
+    },
+    {
+      "baud": 1000000,
+      "binary_sha256": "c5741a92952f2c2c9f4317c5c64a826f34df225f853c713e2d20b43af8c5bb00",
+      "elf_sha256": "8dbf8f0280ad5c7b6d0eef35dbe51a5ab220a11ffcd2cd2e98d70831a6b64ce6",
+      "flash_attempts": 1,
+      "framer": 0,
+      "role": 1,
+      "tag": "server-bitwise-1000000-framer0"
+    },
+    {
+      "baud": 1000000,
+      "binary_sha256": "70312368b31025e8308f16e24972b7f1c2c11f37edc7b0d4fc8cc472cbf77e6c",
+      "elf_sha256": "259a4abc75af13db20acdfe2852e70c5341e0b0c8a9dcfaf790cb7959a112017",
+      "flash_attempts": 1,
+      "framer": 0,
+      "role": 2,
+      "tag": "client-bitwise-1000000-framer0"
+    },
+    {
+      "baud": 115200,
+      "binary_sha256": "d3be87c0343cde2e47d650d714a8b72df844ceacb0c61db711c6c0cbae8b357b",
+      "elf_sha256": "27eb5cd205b08bbd27ccd424a1d3c940899a1f9d85528f7dab832dc3a3b41975",
+      "flash_attempts": 1,
+      "framer": 1,
+      "role": 1,
+      "tag": "server-bitwise-115200-framer1"
+    },
+    {
+      "baud": 115200,
+      "binary_sha256": "074f99415741244a82b309eb65fd09fe43f548ef091da53edf7ed2c946bf7b5f",
+      "elf_sha256": "e5545e2f54db9442bb61905a6d7464da1c3314fcf82c681f5297fafe2d92721c",
+      "flash_attempts": 1,
+      "framer": 1,
+      "role": 2,
+      "tag": "client-bitwise-115200-framer1"
+    },
+    {
+      "baud": 1000000,
+      "binary_sha256": "a19ddf69666fb30b0de800c0bc26aebf221a7d9c541420024307aaf1988e41a9",
+      "elf_sha256": "88743a35d73cdf0685e933d19573f01c5ea3b73bf7b143def58cecef226ddfae",
+      "flash_attempts": 1,
+      "framer": 1,
+      "role": 1,
+      "tag": "server-bitwise-1000000-framer1"
+    },
+    {
+      "baud": 1000000,
+      "binary_sha256": "7688af603f7badddf69e755ab08d9585fba678a6e4171e0c66a04deabd512a7a",
+      "elf_sha256": "1bc2ef3083b353312d42dc0bbfd8dde66cb7f75d858af89ca4f431cec29a81c3",
+      "flash_attempts": 1,
+      "framer": 1,
+      "role": 2,
+      "tag": "client-bitwise-1000000-framer1"
+    }
+  ],
+  "policy": "bitwise",
+  "port": "COM6",
+  "restored_and_verified": true,
+  "results_sha256": "abd6d6a18d7ec8181ed6a87b67ef91d9a224c3609f88f4ec670161f26480be64",
+  "runner_sha256": "1def584dd3b52ce3618e8bf360a5c366d4e9bf2f28d206c296fa53ca2c3a92d0",
+  "schema": 1,
+  "serial": "002A001F3033510135393935",
+  "session": "C:\\Users\\admin\\Documents\\my_workspace\\Qt\\COBS\\stm32_cube_test\\h7s_cobs_test\\out\\qmodbus-20260912T200143Z",
+  "started": "20260912T200143Z"
+}

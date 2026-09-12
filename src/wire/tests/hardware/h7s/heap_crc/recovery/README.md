@@ -1,6 +1,12 @@
 <!-- Author: shpegun60; SPDX-License-Identifier: MIT -->
 # Heap OOM correction and live recovery, 2026-09-12
 
+Latest full repeat: [extension-contract receipt](results_extensions_2026-09-12/session.json).
+All 12 refusal/recovery cases, 42 exact frames and the intentionally unchanged
+global-new abort control passed again. Original flash was restored and read
+back; [cross-stack coverage](../../../../../../../doc/HARDWARE_EXTENSIONS_2026-09-12.md)
+also includes the fresh DMA, FreeRTOS, COBS/RTU and TCP sessions.
+
 **Fixed for `wire::Heap`: actual exhaustion now returns failure to COBS/RTU
 and both resume after memory is released.** Global C++ allocation operators
 are deliberately unchanged. The direct `new(std::nothrow)` negative control

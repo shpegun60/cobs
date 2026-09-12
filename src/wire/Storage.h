@@ -84,6 +84,7 @@
 #include <cstdlib>
 #include <limits>
 #include <type_traits>
+#include <utility>
 
 namespace wire {
 
@@ -174,19 +175,29 @@ struct BlockGeometry final {
  * The four operations, on an INSTANTIATED storage. Syntax and exception
  * guarantee only; the behavioural obligations (non-overlap, exact release,
  * independent RX/TX quotas, alignment of every returned pointer) are checked
- * by the shared conformance suite, wire/tests/test_storage.cpp.
+ * by the shared conformance suite, wire/tests/test_storage.cpp. The by-value
+ * API must accept const lvalues, mutable lvalues and computed temporaries;
+ * an overload must not silently change its result or exception contract.
  */
 template<class S>
 concept ByteStorage = requires(
 	S& storage,
-	const std::size_t bytes,
-	std::byte* const memory,
-	const TxBlock block)
+	std::size_t bytes,
+	std::byte* memory,
+	TxBlock block)
 {
+	{ storage.acquire_rx(std::as_const(bytes)) } noexcept -> std::same_as<std::byte*>;
 	{ storage.acquire_rx(bytes) } noexcept -> std::same_as<std::byte*>;
+	{ storage.acquire_rx(std::size_t{bytes}) } noexcept -> std::same_as<std::byte*>;
+	{ storage.release_rx(std::as_const(memory)) } noexcept -> std::same_as<void>;
 	{ storage.release_rx(memory) } noexcept -> std::same_as<void>;
+	{ storage.release_rx(static_cast<std::byte*>(memory)) } noexcept -> std::same_as<void>;
+	{ storage.acquire_tx(std::as_const(bytes)) } noexcept -> std::same_as<TxBlock>;
 	{ storage.acquire_tx(bytes) } noexcept -> std::same_as<TxBlock>;
+	{ storage.acquire_tx(std::size_t{bytes}) } noexcept -> std::same_as<TxBlock>;
+	{ storage.release_tx(std::as_const(block)) } noexcept -> std::same_as<void>;
 	{ storage.release_tx(block) } noexcept -> std::same_as<void>;
+	{ storage.release_tx(TxBlock{block}) } noexcept -> std::same_as<void>;
 };
 
 /*

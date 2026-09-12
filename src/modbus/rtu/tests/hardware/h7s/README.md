@@ -5,7 +5,14 @@ SPDX-License-Identifier: MIT
 
 # NUCLEO-H7S3L8 Modbus RTU + UART hardware verification
 
-Latest [live regression, 7 September](../../../../../../doc/HARDWARE_REGRESSION_2026-09-07.md):
+Latest [extension-contract live repeat](../../../../../../doc/HARDWARE_EXTENSIONS_2026-09-12.md):
+all 144 RTU fault/vector/pool/CRC/stress records passed over nine policies at
+115200/1M. The fresh eight-image framing/control matrix passed all 192 framed
+boundary trials and vectors through 10M; burst control losses and failed
+suites remain visible in its raw record and exported logs. Original firmware
+was restored and read back after both sessions.
+
+Earlier [live regression, 7 September](../../../../../../doc/HARDWARE_REGRESSION_2026-09-07.md):
 144 passed fault/vector/pool/CRC/stress records across all nine policies at
 115200/1M, and a fresh 30-record burst/framed matrix through 10M. All framed
 trials passed; burst losses and unavailable trial summaries remain visible.

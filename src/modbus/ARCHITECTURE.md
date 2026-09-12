@@ -357,6 +357,14 @@ server.consume(chunk); // any cut of the stream; several ADUs per chunk
 
 `Framer` defaults to `framing::None`, which is the endpoint described above,
 byte for byte: same `sizeof`, same code paths, no function code interpreted.
+`framing::Policy` checks the actual `layout` calls as well as the basic
+signature: RX uses `Framer::rx` with a const candidate byte or a mutable
+prefix byte; TX uses the temporary result of `framing::opposite(Framer::rx)`.
+Every selected overload, including any conversion of a custom `rx` type,
+must return `framing::Layout` without throwing. Value and const-reference
+implementations remain supported. There is no runtime dispatch or new
+framing state in this check.
+
 Choosing a policy adds one thing to the wire contract — both peers agree on
 how each function encodes the length of its data — and derives everything
 else from it:

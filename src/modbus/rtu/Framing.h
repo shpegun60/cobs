@@ -323,9 +323,17 @@ struct None final {};
 
 // A framing policy: which direction it receives, and a layout per function.
 template<class F>
-concept Policy = requires(const Direction direction, const uint8_t function) {
+concept Policy = requires(const Direction direction, const uint8_t function,
+		uint8_t mutable_function) {
 	{ F::rx } -> std::convertible_to<Direction>;
 	{ F::layout(direction, function) } noexcept -> std::same_as<Layout>;
+	// Match the actual call sites too: the RX prefix is mutable, a complete
+	// candidate is const, and TX passes a temporary opposite direction.
+	// These also check any implicit conversion of a user-provided F::rx.
+	{ F::layout(F::rx, function) } noexcept -> std::same_as<Layout>;
+	{ F::layout(F::rx, mutable_function) } noexcept -> std::same_as<Layout>;
+	{ F::layout(::modbus::rtu::framing::opposite(F::rx), function) }
+		noexcept -> std::same_as<Layout>;
 };
 
 template<class F>
